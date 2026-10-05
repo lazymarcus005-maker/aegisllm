@@ -154,6 +154,10 @@ func (s stubPipeline) ProcessRequest(*core.InspectionEnvelope, []byte) (RequestD
 	return s.dec, nil
 }
 
+func (s stubPipeline) ProcessResponse(*core.InspectionEnvelope, []byte) (ResponseOutcome, error) {
+	return ResponseOutcome{Action: core.ActionAllow}, nil
+}
+
 func TestEnforceModeBlocksOnPipelineBlock(t *testing.T) {
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("upstream must not be called when blocked")

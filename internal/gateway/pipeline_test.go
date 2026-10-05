@@ -402,3 +402,209 @@ func requestIDFromAudit(t *testing.T, auditOut string) string {
 	}
 	return ev.RequestID
 }
+
+// --- ticket 07: outbound protection + re-identification ---
+
+// AS-005: a secret the model emits never reaches the client under block
+// policy; the outbound audit event records the predicted BLOCK.
+func TestAS005OutboundSecretBlocked(t *testing.T) {
+	respBody := `{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"here is your key: glpat-Abc123Xyz_-456DefGhi"},"finish_reason":"stop"}]}`
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(respBody))
+	})
+	pipe, sink := newRealPipeline(t, ModeEnforce)
+	srv.SetPipeline(pipe)
+
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(b), "glpat-Abc123Xyz") {
+		t.Fatal("raw secret reached the client")
+	}
+	if !strings.Contains(string(b), "security_policy_violation") {
+		t.Fatalf("expected policy error contract: %s", b)
+	}
+	if !strings.Contains(sink.String(), `"direction":"RESPONSE"`) || !strings.Contains(sink.String(), `"action":"BLOCK"`) {
+		t.Fatalf("outbound audit event missing: %s", sink.String())
+	}
+}
+
+// UC-008: model-emitted PII is redacted before the client sees it.
+func TestOutboundPIIRedacted(t *testing.T) {
+	respBody := `{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"call the customer at 0812345678"},"finish_reason":"stop"}]}`
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(respBody))
+	})
+	pipe, _ := newRealPipeline(t, ModeEnforce)
+	srv.SetPipeline(pipe)
+
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	var got struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v (body: %s)", err, b)
+	}
+	if len(got.Choices) == 0 {
+		t.Fatalf("no choices in body: %s", b)
+	}
+	content := got.Choices[0].Message.Content
+	if strings.Contains(content, "0812345678") {
+		t.Fatalf("raw PII reached the client: %s", content)
+	}
+	if !strings.Contains(content, "[REDACTED:PHONE_NUMBER]") {
+		t.Fatalf("redaction missing: %s", content)
+	}
+}
+
+// Re-identification round trip: request tokenizes the phone, the model echoes
+// the placeholder, and the authorized caller receives the original value.
+func TestOutboundReidentifiesEchoedToken(t *testing.T) {
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"[mock-upstream echo] โทร <PHONE_NUMBER_001> ค่ะ"},"finish_reason":"stop"}]}`))
+	})
+	pipe, _ := newRealPipeline(t, ModeEnforce)
+	attachVault(t, pipe)
+	srv.SetPipeline(pipe)
+
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"โทร 0812345678 ค่ะ"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+
+	b, _ := io.ReadAll(resp.Body)
+	var got struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	_ = json.Unmarshal(b, &got)
+	content := got.Choices[0].Message.Content
+	if strings.Contains(content, "PHONE_NUMBER_001") {
+		t.Fatalf("placeholder was not re-identified: %s", content)
+	}
+	if !strings.Contains(content, "0812345678") {
+		t.Fatalf("original value missing for authorized caller: %s", content)
+	}
+}
+
+// Model-invented placeholders (never issued in this namespace) must pass
+// through untouched — no blind replacement (T-023).
+func TestOutboundLeavesInventedPlaceholdersAlone(t *testing.T) {
+	respBody := `{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"the model claims <PERSON_999> and <TH_CITIZEN_ID_123> exist"},"finish_reason":"stop"}]}`
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(respBody))
+	})
+	pipe, _ := newRealPipeline(t, ModeEnforce)
+	attachVault(t, pipe)
+	srv.SetPipeline(pipe)
+
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	var got struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	_ = json.Unmarshal(b, &got)
+	content := got.Choices[0].Message.Content
+	for _, want := range []string{"<PERSON_999>", "<TH_CITIZEN_ID_123>"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("invented placeholder %s was mutated: %s", want, content)
+		}
+	}
+}
+
+// Shadow mode: an outbound secret is predicted BLOCK in audit, but the client
+// still receives the incumbent response unchanged.
+func TestShadowOutboundPassesThroughWithPrediction(t *testing.T) {
+	respBody := `{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"key: glpat-Abc123Xyz_-456DefGhi"},"finish_reason":"stop"}]}`
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeShadow }, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(respBody))
+	})
+	pipe, sink := newRealPipeline(t, ModeShadow)
+	srv.SetPipeline(pipe)
+
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(b), "glpat-Abc123Xyz") {
+		t.Fatal("shadow mode must not modify the incumbent response")
+	}
+	if !strings.Contains(sink.String(), `"direction":"RESPONSE"`) || !strings.Contains(sink.String(), `"action":"BLOCK"`) {
+		t.Fatalf("shadow must audit the predicted outbound block: %s", sink.String())
+	}
+}
+
+// Streaming requests are forwarded without outbound scanning for now, per the
+// staged plan (architecture §13).
+func TestStreamingRequestsBypassOutboundScan(t *testing.T) {
+	respBody := `{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"key: glpat-Abc123Xyz_-456DefGhi"},"finish_reason":"stop"}]}`
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(respBody))
+	})
+	pipe, sink := newRealPipeline(t, ModeEnforce)
+	srv.SetPipeline(pipe)
+
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(b), "glpat-Abc123Xyz") {
+		t.Fatal("streaming must pass through verbatim in this stage")
+	}
+	if strings.Contains(sink.String(), `"direction":"RESPONSE"`) {
+		t.Fatal("streaming must not be scanned in this stage")
+	}
+}

@@ -134,6 +134,109 @@ func (p *SecurityPipeline) storeTokenMappings(env *core.InspectionEnvelope, plan
 	return nil
 }
 
+// ResponseOutcome is the pipeline outcome for the outbound direction.
+type ResponseOutcome struct {
+	Action          core.Action
+	Code            string
+	TransformedBody []byte
+}
+
+// ProcessResponse scans the upstream response before it reaches the client
+// (FR-015, architecture §12). Secret findings block per policy (AS-005);
+// PII findings are redacted regardless of the request-side transformation
+// flavor (UC-008). Token placeholders the model echoed back are re-identified
+// only when they resolve against tokens issued in this request's namespace
+// for the calling application (T-023); invented markers stay untouched.
+func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw []byte) (ResponseOutcome, error) {
+	if p.mode == ModeOff {
+		return ResponseOutcome{Action: core.ActionAllow}, nil
+	}
+	start := time.Now()
+
+	respEnv, err := ParseChatCompletionsResponse(raw)
+	if err != nil {
+		return ResponseOutcome{}, err
+	}
+	respEnv.Application = reqEnv.Application
+	respEnv.Tenant = reqEnv.Tenant
+	respEnv.User = reqEnv.User
+	respEnv.Target.Provider = reqEnv.Target.Provider
+
+	findings := p.registry.RunAll(respEnv)
+	entityFindings := p.entityFindings(respEnv)
+	all := append(append([]core.SecurityFinding{}, findings...), entityFindings...)
+	dec := p.engine.Evaluate(policy.Context{Envelope: respEnv, Findings: all})
+
+	outcome := ResponseOutcome{Action: dec.Action, Code: dec.Code}
+	switch dec.Action {
+	case core.ActionBlock, core.ActionReview:
+		// Server rejects the response; nothing is transformed.
+	case core.ActionRedact, core.ActionTokenize:
+		var ts []responseTransform
+		for _, f := range all {
+			if f.Category != core.CategoryPII || f.Location.End <= f.Location.Start {
+				continue
+			}
+			ts = append(ts, responseTransform{
+				ChoiceIndex: f.Location.MessageIndex,
+				PartIndex:   f.Location.PartIndex,
+				Start:       f.Location.Start,
+				End:         f.Location.End,
+				Replacement: "[REDACTED:" + f.Subtype + "]",
+			})
+		}
+		body, terr := applyTransformationsToResponseBody(raw, ts)
+		if terr != nil {
+			return ResponseOutcome{}, terr
+		}
+		outcome.TransformedBody = body
+		raw = body
+	default:
+	}
+
+	if dec.Action != core.ActionBlock && dec.Action != core.ActionReview && p.vault != nil && p.crypto != nil {
+		reid := tokenization.NewReidentifier(p.vault, p.crypto)
+		body, changed, rerr := replacePlaceholdersInBody(raw, func(label string) (string, bool) {
+			value, rerr := reid.Reidentify(context.Background(), reqEnv.RequestID, label,
+				tokenization.Caller{Application: reqEnv.Application, Subject: reqEnv.User.Subject})
+			if rerr != nil {
+				return "", false
+			}
+			return value, true
+		})
+		if rerr != nil {
+			return ResponseOutcome{}, rerr
+		}
+		if changed {
+			outcome.TransformedBody = body
+		}
+	}
+	elapsed := time.Since(start)
+
+	p.audit.Record(audit.Event{
+		RequestID:     reqEnv.RequestID,
+		Timestamp:     time.Now().UTC(),
+		Direction:     core.DirectionResponse,
+		Application:   reqEnv.Application,
+		Tenant:        reqEnv.Tenant,
+		User:          reqEnv.User.Subject,
+		PolicyID:      dec.PolicyID,
+		PolicyVersion: dec.PolicyVersion,
+		Mode:          p.mode,
+		Action:        dec.Action,
+		Code:          dec.Code,
+		MatchedRule:   dec.MatchedRule,
+		FindingTypes:  audit.FindingTypes(all),
+		FindingCount:  len(all),
+		LatencyMS: map[string]int64{
+			"deterministic":  elapsed.Milliseconds(),
+			"total_security": elapsed.Milliseconds(),
+		},
+	})
+
+	return outcome, nil
+}
+
 // entityFindings runs the span provider over every text part and projects the
 // recognized entities into PII findings with exact spans.
 func (p *SecurityPipeline) entityFindings(env *core.InspectionEnvelope) []core.SecurityFinding {

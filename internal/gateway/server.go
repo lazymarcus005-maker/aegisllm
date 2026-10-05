@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/aegisllm/gateway/internal/core"
@@ -20,10 +22,11 @@ type RequestDecision struct {
 	TransformedBody []byte // non-nil when the pipeline rewrote the body
 }
 
-// Pipeline runs normalized content through detection and policy. The
-// production implementation arrives with ticket 02.
+// Pipeline runs normalized content through detection and policy on both the
+// request and response directions (FR-001, FR-015).
 type Pipeline interface {
 	ProcessRequest(env *core.InspectionEnvelope, raw []byte) (RequestDecision, error)
+	ProcessResponse(reqEnv *core.InspectionEnvelope, raw []byte) (ResponseOutcome, error)
 }
 
 // Server is the OpenAI-compatible security gateway HTTP server (FR-001).
@@ -156,9 +159,63 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+
+	// Outbound protection (ticket 07): non-streaming JSON responses are
+	// scanned and policy-filtered before reaching the client. Streaming
+	// follows the deferred plan in architecture §13.
+	isStream := env.Metadata["stream"] == "true"
+	if s.pipeline == nil || s.cfg.SecurityMode == ModeOff || isStream ||
+		resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+		copyResponseHeaders(w, resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+		return
+	}
+
+	bodyBytes, rerr := io.ReadAll(io.LimitReader(resp.Body, s.cfg.MaxBodyBytes))
+	if rerr != nil {
+		s.logger.Error("upstream response read failed", "request_id", env.RequestID, "error", rerr)
+		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "", "Upstream response read failed.", env.RequestID)
+		return
+	}
+
+	out, perr := s.processOutbound(w, env, bodyBytes)
+	if perr != nil {
+		return // response already written
+	}
 	copyResponseHeaders(w, resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	_, _ = io.Copy(w, bytes.NewReader(out))
+}
+
+// processOutbound applies the response outcome for the current mode; a
+// non-nil error means the response has already been written.
+func (s *Server) processOutbound(w http.ResponseWriter, env *core.InspectionEnvelope, body []byte) ([]byte, error) {
+	outcome, err := s.pipeline.ProcessResponse(env, body)
+	if err != nil {
+		s.logger.Error("outbound pipeline failed", "request_id", env.RequestID, "error", err)
+		writeOpenAIError(w, http.StatusInternalServerError, "gateway_error", "", "Security pipeline failure.", env.RequestID)
+		return nil, err
+	}
+	if s.cfg.SecurityMode != ModeEnforce {
+		// Shadow: predicted outbound actions are audited; client behavior
+		// follows the incumbent path.
+		return body, nil
+	}
+	switch outcome.Action {
+	case core.ActionBlock, core.ActionReview:
+		code := outcome.Code
+		if code == "" {
+			code = "SECURITY_POLICY_BLOCKED"
+		}
+		writeOpenAIError(w, http.StatusForbidden, "security_policy_violation", code, "Response blocked by security policy.", env.RequestID)
+		return nil, errors.New("response blocked")
+	default:
+		if outcome.TransformedBody != nil {
+			return outcome.TransformedBody, nil
+		}
+		return body, nil
+	}
 }
 
 // applyDecision translates a pipeline decision into forwarding behavior for
@@ -217,11 +274,14 @@ func headerOr(r *http.Request, name, def string) string {
 	return def
 }
 
-// hopByHop headers must not be forwarded (RFC 7230 §6.1).
+// hopByHop headers must not be forwarded (RFC 7230 §6.1). Content-Length is
+// excluded too: outbound transformations may change the body size, so the
+// server must recompute it.
 var hopByHop = map[string]bool{
 	"Connection": true, "Proxy-Connection": true, "Keep-Alive": true,
 	"TE": true, "Trailer": true, "Transfer-Encoding": true, "Upgrade": true,
 	"Proxy-Authenticate": true, "Proxy-Authorization": true,
+	"Content-Length": true,
 }
 
 func copyResponseHeaders(w http.ResponseWriter, h http.Header) {

@@ -4,10 +4,10 @@
 
 **Blocked by:** 06 (tokenization + vault).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Upstream response normalized into InspectionEnvelope(direction=RESPONSE) for the non-streaming path
-- [ ] Outbound pipeline runs deterministic scan + span scan + semantic check where configured + policy; allow/redact/block implemented (FR-015)
-- [ ] AS-005: a model-emitted secret never reaches the client under block/redact policy
-- [ ] Re-identification requires all of: authorized identity, response policy allows, namespace matches issued tokens; blind replacement of any `<TYPE_001>`-looking string coming from model output is rejected and tested (T-023)
-- [ ] Streaming explicitly out of scope for this ticket: documented behavior per the handoff sequence (non-streaming enforce first, streaming shadow later)
+- [x] Upstream response normalized into InspectionEnvelope(direction=RESPONSE) for the non-streaming path
+- [x] Outbound pipeline runs deterministic scan + span scan + semantic check where configured + policy; allow/redact/block implemented (FR-015)
+- [x] AS-005: a model-emitted secret never reaches the client under block/redact policy
+- [x] Re-identification requires all of: authorized identity, response policy allows, namespace matches issued tokens; blind replacement of any `<TYPE_001>`-looking string coming from model output is rejected and tested (T-023)
+- [x] Streaming explicitly out of scope for this ticket: documented behavior per the handoff sequence (non-streaming enforce first, streaming shadow later)
