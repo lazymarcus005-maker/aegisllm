@@ -1,0 +1,10 @@
+FROM golang:1-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+COPY cmd/mockupstream ./cmd/mockupstream
+RUN CGO_ENABLED=0 go build -o /bin/mock-upstream ./cmd/mockupstream
+
+FROM alpine:3.20
+COPY --from=build /bin/mock-upstream /bin/mock-upstream
+USER nobody
+ENTRYPOINT ["/bin/mock-upstream"]
