@@ -1,6 +1,6 @@
-# enterprise-default policy (spec §8; ticket-06 schema scope)
+# enterprise-default policy (spec §8; ticket-12 schema scope)
 id: enterprise-default
-version: 5
+version: 6
 owner: security-team
 effective_date: "2026-10-05"
 
@@ -64,6 +64,18 @@ semantic:
   credential_exfiltration:
     high:
       action: block
+  unsafe_tool_intent:
+    high:
+      action: restrict_tools
+  policy_bypass_intent:
+    medium:
+      action: restrict_tools
+
+# Tool definitions RESTRICT_TOOLS strips from requests (T-025).
+tools:
+  restricted:
+    - shell
+    - file_write
 
 fallback:
   laya_unavailable:

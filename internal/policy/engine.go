@@ -57,6 +57,11 @@ func NewEngine(p *Policy) *Engine {
 	return &Engine{policy: p}
 }
 
+// RestrictedTools exposes the policy's RESTRICT_TOOLS tool list (T-025).
+func (e *Engine) RestrictedTools() []string {
+	return e.policy.RestrictedTools()
+}
+
 // Evaluate applies the precedence chain from spec §7:
 //
 //  1. explicit deny                      5. provider-boundary policy

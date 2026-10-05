@@ -149,6 +149,11 @@ type Fallback struct {
 	LayaUnavailable FallbackRule `yaml:"laya_unavailable"`
 }
 
+// ToolRules governs tool definitions the policy may strip on RESTRICT_TOOLS.
+type ToolRules struct {
+	Restricted []string `yaml:"restricted"`
+}
+
 // Policy is the versioned policy document (FR-012).
 type Policy struct {
 	ID            string     `yaml:"id"`
@@ -166,6 +171,15 @@ type Policy struct {
 	PII          map[string]PIIRule      `yaml:"pii,omitempty"`
 	Semantic     map[string]SemanticRule `yaml:"semantic,omitempty"`
 	Fallback     *Fallback               `yaml:"fallback,omitempty"`
+	Tools        *ToolRules              `yaml:"tools,omitempty"`
+}
+
+// RestrictedTools lists tool names RESTRICT_TOOLS may strip from requests.
+func (p *Policy) RestrictedTools() []string {
+	if p.Tools == nil {
+		return nil
+	}
+	return p.Tools.Restricted
 }
 
 // Load parses and validates a policy document. Unknown fields and invalid

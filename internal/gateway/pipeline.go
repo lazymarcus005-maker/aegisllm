@@ -203,6 +203,15 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 		}
 		transformed = body
 	}
+	if dec.Action == core.ActionRestrictTools {
+		// T-025: RESTRICT_TOOLS physically removes restricted tools from the
+		// request — never a prompt-level "please don't".
+		body, err := stripRestrictedTools(raw, p.engine.RestrictedTools())
+		if err != nil {
+			return RequestDecision{}, err
+		}
+		transformed = body
+	}
 	elapsed := time.Since(start)
 
 	latency := map[string]int64{
@@ -465,4 +474,170 @@ func (p *SecurityPipeline) entityFindings(env *core.InspectionEnvelope) []core.S
 		}
 	}
 	return out
+}
+
+// --- ticket 12: tool call/result inspection (FR-016/017, T-024) ---
+
+// ToolCall is a model-emitted tool call offered for inspection.
+type ToolCall struct {
+	ID        string
+	Name      string
+	Arguments string // raw arguments payload (JSON or text)
+}
+
+// ToolResult is a tool result offered for inspection before it re-enters
+// model context.
+type ToolResult struct {
+	CallID  string
+	Name    string
+	Content string
+}
+
+// ToolDecision is the policy outcome for one tool inspection.
+type ToolDecision struct {
+	Action             core.Action
+	Code               string
+	MatchedRule        string
+	Reason             string
+	TransformedContent string // redacted content for REDACT decisions
+}
+
+// InspectToolCall inspects a tool call before execution (UC-006): the same
+// detectors, planner, and policy engine run with direction TOOL_CALL. Secret
+// material in arguments is caught deterministically; exfiltration or unsafe
+// intent is evaluated semantically when a provider is configured.
+func (p *SecurityPipeline) InspectToolCall(reqEnv *core.InspectionEnvelope, call ToolCall) (ToolDecision, error) {
+	env := p.toolEnvelope(reqEnv, core.DirectionToolCall, call.Name, call.Arguments)
+	start := time.Now()
+
+	findings := p.registry.RunAll(env)
+	all := append([]core.SecurityFinding{}, findings...)
+	dec := p.engine.Evaluate(policy.Context{Envelope: env, Findings: all})
+
+	var layaInfo *audit.LayaInfo
+	if p.provider != nil && p.planner != nil && dec.Action != core.ActionBlock {
+		plan := p.planner.Plan(core.DirectionToolCall, env.Application, env.Target, all)
+		if plan.Ask {
+			ev, err := p.provider.Evaluate(context.Background(), decision.DecisionRequest{
+				RequestID:   env.RequestID,
+				Direction:   "tool_call",
+				Role:        "assistant",
+				Content:     call.Arguments,
+				Application: env.Application,
+			}, plan.QuestionIDs)
+			if err != nil {
+				layaInfo = &audit.LayaInfo{Error: "unavailable"}
+				if plan.MaxRisk == "high" {
+					if fb, ok := p.engine.LayaUnavailableFallback(); ok {
+						dec = fb
+					}
+				}
+			} else {
+				layaInfo = layaAuditInfo(&ev)
+				var signals []policy.SemanticSignal
+				for _, id := range plan.QuestionIDs {
+					if d, ok := ev.Decisions[id]; ok {
+						signals = append(signals, policy.SemanticSignal{
+							QuestionID: id, Triggered: d.Value, Confidence: d.Confidence,
+							Risk: p.questions.RiskOf(id),
+						})
+					}
+				}
+				// Same gating as the request path: shadow predicts with all
+				// evidence; enforce acts only on calibrated slices.
+				switch {
+				case p.mode == ModeShadow:
+					dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: all, Semantic: signals})
+				case p.semanticEnforce:
+					if gated := p.gateSignals(env, signals, ev); len(gated) > 0 {
+						dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: all, Semantic: gated})
+					}
+				}
+			}
+		}
+	}
+
+	p.audit.Record(p.toolAuditEvent(env, dec, all, start, layaInfo))
+	return ToolDecision{Action: dec.Action, Code: dec.Code, MatchedRule: dec.MatchedRule, Reason: dec.Reason}, nil
+}
+
+// InspectToolResult inspects a tool result before it re-enters model context
+// (UC-007): credentials in results are blocked or redacted per policy — the
+// raw value never re-enters model context.
+func (p *SecurityPipeline) InspectToolResult(reqEnv *core.InspectionEnvelope, result ToolResult) (ToolDecision, error) {
+	env := p.toolEnvelope(reqEnv, core.DirectionToolResult, result.Name, result.Content)
+	start := time.Now()
+
+	findings := p.registry.RunAll(env)
+	all := append([]core.SecurityFinding{}, findings...)
+	dec := p.engine.Evaluate(policy.Context{Envelope: env, Findings: all})
+
+	out := ToolDecision{Action: dec.Action, Code: dec.Code, MatchedRule: dec.MatchedRule, Reason: dec.Reason}
+	if dec.Action == core.ActionRedact || dec.Action == core.ActionTokenize {
+		plan := pii.Plan(all, pii.RedactNamer)
+		out.TransformedContent = pii.ApplyToText(result.Content, plan)
+	}
+
+	p.audit.Record(p.toolAuditEvent(env, dec, all, start, nil))
+	return out, nil
+}
+
+// toolEnvelope builds the inspection envelope for one tool boundary crossing.
+func (p *SecurityPipeline) toolEnvelope(reqEnv *core.InspectionEnvelope, dir core.Direction, toolName, content string) *core.InspectionEnvelope {
+	return &core.InspectionEnvelope{
+		RequestID:   reqEnv.RequestID,
+		Direction:   dir,
+		Application: reqEnv.Application,
+		Tenant:      reqEnv.Tenant,
+		User:        reqEnv.User,
+		Target:      reqEnv.Target,
+		Messages: []core.Message{{
+			Role: core.RoleAssistant,
+			Parts: []core.ContentPart{{
+				Type:     core.PartText,
+				ToolName: toolName,
+				Text:     content,
+			}},
+		}},
+	}
+}
+
+func (p *SecurityPipeline) toolAuditEvent(env *core.InspectionEnvelope, dec policy.Decision, findings []core.SecurityFinding, start time.Time, laya *audit.LayaInfo) audit.Event {
+	return audit.Event{
+		RequestID:     env.RequestID,
+		Timestamp:     time.Now().UTC(),
+		Direction:     env.Direction,
+		Application:   env.Application,
+		Tenant:        env.Tenant,
+		User:          env.User.Subject,
+		PolicyID:      dec.PolicyID,
+		PolicyVersion: dec.PolicyVersion,
+		Mode:          p.mode,
+		Action:        dec.Action,
+		Code:          dec.Code,
+		MatchedRule:   dec.MatchedRule,
+		FindingTypes:  audit.FindingTypes(findings),
+		FindingCount:  len(findings),
+		LatencyMS: map[string]int64{
+			"deterministic":  time.Since(start).Milliseconds(),
+			"total_security": time.Since(start).Milliseconds(),
+		},
+		Laya: laya,
+	}
+}
+
+func layaAuditInfo(ev *decision.DecisionEvidence) *audit.LayaInfo {
+	info := &audit.LayaInfo{
+		Provider:      ev.Provider,
+		Checkpoint:    ev.Checkpoint,
+		SchemaVersion: ev.SchemaVersion,
+		Route:         ev.Route,
+	}
+	for id, d := range ev.Decisions {
+		if info.Decisions == nil {
+			info.Decisions = map[string]audit.LayaDecision{}
+		}
+		info.Decisions[id] = audit.LayaDecision{Value: d.Value, Confidence: d.Confidence}
+	}
+	return info
 }

@@ -314,7 +314,7 @@ func TestValidationExtendedSchema(t *testing.T) {
 
 func TestFullPolicyFileLoads(t *testing.T) {
 	p := mustLoadFile(t)
-	if p.Version != 5 {
+	if p.Version != 6 {
 		t.Fatalf("version: %d", p.Version)
 	}
 	if len(p.Semantic) == 0 || len(p.PII) == 0 || len(p.Targets) != 2 {
