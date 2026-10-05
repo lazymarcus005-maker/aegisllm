@@ -4,10 +4,10 @@
 
 **Blocked by:** 05 (span detection + transformation planner).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Tokenizer emits stable placeholders per configured scope; no original value encoded in the placeholder
-- [ ] Token vault (Redis MVP) stores namespace, ciphertext (envelope encryption), type, created/expires timestamps, authorization metadata; TTL configurable (PRIV-003)
-- [ ] No raw value in key names, logs, or audit; vault isolated from Laya and the target LLM (INV-007)
-- [ ] TOKENIZE action end-to-end for cloud targets per policy; same value → same token within scope, different scopes → different tokens
-- [ ] Explicitly authorized re-identification path exists as a controlled interface (used by ticket 07), least-privilege by construction
+- [x] Tokenizer emits stable placeholders per configured scope; no original value encoded in the placeholder
+- [x] Token vault (Redis MVP) stores namespace, ciphertext (envelope encryption), type, created/expires timestamps, authorization metadata; TTL configurable (PRIV-003)
+- [x] No raw value in key names, logs, or audit; vault isolated from Laya and the target LLM (INV-007)
+- [x] TOKENIZE action end-to-end for cloud targets per policy; same value → same token within scope, different scopes → different tokens
+- [x] Explicitly authorized re-identification path exists as a controlled interface (used by ticket 07), least-privilege by construction

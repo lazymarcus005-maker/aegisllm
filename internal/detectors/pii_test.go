@@ -1,7 +1,6 @@
 package detectors
 
 import (
-	"fmt"
 	"sort"
 	"testing"
 	"time"
@@ -211,5 +210,5 @@ func TestDeterministicScanLatencyTarget(t *testing.T) {
 	if p95 > 10*time.Millisecond {
 		t.Fatalf("p95 scan latency %v exceeds 10ms target", p95)
 	}
-	t.Logf(fmt.Sprintf("p95 deterministic scan: %v", p95))
+	t.Logf("p95 deterministic scan: %v", p95)
 }

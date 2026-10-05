@@ -18,3 +18,9 @@ services:
       dockerfile: Dockerfile.mock-upstream
     ports:
       - "9090:9090"
+
+# Added by ticket 06 — enable by uncommenting and wiring TOKEN_VAULT_REDIS_URL.
+#  redis-token-store:
+#    image: redis:7-alpine
+#    ports:
+#      - "6379:6379"

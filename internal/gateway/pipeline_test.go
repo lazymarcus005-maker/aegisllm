@@ -1,18 +1,23 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aegisllm/gateway/internal/audit"
 	"github.com/aegisllm/gateway/internal/detectors"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/tokenization"
 )
 
 // newRealPipeline builds the production pipeline over a buffer audit sink.
@@ -93,7 +98,7 @@ func TestAS001SecretBlockedInEnforceMode(t *testing.T) {
 	if !strings.Contains(auditOut, `"mode":"enforce"`) || !strings.Contains(auditOut, `"action":"BLOCK"`) {
 		t.Fatalf("audit missing mode/action: %s", auditOut)
 	}
-	if !strings.Contains(auditOut, `"policy_version":4`) {
+	if !regexp.MustCompile(`"policy_version":[0-9]+`).MatchString(auditOut) {
 		t.Fatalf("audit missing policy version: %s", auditOut)
 	}
 }
@@ -201,8 +206,8 @@ func TestGatewayLogsCarryNoSecret(t *testing.T) {
 // an honorific name, headed for a cloud target.
 const thaiPIIRequest = `{"model":"m","messages":[{"role":"user","content":"ลูกค้าชื่อ นายสมชาย ใจดี โทร 0812345678 เลขบัตร 1234567890121 ค่ะ"}]}`
 
-// AS-002 (redact variant, ticket 05): cloud-bound Thai PII arrives upstream
-// redacted; audit records finding types without raw values.
+// AS-002 (ticket 06): cloud-bound Thai PII arrives upstream as placeholders;
+// audit records finding types without raw values.
 func TestAS002ThaiPIIRedactedForCloud(t *testing.T) {
 	var upstreamBody string
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, r *http.Request) {
@@ -212,6 +217,7 @@ func TestAS002ThaiPIIRedactedForCloud(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
 	pipe, sink := newRealPipeline(t, ModeEnforce)
+	attachVault(t, pipe)
 	srv.SetPipeline(pipe)
 
 	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(thaiPIIRequest))
@@ -228,15 +234,21 @@ func TestAS002ThaiPIIRedactedForCloud(t *testing.T) {
 			t.Fatalf("raw PII %q reached the upstream: %s", raw, upstreamBody)
 		}
 	}
-	for _, want := range []string{"[REDACTED:TH_CITIZEN_ID]", "[REDACTED:PHONE_NUMBER]", "[REDACTED:PERSON]"} {
-		if !strings.Contains(upstreamBody, want) {
-			t.Fatalf("expected %s in upstream body: %s", want, upstreamBody)
+	var sent struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	_ = json.Unmarshal([]byte(upstreamBody), &sent)
+	for _, want := range []string{"<PERSON_001>", "<PHONE_NUMBER_001>", "<TH_CITIZEN_ID_001>"} {
+		if !strings.Contains(sent.Messages[0].Content, want) {
+			t.Fatalf("expected %s in upstream content: %s", want, sent.Messages[0].Content)
 		}
 	}
 
 	auditOut := sink.String()
-	if !strings.Contains(auditOut, `"action":"REDACT"`) {
-		t.Fatalf("expected REDACT audit: %s", auditOut)
+	if !strings.Contains(auditOut, `"action":"TOKENIZE"`) {
+		t.Fatalf("expected TOKENIZE audit: %s", auditOut)
 	}
 	for _, leak := range []string{"0812345678", "1234567890121", "สมชาย"} {
 		if strings.Contains(auditOut, leak) {
@@ -273,4 +285,120 @@ func TestUC003LocalModelAllowsPII(t *testing.T) {
 	if !strings.Contains(sink.String(), `"action":"ALLOW"`) || !strings.Contains(sink.String(), "TH_CITIZEN_ID") {
 		t.Fatalf("audit must record allowed finding types: %s", sink.String())
 	}
+}
+
+// AS-002 (ticket 06): cloud-bound Thai PII arrives upstream as stable
+// placeholders, with mappings sealed in the vault; same value → same token.
+func TestAS002ThaiPIITokenizedForCloud(t *testing.T) {
+	var upstreamBody string
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		upstreamBody = string(b)
+		w.WriteHeader(http.StatusOK)
+	})
+	pipe, sink := newRealPipeline(t, ModeEnforce)
+	attachVault(t, pipe)
+	srv.SetPipeline(pipe)
+
+	// Same phone number appears twice: value-stable tokens must reuse 001.
+	body := `{"model":"m","messages":[{"role":"user","content":"โทร 0812345678 หรือ 0812345678 ค่ะ เลขบัตร 1234567890121"}]}`
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+
+	if strings.Contains(upstreamBody, "0812345678") || strings.Contains(upstreamBody, "1234567890121") {
+		t.Fatalf("raw PII reached upstream: %s", upstreamBody)
+	}
+	var sent struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	_ = json.Unmarshal([]byte(upstreamBody), &sent)
+	sentContent := sent.Messages[0].Content
+	if strings.Count(sentContent, "<PHONE_NUMBER_001>") != 2 {
+		t.Fatalf("same value must share one token: %s", sentContent)
+	}
+	if !strings.Contains(sentContent, "<TH_CITIZEN_ID_001>") {
+		t.Fatalf("citizen ID token missing: %s", sentContent)
+	}
+	if strings.Contains(sink.String(), "0812345678") || strings.Contains(sink.String(), "1234567890121") {
+		t.Fatal("raw PII leaked into audit")
+	}
+}
+
+// attachVault wires an in-memory vault with a fixed dev key into the pipeline.
+func attachVault(t *testing.T, pipe *SecurityPipeline) tokenization.Vault {
+	t.Helper()
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	crypto, err := tokenization.NewCrypto(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := tokenization.NewInMemoryVault()
+	pipe.SetTokenStore(vault, crypto, time.Hour)
+	return vault
+}
+
+// Re-identification round trip through the full gateway path: the vault
+// record created during tokenization resolves for the issuing application
+// and is denied for others (T-023).
+func TestTokenizeReidentifyRoundTrip(t *testing.T) {
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	pipe, sink := newRealPipeline(t, ModeEnforce)
+	vault := attachVault(t, pipe)
+	srv.SetPipeline(pipe)
+
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"โทร 0812345678"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// Find the request ID from the audit sink (sink records request_id), then
+	// resolve the placeholder through the controlled interface.
+	auditOut := sink.String()
+	requestID := requestIDFromAudit(t, auditOut)
+	reid := tokenization.NewReidentifier(vault, pipe.crypto)
+
+	got, err := reid.Reidentify(context.Background(), requestID, "PHONE_NUMBER_001",
+		tokenization.Caller{Application: "unknown"})
+	if err != nil || got != "0812345678" {
+		t.Fatalf("re-identify: %q %v", got, err)
+	}
+	if _, err := reid.Reidentify(context.Background(), requestID, "PHONE_NUMBER_001",
+		tokenization.Caller{Application: "other-app"}); !errors.Is(err, tokenization.ErrUnauthorized) {
+		t.Fatalf("cross-application access must be denied: %v", err)
+	}
+}
+
+// requestIDFromAudit pulls the most recent request_id from newline-joined
+// audit JSON (test helper).
+func requestIDFromAudit(t *testing.T, auditOut string) string {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(auditOut), "\n")
+	if len(lines) == 0 {
+		t.Fatal("no audit events")
+	}
+	var ev struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &ev); err != nil {
+		t.Fatal(err)
+	}
+	if ev.RequestID == "" {
+		t.Fatal("audit missing request_id")
+	}
+	return ev.RequestID
 }

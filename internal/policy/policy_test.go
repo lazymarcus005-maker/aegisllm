@@ -204,20 +204,19 @@ func TestProviderBoundaryAppliesToUnconfiguredPIISubtype(t *testing.T) {
 		Envelope: &core.InspectionEnvelope{RequestID: "req-1", Target: core.Target{Provider: "cloud"}},
 		Findings: []core.SecurityFinding{piiFinding("IP_ADDRESS")},
 	})
-	if dec.Action != core.ActionRedact || dec.MatchedRule != "targets.cloud" {
+	if dec.Action != core.ActionTokenize || dec.MatchedRule != "targets.cloud" {
 		t.Fatalf("provider baseline must apply: %+v", dec)
 	}
 }
 
 func TestPIISubtypeRuleOverridesProviderBaseline(t *testing.T) {
 	e := NewEngine(mustLoadFile(t))
-	// AS-002: Thai citizen ID to cloud is transformed per policy (redact in
-	// ticket 05; tokenization replaces it with ticket 06).
+	// AS-002: Thai citizen ID to cloud is tokenized per policy.
 	cloud := e.Evaluate(Context{
 		Envelope: &core.InspectionEnvelope{RequestID: "req-1", Target: core.Target{Provider: "cloud"}},
 		Findings: []core.SecurityFinding{piiFinding("TH_CITIZEN_ID")},
 	})
-	if cloud.Action != core.ActionRedact || cloud.MatchedRule != "pii.TH_CITIZEN_ID.cloud" {
+	if cloud.Action != core.ActionTokenize || cloud.MatchedRule != "pii.TH_CITIZEN_ID.cloud" {
 		t.Fatalf("AS-002 violated: %+v", cloud)
 	}
 	// UC-003: governed PII to a local model is allowed.
@@ -315,7 +314,7 @@ func TestValidationExtendedSchema(t *testing.T) {
 
 func TestFullPolicyFileLoads(t *testing.T) {
 	p := mustLoadFile(t)
-	if p.Version != 4 {
+	if p.Version != 5 {
 		t.Fatalf("version: %d", p.Version)
 	}
 	if len(p.Semantic) == 0 || len(p.PII) == 0 || len(p.Targets) != 2 {

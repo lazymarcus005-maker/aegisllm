@@ -5,6 +5,7 @@
 package pii
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 
@@ -107,6 +108,11 @@ type Namer func(subtype string, ordinal int) string
 // RedactNamer produces [REDACTED:SUBTYPE] replacements (ticket 05).
 func RedactNamer(subtype string, _ int) string { return "[REDACTED:" + subtype + "]" }
 
+// TokenNamer produces the spec FR-013 placeholder form: <TH_CITIZEN_ID_001>.
+func TokenNamer(subtype string, ordinal int) string {
+	return "<" + subtype + "_" + fmt.Sprintf("%03d", ordinal) + ">"
+}
+
 // priorityRank implements the deterministic precedence from T-018:
 // secret > specific validated PII detector > generic entity span.
 func priorityRank(f core.SecurityFinding) int {
@@ -201,11 +207,27 @@ func Plan(findings []core.SecurityFinding, namer Namer) []Transformation {
 		return a.Start < b.Start
 	})
 
+	// Numbering: identical values (same HMAC under the telemetry key) share
+	// one ordinal per subtype within the request scope; distinct values
+	// number sequentially in first-appearance order. Without a telemetry key
+	// every occurrence numbers separately (values are indistinguishable).
 	ordinals := map[string]int{}
+	nextPerSubtype := map[string]int{}
 	out := make([]Transformation, 0, len(accepted))
 	for _, a := range accepted {
 		loc := a.f.Location
-		ordinals[a.f.Subtype]++
+		var ordinal int
+		if a.f.ValueHash != "" {
+			key := a.f.Subtype + "\x00" + a.f.ValueHash
+			if _, seen := ordinals[key]; !seen {
+				nextPerSubtype[a.f.Subtype]++
+				ordinals[key] = nextPerSubtype[a.f.Subtype]
+			}
+			ordinal = ordinals[key]
+		} else {
+			nextPerSubtype[a.f.Subtype]++
+			ordinal = nextPerSubtype[a.f.Subtype]
+		}
 		out = append(out, Transformation{
 			MessageIndex: loc.MessageIndex,
 			PartIndex:    loc.PartIndex,
@@ -213,7 +235,7 @@ func Plan(findings []core.SecurityFinding, namer Namer) []Transformation {
 			End:          loc.End,
 			Subtype:      a.f.Subtype,
 			Priority:     a.prio,
-			Replacement:  namer(a.f.Subtype, ordinals[a.f.Subtype]),
+			Replacement:  namer(a.f.Subtype, ordinal),
 		})
 	}
 	return out
