@@ -26,3 +26,28 @@ Each item lists its implementation and the test/artifact that evidences it.
 Deferred by design (spec §19): streaming enforcement, image/document PII, full
 MCP proxy, credential broker, Vault/workload-identity integration, admin UI,
 central policy distribution, Jev provider, Laya fine-tuning.
+
+## Known gaps found in the code review (2026-10-05)
+
+- **FORCE_LOCAL_MODEL** is representable in the policy engine and audited, but
+  is not enforced (no local-upstream routing exists). Spec §18's DoD list does
+  not include it; FR-011's "SHALL implement" is only partially met. Deferred
+  to V1.1 with local-upstream config as the first step. (server.go
+  applyDecision documents this at the decision site.)
+- **Semantic calibration is not done.** The threshold-policy mechanism ships
+  with tests, but every record in `policies/thresholds-security-v1.yaml` is
+  `evaluated: false` (min_confidence 0.00) — by design, because fitting
+  thresholds requires a real laya-serve run against the held-out slices
+  (`go run ./cmd/evaltool -provider laya -calibrate`). Until then AS-003
+  cannot fire in a production deployment; semantic enforcement is
+  deliberately unreachable (INV-010).
+- **laya-serve is a compose stub** (commented service block) because the
+  official image reference could not be verified at build time. Wire
+  `LAYA_URL` + the service block when running the calibration above.
+- **Encoded/split/homoglyph secret evasions are not detected** — pinned as
+  documented-limitation tests in `tests/security` (TestKnownEvasionLimitations)
+  so any detection change is a conscious decision.
+- **Metrics naming**: spec §15 names are provided verbatim
+  (`requests_total`, `blocked_total`, `tokenized_total`, `redacted_total`,
+  `review_total`, `false_positive_sample_total`, …); `requests_total` carries
+  {action,mode} labels and the action counters are redundant-but-explicit.

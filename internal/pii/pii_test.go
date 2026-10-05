@@ -87,10 +87,11 @@ func TestPlanLongerSpanWinsAtEqualPriority(t *testing.T) {
 }
 
 func TestPlanSpecificDetectorBeatsGenericEntity(t *testing.T) {
-	// Citizen ID (validated detector) overlaps a generic PERSON entity span.
+	// A validated detector span (detectors report detector="pattern", spec
+	// §10) overlaps a generic PERSON entity span.
 	findings := []core.SecurityFinding{
 		finding(core.CategoryPII, "PERSON", "regex-span", 0, 0, 0, 20),
-		finding(core.CategoryPII, "TH_CITIZEN_ID", "thai-citizen-id", 0, 0, 6, 19),
+		finding(core.CategoryPII, "TH_CITIZEN_ID", "pattern", 0, 0, 6, 19),
 	}
 	plan := Plan(findings, RedactNamer)
 	if len(plan) != 1 || plan[0].Subtype != "TH_CITIZEN_ID" {

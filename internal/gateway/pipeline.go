@@ -163,8 +163,13 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 		layaStart := time.Now()
 		evidence, signals, plan, err := p.evaluateSemantic(env, all)
 		layaMS = time.Since(layaStart).Milliseconds()
-		layaInfo = &audit.LayaInfo{}
-		p.recorder.ObserveLaya(float64(layaMS), err != nil)
+		// Metrics and audit record the provider only when it was actually
+		// invoked — planner skips (fast path) mean laya_calls = 0 (AS-001,
+		// spec §15). Errors here are provider invocation failures.
+		if err != nil || evidence != nil {
+			layaInfo = &audit.LayaInfo{}
+			p.recorder.ObserveLaya(float64(layaMS), err != nil)
+		}
 		if err != nil {
 			// Provider unavailable (error or open circuit): policy-controlled
 			// fallback — high-risk routes never silently allow (AS-004,
@@ -177,16 +182,7 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 				}
 			}
 		} else if evidence != nil {
-			layaInfo.Provider = evidence.Provider
-			layaInfo.Checkpoint = evidence.Checkpoint
-			layaInfo.SchemaVersion = evidence.SchemaVersion
-			layaInfo.Route = evidence.Route
-			for id, d := range evidence.Decisions {
-				if layaInfo.Decisions == nil {
-					layaInfo.Decisions = map[string]audit.LayaDecision{}
-				}
-				layaInfo.Decisions[id] = audit.LayaDecision{Value: d.Value, Confidence: d.Confidence}
-			}
+			layaInfo = layaAuditInfo(evidence)
 		}
 		// Shadow predicts with all evidence; enforce acts only on gated,
 		// calibrated slices (rollout stage 3, ticket 11).
@@ -234,6 +230,20 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 	p.recorder.ObserveRequest(dec.Action, p.mode)
 	if p.mode == ModeShadow {
 		p.recorder.ObserveShadowDisagreement(dec.Action)
+		// FP sample: a semantic-only predicted block over content with no
+		// deterministic finding is the highest-value FP review candidate.
+		if dec.Action == core.ActionBlock || dec.Action == core.ActionReview {
+			hasDeterministic := false
+			for _, f := range all {
+				if f.Category == core.CategorySecret || f.Category == core.CategoryPII {
+					hasDeterministic = true
+					break
+				}
+			}
+			if !hasDeterministic {
+				p.recorder.ObserveFalsePositiveSample()
+			}
+		}
 	}
 	if transformed != nil {
 		switch dec.Action {
@@ -274,12 +284,6 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 	return RequestDecision{Action: dec.Action, Code: dec.Code, TransformedBody: transformed}, nil
 }
 
-// semanticEval bundles the outcome of one semantic evaluation.
-type semanticEval struct {
-	evidence *decision.DecisionEvidence
-	signals  []policy.SemanticSignal
-}
-
 // evaluateSemantic asks the configured questions for the request direction.
 // The semantic subject is the last user text (the model-bound payload); the
 // evidence is normalized by the provider adapter before this method sees it.
@@ -292,24 +296,11 @@ func (p *SecurityPipeline) evaluateSemantic(env *core.InspectionEnvelope, findin
 		return nil, nil, plan, nil
 	}
 
-	content, role := "", ""
-	for i := len(env.Messages) - 1; i >= 0; i-- {
-		if env.Messages[i].Role == core.RoleUser {
-			for _, part := range env.Messages[i].Parts {
-				if part.Type == core.PartText && part.Text != "" {
-					content = part.Text
-					break
-				}
-			}
-			if content != "" {
-				role = string(env.Messages[i].Role)
-				break
-			}
-		}
-	}
+	content := lastUserText(env)
 	if content == "" {
 		return nil, nil, plan, nil // nothing semantic to ask about
 	}
+	role := string(core.RoleUser)
 
 	direction := strings.ToLower(string(env.Direction))
 	req := decision.DecisionRequest{

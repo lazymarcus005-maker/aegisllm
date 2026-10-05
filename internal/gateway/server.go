@@ -235,8 +235,10 @@ func (s *Server) applyDecision(w http.ResponseWriter, env *core.InspectionEnvelo
 	}
 	switch dec.Action {
 	case core.ActionAllow, core.ActionRestrictTools, core.ActionForceLocalModel:
-		// RESTRICT_TOOLS / FORCE_LOCAL_MODEL enforcement lands with tickets
-		// 12 and 05; until then audit records the predicted action.
+		// RESTRICT_TOOLS carries a tools-stripped TransformedBody (T-025).
+		// FORCE_LOCAL_MODEL enforcement (local upstream routing) is a
+		// documented V1.1 deferral (see docs/mvp-dod-checklist.md); the
+		// predicted action is audited meanwhile.
 		if dec.TransformedBody != nil {
 			return dec.TransformedBody
 		}

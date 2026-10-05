@@ -22,11 +22,19 @@ type Recorder interface {
 	ObserveShadowDisagreement(predicted core.Action)
 	ObserveFallback()
 	ObserveTokens(n int, action string)
+	ObserveFalsePositiveSample()
 }
 
-// Metrics is the Prometheus implementation of Recorder (spec §15).
+// Metrics is the Prometheus implementation of Recorder (spec §15). The
+// action-specific counters (blocked/tokenized/redacted/review) are redundant
+// with requests_total{action,mode} but the spec names them explicitly, so
+// they are provided verbatim.
 type Metrics struct {
 	requestsTotal       *prometheus.CounterVec
+	blockedTotal        prometheus.Counter
+	tokenizedTotal      prometheus.Counter
+	redactedTotal       prometheus.Counter
+	reviewTotal         prometheus.Counter
 	findingsTotal       *prometheus.CounterVec
 	layaCallsTotal      prometheus.Counter
 	layaErrorsTotal     prometheus.Counter
@@ -34,8 +42,9 @@ type Metrics struct {
 	scannerLatency      prometheus.Histogram
 	securityLatency     prometheus.Histogram
 	shadowDisagreements prometheus.Counter
+	falsePositiveSample prometheus.Counter
 	fallbackTotal       prometheus.Counter
-	tokensTotal         *prometheus.CounterVec
+	transformations     *prometheus.CounterVec
 	registry            *prometheus.Registry
 }
 
@@ -44,8 +53,20 @@ func New() *Metrics {
 	reg := prometheus.NewRegistry()
 	m := &Metrics{
 		requestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "security_requests_total", Help: "Security gateway requests by action and mode.",
+			Name: "requests_total", Help: "Security gateway requests by action and mode (spec §15 requests_total).",
 		}, []string{"action", "mode"}),
+		blockedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "blocked_total", Help: "Requests whose policy action was BLOCK.",
+		}),
+		tokenizedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "tokenized_total", Help: "Requests whose policy action was TOKENIZE.",
+		}),
+		redactedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "redacted_total", Help: "Requests whose policy action was REDACT.",
+		}),
+		reviewTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "review_total", Help: "Requests whose policy action was REVIEW.",
+		}),
 		findingsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "findings_total", Help: "Security findings by category and subtype.",
 		}, []string{"category", "subtype"}),
@@ -56,31 +77,38 @@ func New() *Metrics {
 			Name: "laya_errors_total", Help: "Semantic provider failures.",
 		}),
 		layaLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name: "laya_latency_ms", Help: "Semantic provider latency (ms).",
+			Name:    "laya_latency_ms",
+			Help:    "Semantic provider latency (ms).",
 			Buckets: []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000},
 		}),
 		scannerLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name: "scanner_latency_ms", Help: "Deterministic scan latency (ms).",
+			Name:    "scanner_latency_ms",
+			Help:    "Deterministic scan latency (ms).",
 			Buckets: []float64{0.5, 1, 2, 5, 10, 25, 50, 100},
 		}),
 		securityLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name: "gateway_security_latency_ms", Help: "Total security pipeline latency excluding Laya (ms).",
+			Name:    "gateway_security_latency_ms",
+			Help:    "Total security pipeline latency excluding Laya (ms).",
 			Buckets: []float64{1, 5, 10, 25, 50, 100, 250},
 		}),
 		shadowDisagreements: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "shadow_disagreements_total", Help: "Shadow-mode requests whose predicted action differs from the incumbent path.",
 		}),
+		falsePositiveSample: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "false_positive_sample_total", Help: "Shadow-mode predicted blocks with no deterministic finding, sampled for FP review.",
+		}),
 		fallbackTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "fallback_total", Help: "Policy fallback executions (e.g. Laya unavailable).",
 		}),
-		tokensTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+		transformations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "transformations_total", Help: "Content transformations applied.",
 		}, []string{"action"}),
 		registry: reg,
 	}
-	reg.MustRegister(m.requestsTotal, m.findingsTotal, m.layaCallsTotal, m.layaErrorsTotal,
+	reg.MustRegister(m.requestsTotal, m.blockedTotal, m.tokenizedTotal, m.redactedTotal,
+		m.reviewTotal, m.findingsTotal, m.layaCallsTotal, m.layaErrorsTotal,
 		m.layaLatency, m.scannerLatency, m.securityLatency, m.shadowDisagreements,
-		m.fallbackTotal, m.tokensTotal)
+		m.falsePositiveSample, m.fallbackTotal, m.transformations)
 	return m
 }
 
@@ -91,7 +119,21 @@ func (m *Metrics) Handler() http.Handler {
 
 func (m *Metrics) ObserveRequest(action core.Action, mode string) {
 	m.requestsTotal.WithLabelValues(string(action), mode).Inc()
+	switch action {
+	case core.ActionBlock:
+		m.blockedTotal.Inc()
+	case core.ActionTokenize:
+		m.tokenizedTotal.Inc()
+	case core.ActionRedact:
+		m.redactedTotal.Inc()
+	case core.ActionReview:
+		m.reviewTotal.Inc()
+	}
 }
+
+// ObserveFalsePositiveSample records a shadow-mode predicted block with no
+// deterministic finding — the FP-review sample stream (spec §15).
+func (m *Metrics) ObserveFalsePositiveSample() { m.falsePositiveSample.Inc() }
 
 func (m *Metrics) ObserveFindings(category, subtype string) {
 	m.findingsTotal.WithLabelValues(string(category), subtype).Inc()
@@ -120,7 +162,7 @@ func (m *Metrics) ObserveFallback() { m.fallbackTotal.Inc() }
 
 func (m *Metrics) ObserveTokens(n int, action string) {
 	if n > 0 {
-		m.tokensTotal.WithLabelValues(action).Add(float64(n))
+		m.transformations.WithLabelValues(action).Add(float64(n))
 	}
 }
 
@@ -135,3 +177,4 @@ func (Noop) ObserveSecurityLatency(float64)        {}
 func (Noop) ObserveShadowDisagreement(core.Action) {}
 func (Noop) ObserveFallback()                      {}
 func (Noop) ObserveTokens(int, string)             {}
+func (Noop) ObserveFalsePositiveSample()           {}

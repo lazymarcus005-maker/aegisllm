@@ -61,11 +61,6 @@ func lowerDirection(d core.Direction) string {
 	}
 }
 
-// MaxRiskOf returns the highest risk class among question ids.
-func MaxRiskOf(ids []string, schema *QuestionSchema) string {
-	return maxRiskOf(ids, schema)
-}
-
 func maxRiskOf(ids []string, schema *QuestionSchema) string {
 	best := ""
 	for _, id := range ids {

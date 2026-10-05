@@ -120,8 +120,8 @@ func priorityRank(f core.SecurityFinding) int {
 	case core.CategorySecret:
 		return 3
 	case core.CategoryPII:
-		if f.Detector == "pattern" || f.Detector == "thai-citizen-id" || f.Detector == "credit-card" {
-			return 2
+		if f.Detector == "pattern" {
+			return 2 // validated detector spans (all pattern PII detectors)
 		}
 		return 1 // span-provider entities
 	}
