@@ -137,8 +137,8 @@ func (d *contextEntropyDetector) Detect(env *core.InspectionEnvelope) []core.Sec
 				continue
 			}
 			value := lt.Text[loc[0]:loc[1]]
-			if strings.HasPrefix(value, "eyJ") {
-				continue // JWT detector owns these; avoid double reporting
+			if hasSpecificSecretPrefix(value) {
+				continue // a specific detector owns this span; avoid double reporting
 			}
 			if shannonEntropy(value) < d.minEntropy {
 				continue
@@ -151,6 +151,17 @@ func (d *contextEntropyDetector) Detect(env *core.InspectionEnvelope) []core.Sec
 		}
 	}
 	return out
+}
+
+// hasSpecificSecretPrefix reports tokens already owned by a specific
+// detector family so the generic entropy detector does not double-report.
+func hasSpecificSecretPrefix(value string) bool {
+	for _, p := range []string{"eyJ", "glpat-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "AKIA", "ASIA", "ABIA", "ACCA"} {
+		if strings.HasPrefix(value, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func nearContext(tokenStart int, contexts [][]int, window int) bool {
