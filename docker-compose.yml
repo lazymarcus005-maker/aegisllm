@@ -24,3 +24,16 @@ services:
 #    image: redis:7-alpine
 #    ports:
 #      - "6379:6379"
+
+# Semantic decision engine — run the official laya-serve locally (FR-007).
+# Load the multilingual checkpoint for Thai/English routing and never expose
+# it publicly. Uncomment and set LAYA_URL on the gateway to enable.
+#  laya:
+#    image: laya-serve:local
+#    environment:
+#      LAYA_DEVICE: "cpu"
+#      LAYA_PRELOAD: "1"
+#      LAYA_MODELS: "multilingual"
+#      LAYA_MAX_CONCURRENT: "4"
+#    expose:
+#      - "8300"

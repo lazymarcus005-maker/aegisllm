@@ -12,6 +12,23 @@ import (
 	"github.com/aegisllm/gateway/internal/core"
 )
 
+// LayaDecision is one sanitized semantic answer.
+type LayaDecision struct {
+	Value      bool    `json:"value"`
+	Confidence float64 `json:"answer_confidence"`
+}
+
+// LayaInfo carries sanitized semantic-evidence metadata (FR-008): checkpoint,
+// question schema version, and decisions with confidences. No raw content.
+type LayaInfo struct {
+	Provider      string                  `json:"provider"`
+	Checkpoint    string                  `json:"checkpoint,omitempty"`
+	SchemaVersion string                  `json:"question_schema,omitempty"`
+	Route         string                  `json:"route,omitempty"`
+	Decisions     map[string]LayaDecision `json:"decisions,omitempty"`
+	Error         string                  `json:"error,omitempty"`
+}
+
 // Event is the sanitized audit record. Only whitelisted fields exist by
 // construction; there is no field that could accidentally carry raw content.
 type Event struct {
@@ -30,6 +47,7 @@ type Event struct {
 	FindingTypes  []string         `json:"finding_types,omitempty"`
 	FindingCount  int              `json:"finding_count,omitempty"`
 	LatencyMS     map[string]int64 `json:"latency_ms,omitempty"`
+	Laya          *LayaInfo        `json:"laya,omitempty"`
 }
 
 // Sink receives audit events.

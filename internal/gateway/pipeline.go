@@ -3,10 +3,12 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aegisllm/gateway/internal/audit"
 	"github.com/aegisllm/gateway/internal/core"
+	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/detectors"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
@@ -15,16 +17,19 @@ import (
 
 // SecurityPipeline is the production Pipeline: deterministic detection and
 // span detection feed the deterministic policy engine, transformations apply
-// per policy, and every run produces a sanitized audit event (tickets 02-06).
+// per policy, and every run produces a sanitized audit event (tickets 02-08).
 type SecurityPipeline struct {
-	registry *detectors.Registry
-	engine   *policy.Engine
-	spans    pii.SpanProvider
-	audit    audit.Sink
-	mode     string
-	vault    tokenization.Vault
-	crypto   *tokenization.Crypto
-	vaultTTL time.Duration
+	registry        *detectors.Registry
+	engine          *policy.Engine
+	spans           pii.SpanProvider
+	audit           audit.Sink
+	mode            string
+	vault           tokenization.Vault
+	crypto          *tokenization.Crypto
+	vaultTTL        time.Duration
+	provider        decision.DecisionProvider
+	questions       *decision.QuestionSchema
+	semanticEnforce bool
 }
 
 func NewSecurityPipeline(registry *detectors.Registry, engine *policy.Engine, sink audit.Sink, mode string) *SecurityPipeline {
@@ -39,6 +44,19 @@ func (p *SecurityPipeline) SetTokenStore(vault tokenization.Vault, crypto *token
 	p.vault, p.crypto, p.vaultTTL = vault, crypto, ttl
 }
 
+// SetDecisionProvider attaches the semantic engine and question schema
+// (ticket 08). Semantic evidence never enforces until calibration gates are
+// met: it feeds policy in shadow only unless EnableSemanticEnforce is set
+// (INV-010, rollout stage 2).
+func (p *SecurityPipeline) SetDecisionProvider(dp decision.DecisionProvider, qs *decision.QuestionSchema) {
+	p.provider = dp
+	p.questions = qs
+}
+
+// EnableSemanticEnforce opts into semantic enforcement for calibrated slices
+// (ticket 11). Default is false.
+func (p *SecurityPipeline) EnableSemanticEnforce() { p.semanticEnforce = true }
+
 // ProcessRequest runs the deterministic path. In shadow mode the predicted
 // action is returned and audited, but the server keeps the incumbent path
 // (FR-018). In off mode no inspection happens at all.
@@ -52,6 +70,42 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 	entityFindings := p.entityFindings(env)
 	all := append(append([]core.SecurityFinding{}, findings...), entityFindings...)
 	dec := p.engine.Evaluate(policy.Context{Envelope: env, Findings: all})
+
+	// Semantic evidence (ticket 08): called only when deterministic rules
+	// did not already produce a definitive block — a known secret never
+	// reaches Laya (SEC-002, NFR-PERF-004). Evidence feeds policy in shadow
+	// only until semantic enforcement is explicitly enabled.
+	var layaInfo *audit.LayaInfo
+	var layaMS int64
+	if p.provider != nil && p.questions != nil && dec.Action != core.ActionBlock {
+		layaStart := time.Now()
+		evidence, signals, err := p.evaluateSemantic(env)
+		layaMS = time.Since(layaStart).Milliseconds()
+		layaInfo = &audit.LayaInfo{}
+		if err != nil {
+			layaInfo.Error = "evaluation failed"
+		} else if evidence != nil {
+			layaInfo.Provider = evidence.Provider
+			layaInfo.Checkpoint = evidence.Checkpoint
+			layaInfo.SchemaVersion = evidence.SchemaVersion
+			layaInfo.Route = evidence.Route
+			for id, d := range evidence.Decisions {
+				if layaInfo.Decisions == nil {
+					layaInfo.Decisions = map[string]audit.LayaDecision{}
+				}
+				layaInfo.Decisions[id] = audit.LayaDecision{Value: d.Value, Confidence: d.Confidence}
+			}
+		}
+		// Feed evidence into the policy engine only when shadow-mode or when
+		// semantic enforcement has been enabled (rollout stage 3, ticket 11).
+		if err == nil && evidence != nil && (p.mode == ModeShadow || p.semanticEnforce) {
+			dec = p.engine.Evaluate(policy.Context{
+				Envelope: env,
+				Findings: all,
+				Semantic: signals,
+			})
+		}
+	}
 
 	var transformed []byte
 	if dec.Action == core.ActionRedact || dec.Action == core.ActionTokenize {
@@ -73,6 +127,14 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 	}
 	elapsed := time.Since(start)
 
+	latency := map[string]int64{
+		"deterministic":  elapsed.Milliseconds(),
+		"total_security": elapsed.Milliseconds(),
+	}
+	if layaMS > 0 {
+		latency["laya"] = layaMS
+	}
+
 	p.audit.Record(audit.Event{
 		RequestID:     env.RequestID,
 		Timestamp:     time.Now().UTC(),
@@ -88,13 +150,74 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 		MatchedRule:   dec.MatchedRule,
 		FindingTypes:  audit.FindingTypes(all),
 		FindingCount:  len(all),
-		LatencyMS: map[string]int64{
-			"deterministic":  elapsed.Milliseconds(),
-			"total_security": elapsed.Milliseconds(),
-		},
+		LatencyMS:     latency,
+		Laya:          layaInfo,
 	})
 
 	return RequestDecision{Action: dec.Action, Code: dec.Code, TransformedBody: transformed}, nil
+}
+
+// semanticEval bundles the outcome of one semantic evaluation.
+type semanticEval struct {
+	evidence *decision.DecisionEvidence
+	signals  []policy.SemanticSignal
+}
+
+// evaluateSemantic asks the configured questions for the request direction.
+// The semantic subject is the last user text (the model-bound payload); the
+// evidence is normalized by the provider adapter before this method sees it.
+func (p *SecurityPipeline) evaluateSemantic(env *core.InspectionEnvelope) (*decision.DecisionEvidence, []policy.SemanticSignal, error) {
+	content, role := "", ""
+	for i := len(env.Messages) - 1; i >= 0; i-- {
+		if env.Messages[i].Role == core.RoleUser {
+			for _, part := range env.Messages[i].Parts {
+				if part.Type == core.PartText && part.Text != "" {
+					content = part.Text
+					break
+				}
+			}
+			if content != "" {
+				role = string(env.Messages[i].Role)
+				break
+			}
+		}
+	}
+	if content == "" {
+		return nil, nil, nil // nothing semantic to ask about
+	}
+
+	direction := strings.ToLower(string(env.Direction))
+	questionIDs := p.questions.ForDirection(direction)
+	if len(questionIDs) == 0 {
+		return nil, nil, nil
+	}
+
+	req := decision.DecisionRequest{
+		RequestID:   env.RequestID,
+		Direction:   direction,
+		Role:        role,
+		Content:     content,
+		Application: env.Application,
+	}
+	evidence, err := p.provider.Evaluate(context.Background(), req, questionIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var signals []policy.SemanticSignal
+	for _, id := range questionIDs {
+		d, ok := evidence.Decisions[id]
+		if !ok {
+			continue
+		}
+		signals = append(signals, policy.SemanticSignal{
+			QuestionID: id,
+			Triggered:  d.Value,
+			Confidence: d.Confidence,
+			Risk:       p.questions.RiskOf(id),
+		})
+	}
+	return &evidence, signals, nil
 }
 
 // storeTokenMappings seals each transformed span's original value into the

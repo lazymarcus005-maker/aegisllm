@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/aegisllm/gateway/internal/audit"
+	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/detectors"
 	"github.com/aegisllm/gateway/internal/gateway"
 	"github.com/aegisllm/gateway/internal/pii"
@@ -59,6 +60,17 @@ func main() {
 	srv, err := gateway.NewServer(cfg, logger)
 	if err != nil {
 		logger.Error("configuration error", "error", err)
+		os.Exit(1)
+	}
+
+	// Versioned question schema (FR-009); invalid schema fails startup.
+	questionsPath := os.Getenv("QUESTIONS_FILE")
+	if questionsPath == "" {
+		questionsPath = "questions/security-v1.yaml"
+	}
+	questionSchema, err := decision.LoadQuestionsFile(questionsPath)
+	if err != nil {
+		logger.Error("question schema load failed", "path", questionsPath, "error", err)
 		os.Exit(1)
 	}
 
@@ -110,6 +122,34 @@ func main() {
 		logger.Warn("TOKEN_VAULT_REDIS_URL not set; using in-memory token vault (mappings are lost on restart)")
 	}
 	pipe.SetTokenStore(vault, crypto, vaultTTL)
+
+	// Semantic decision provider (ticket 08): local laya-serve when
+	// configured, otherwise a noop provider and no semantic calls.
+	if layaURL := os.Getenv("LAYA_URL"); layaURL != "" {
+		timeout := 5 * time.Second
+		if v := os.Getenv("LAYA_TIMEOUT"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d > 0 {
+				timeout = d
+			}
+		}
+		provider := decision.NewLayaProvider(layaURL, os.Getenv("LAYA_EVALUATE_PATH"), timeout)
+		pipe.SetDecisionProvider(provider, questionSchema)
+		srv.AddReadinessCheck("laya", func() string {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := provider.Health(ctx); err != nil {
+				return "laya-serve unreachable"
+			}
+			return ""
+		})
+		logger.Info("semantic provider enabled", "url", layaURL, "schema", "security-v1")
+	} else {
+		pipe.SetDecisionProvider(&decision.NoopProvider{}, questionSchema)
+	}
+	if os.Getenv("SECURITY_SEMANTIC_ENFORCE") == "true" {
+		// Rollout stage 3 (ticket 11): only enable together with calibration.
+		pipe.EnableSemanticEnforce()
+	}
 
 	srv.SetPipeline(pipe)
 	srv.AddReadinessCheck("policy_loaded", func() string { return "" })
