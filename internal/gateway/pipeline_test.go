@@ -86,7 +86,7 @@ func TestAS001SecretBlockedInEnforceMode(t *testing.T) {
 	if !strings.Contains(auditOut, `"mode":"enforce"`) || !strings.Contains(auditOut, `"action":"BLOCK"`) {
 		t.Fatalf("audit missing mode/action: %s", auditOut)
 	}
-	if !strings.Contains(auditOut, `"policy_version":1`) {
+	if !strings.Contains(auditOut, `"policy_version":2`) {
 		t.Fatalf("audit missing policy version: %s", auditOut)
 	}
 }
