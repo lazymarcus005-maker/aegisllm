@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -727,4 +728,110 @@ func mustQuestions(t *testing.T) *decision.QuestionSchema {
 		t.Fatal(err)
 	}
 	return qs
+}
+
+// --- ticket 09: semantic planner + failure fallback ---
+
+// AS-004: Laya unavailable on a high-risk route → policy fallback executes
+// (fail closed); the gateway does not silently allow (INV-008).
+func TestAS004LayaOutageHighRiskFallback(t *testing.T) {
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("upstream must not be called when fallback blocks")
+	})
+	pipe, sink := newRealPipeline(t, ModeEnforce)
+	pipe.SetDecisionProvider(&decision.FakeProvider{}, mustQuestions(t)) // fake never fails; use failing
+	pipe.SetDecisionProvider(&failingDecisionProvider{}, mustQuestions(t))
+	srv.SetPipeline(pipe)
+
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"what is the weather today?"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("high-risk fallback must fail closed, got %d", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(b), "LAYA_UNAVAILABLE") {
+		t.Fatalf("fallback error code missing: %s", b)
+	}
+	if !strings.Contains(sink.String(), `"matched_rule":"fallback.laya_unavailable.high_risk"`) {
+		t.Fatalf("fallback rule not audited: %s", sink.String())
+	}
+	if !strings.Contains(sink.String(), `"error":"unavailable"`) {
+		t.Fatalf("laya error not audited: %s", sink.String())
+	}
+}
+
+type failingDecisionProvider struct{}
+
+func (failingDecisionProvider) Name() string { return "failing" }
+
+func (failingDecisionProvider) Evaluate(context.Context, decision.DecisionRequest, []string) (decision.DecisionEvidence, error) {
+	return decision.DecisionEvidence{}, errors.New("connection refused")
+}
+
+// A schema with only medium-risk questions takes the deterministic_only
+// fallback branch: the deterministic decision stands.
+func TestLayaOutageLowRiskDeterministicOnly(t *testing.T) {
+	schemaOnlyMedium := &decision.QuestionSchema{
+		Schema:  "security-v1",
+		Version: 1,
+		Questions: []decision.Question{{
+			ID: "sensitive_data_intent", Version: 1, Type: "noul",
+			Question: "Sensitive data?", Directions: []string{"request"}, Risk: "medium",
+		}},
+	}
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	pipe, sink := newRealPipeline(t, ModeEnforce)
+	pipe.SetDecisionProvider(&failingDecisionProvider{}, schemaOnlyMedium)
+	srv.SetPipeline(pipe)
+
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"what is the weather today?"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("medium-risk route falls back to deterministic_only, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(sink.String(), `"action":"ALLOW"`) {
+		t.Fatalf("deterministic decision must stand: %s", sink.String())
+	}
+}
+
+// NFR-PERF-002: the gateway path excluding Laya targets p95 <= 25 ms for a
+// typical non-streaming request; measured through the full pipeline.
+func TestGatewayLatencyExcludingLaya(t *testing.T) {
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	})
+	pipe, _ := newRealPipeline(t, ModeEnforce)
+	attachVault(t, pipe)
+	srv.SetPipeline(pipe)
+
+	payload := `{"model":"m","messages":[{"role":"user","content":"` + strings.Repeat("ประโยคภาษาไทยและ english words. ", 20) + `"}]}`
+	var durations []time.Duration
+	for i := 0; i < 30; i++ {
+		start := time.Now()
+		resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		durations = append(durations, time.Since(start))
+	}
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	p95 := durations[(len(durations)*95)/100]
+	if p95 > 25*time.Millisecond {
+		t.Fatalf("p95 gateway latency %v exceeds 25ms target (excluding Laya)", p95)
+	}
+	t.Logf("p95 gateway latency excluding Laya: %v", p95)
 }

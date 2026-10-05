@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/aegisllm/gateway/internal/core"
 )
 
 const validSchema = `
@@ -155,4 +158,95 @@ func TestLayaProviderErrorSurfaces(t *testing.T) {
 			t.Log("empty question list should short-circuit without error")
 		}
 	}
+}
+
+// --- ticket 09: planner + resilience ---
+
+func TestPlannerSkipsSecrets(t *testing.T) {
+	qs, _ := LoadQuestions([]byte(validSchema))
+	p := NewPlanner(qs)
+	plan := p.Plan(core.DirectionRequest, "app", core.Target{Provider: "cloud"}, []core.SecurityFinding{
+		{Category: core.CategorySecret, Subtype: "GITLAB_PAT"},
+	})
+	if plan.Ask {
+		t.Fatal("secret findings must skip semantics (SEC-002)")
+	}
+}
+
+func TestPlannerSkipsUnconfiguredDirections(t *testing.T) {
+	qs, _ := LoadQuestions([]byte(validSchema))
+	p := NewPlanner(qs)
+	plan := p.Plan(core.DirectionResponse, "app", core.Target{}, nil)
+	if plan.Ask {
+		t.Fatal("response direction has no questions in schema v1")
+	}
+}
+
+func TestPlannerAsksForCleanRequests(t *testing.T) {
+	qs, _ := LoadQuestions([]byte(validSchema))
+	p := NewPlanner(qs)
+	plan := p.Plan(core.DirectionRequest, "app", core.Target{}, nil)
+	if !plan.Ask || len(plan.QuestionIDs) != 1 {
+		t.Fatalf("clean request should ask request questions: %+v", plan)
+	}
+	if plan.MaxRisk != "high" {
+		t.Fatalf("max risk: %s", plan.MaxRisk)
+	}
+}
+
+func TestCircuitBreakerOpensAndRecovers(t *testing.T) {
+	now := time.Unix(0, 0)
+	b := NewCircuitBreaker(3, 30*time.Second)
+	b.SetClock(func() time.Time { return now })
+
+	// Two failures: still closed.
+	b.Record(false)
+	b.Record(false)
+	if !b.Allow() {
+		t.Fatal("breaker must stay closed below threshold")
+	}
+	// Third failure opens it.
+	b.Record(false)
+	if b.Allow() {
+		t.Fatal("breaker must open at threshold")
+	}
+	// Success cannot be recorded while shedding; after cooldown it allows again.
+	now = now.Add(31 * time.Second)
+	if !b.Allow() {
+		t.Fatal("breaker must allow after cooldown")
+	}
+	b.Record(true)
+	if !b.Allow() {
+		t.Fatal("success must close the breaker")
+	}
+}
+
+func TestResilientProviderShedsAndSurfacesErrors(t *testing.T) {
+	now := time.Unix(0, 0)
+	b := NewCircuitBreaker(2, time.Minute)
+	b.SetClock(func() time.Time { return now })
+	rp := NewResilientProvider(&failingProvider{}, b)
+
+	for i := 0; i < 2; i++ {
+		if _, err := rp.Evaluate(context.Background(), DecisionRequest{}, []string{"prompt_injection"}); err == nil {
+			t.Fatal("expected provider error")
+		}
+	}
+	// Circuit open: ErrCircuitOpen, inner not called.
+	if _, err := rp.Evaluate(context.Background(), DecisionRequest{}, []string{"prompt_injection"}); !errors.Is(err, ErrCircuitOpen) {
+		t.Fatalf("expected ErrCircuitOpen, got %v", err)
+	}
+	// ResilientProvider must never turn failure into evidence.
+	ev, err := rp.Evaluate(context.Background(), DecisionRequest{}, []string{"prompt_injection"})
+	if err == nil || ev.Provider != "" {
+		t.Fatal("open circuit must not produce evidence")
+	}
+}
+
+type failingProvider struct{}
+
+func (failingProvider) Name() string { return "failing" }
+
+func (failingProvider) Evaluate(context.Context, DecisionRequest, []string) (DecisionEvidence, error) {
+	return DecisionEvidence{}, errors.New("laya down")
 }

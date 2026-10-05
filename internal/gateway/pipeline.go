@@ -29,6 +29,7 @@ type SecurityPipeline struct {
 	vaultTTL        time.Duration
 	provider        decision.DecisionProvider
 	questions       *decision.QuestionSchema
+	planner         *decision.Planner
 	semanticEnforce bool
 }
 
@@ -51,6 +52,7 @@ func (p *SecurityPipeline) SetTokenStore(vault tokenization.Vault, crypto *token
 func (p *SecurityPipeline) SetDecisionProvider(dp decision.DecisionProvider, qs *decision.QuestionSchema) {
 	p.provider = dp
 	p.questions = qs
+	p.planner = decision.NewPlanner(qs)
 }
 
 // EnableSemanticEnforce opts into semantic enforcement for calibrated slices
@@ -77,13 +79,21 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 	// only until semantic enforcement is explicitly enabled.
 	var layaInfo *audit.LayaInfo
 	var layaMS int64
-	if p.provider != nil && p.questions != nil && dec.Action != core.ActionBlock {
+	if p.provider != nil && p.planner != nil && dec.Action != core.ActionBlock {
 		layaStart := time.Now()
-		evidence, signals, err := p.evaluateSemantic(env)
+		evidence, signals, plan, err := p.evaluateSemantic(env, all)
 		layaMS = time.Since(layaStart).Milliseconds()
 		layaInfo = &audit.LayaInfo{}
 		if err != nil {
-			layaInfo.Error = "evaluation failed"
+			// Provider unavailable (error or open circuit): policy-controlled
+			// fallback — high-risk routes never silently allow (AS-004,
+			// INV-008, NFR-AVAIL-002/003).
+			layaInfo.Error = "unavailable"
+			if plan.Ask && plan.MaxRisk == "high" {
+				if fb, ok := p.engine.LayaUnavailableFallback(); ok {
+					dec = fb
+				}
+			}
 		} else if evidence != nil {
 			layaInfo.Provider = evidence.Provider
 			layaInfo.Checkpoint = evidence.Checkpoint
@@ -166,7 +176,15 @@ type semanticEval struct {
 // evaluateSemantic asks the configured questions for the request direction.
 // The semantic subject is the last user text (the model-bound payload); the
 // evidence is normalized by the provider adapter before this method sees it.
-func (p *SecurityPipeline) evaluateSemantic(env *core.InspectionEnvelope) (*decision.DecisionEvidence, []policy.SemanticSignal, error) {
+func (p *SecurityPipeline) evaluateSemantic(env *core.InspectionEnvelope, findings []core.SecurityFinding) (*decision.DecisionEvidence, []policy.SemanticSignal, decision.Plan, error) {
+	// The planner decides whether semantics are worth their latency for this
+	// request (T-016): deterministic secret findings skip Laya entirely
+	// (SEC-002), and directions without configured questions skip too.
+	plan := p.planner.Plan(env.Direction, env.Application, env.Target, findings)
+	if !plan.Ask {
+		return nil, nil, plan, nil
+	}
+
 	content, role := "", ""
 	for i := len(env.Messages) - 1; i >= 0; i-- {
 		if env.Messages[i].Role == core.RoleUser {
@@ -183,15 +201,10 @@ func (p *SecurityPipeline) evaluateSemantic(env *core.InspectionEnvelope) (*deci
 		}
 	}
 	if content == "" {
-		return nil, nil, nil // nothing semantic to ask about
+		return nil, nil, plan, nil // nothing semantic to ask about
 	}
 
 	direction := strings.ToLower(string(env.Direction))
-	questionIDs := p.questions.ForDirection(direction)
-	if len(questionIDs) == 0 {
-		return nil, nil, nil
-	}
-
 	req := decision.DecisionRequest{
 		RequestID:   env.RequestID,
 		Direction:   direction,
@@ -199,13 +212,13 @@ func (p *SecurityPipeline) evaluateSemantic(env *core.InspectionEnvelope) (*deci
 		Content:     content,
 		Application: env.Application,
 	}
-	evidence, err := p.provider.Evaluate(context.Background(), req, questionIDs)
+	evidence, err := p.provider.Evaluate(context.Background(), req, plan.QuestionIDs)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, plan, err
 	}
 
 	var signals []policy.SemanticSignal
-	for _, id := range questionIDs {
+	for _, id := range plan.QuestionIDs {
 		d, ok := evidence.Decisions[id]
 		if !ok {
 			continue
@@ -217,7 +230,7 @@ func (p *SecurityPipeline) evaluateSemantic(env *core.InspectionEnvelope) (*deci
 			Risk:       p.questions.RiskOf(id),
 		})
 	}
-	return &evidence, signals, nil
+	return &evidence, signals, plan, nil
 }
 
 // storeTokenMappings seals each transformed span's original value into the

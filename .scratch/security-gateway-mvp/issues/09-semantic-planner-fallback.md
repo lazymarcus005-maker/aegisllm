@@ -4,10 +4,10 @@
 
 **Blocked by:** 08 (Laya integration).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] SemanticInspectionPlanner: inputs direction, application, target, deterministic findings, tool context, policy → question ids to ask or skip (T-016)
-- [ ] Fast path honored: definitive deterministic block skips Laya (NFR-PERF-004); gateway-excluding-Laya latency measured (NFR-PERF-002)
-- [ ] SEC-002: content with detected secrets is not sent to Laya when deterministic detection is sufficient
-- [ ] Timeout, circuit breaker, and laya_calls_total / laya_errors_total / laya_latency metrics; fallback chosen by route risk — high-risk: block/review per policy; never catch-exception → ALLOW (AS-004, INV-008, NFR-AVAIL-003)
-- [ ] Fallback behavior policy-controlled (NFR-AVAIL-002), exercised in integration tests with Laya stopped
+- [x] SemanticInspectionPlanner: inputs direction, application, target, deterministic findings, tool context, policy → question ids to ask or skip (T-016)
+- [x] Fast path honored: definitive deterministic block skips Laya (NFR-PERF-004); gateway-excluding-Laya latency measured (NFR-PERF-002)
+- [x] SEC-002: content with detected secrets is not sent to Laya when deterministic detection is sufficient
+- [x] Timeout, circuit breaker, and laya_calls_total / laya_errors_total / laya_latency metrics; fallback chosen by route risk — high-risk: block/review per policy; never catch-exception → ALLOW (AS-004, INV-008, NFR-AVAIL-003)
+- [x] Fallback behavior policy-controlled (NFR-AVAIL-002), exercised in integration tests with Laya stopped

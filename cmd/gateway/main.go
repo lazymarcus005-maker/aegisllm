@@ -132,12 +132,14 @@ func main() {
 				timeout = d
 			}
 		}
-		provider := decision.NewLayaProvider(layaURL, os.Getenv("LAYA_EVALUATE_PATH"), timeout)
+		laya := decision.NewLayaProvider(layaURL, os.Getenv("LAYA_EVALUATE_PATH"), timeout)
+		breaker := decision.NewCircuitBreaker(3, 30*time.Second)
+		provider := decision.NewResilientProvider(laya, breaker)
 		pipe.SetDecisionProvider(provider, questionSchema)
 		srv.AddReadinessCheck("laya", func() string {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			if err := provider.Health(ctx); err != nil {
+			if err := laya.Health(ctx); err != nil {
 				return "laya-serve unreachable"
 			}
 			return ""

@@ -273,6 +273,27 @@ func (e *Engine) bestSemantic(signals []SemanticSignal) (Decision, bool) {
 	}, true
 }
 
+// LayaUnavailableFallback returns the policy-controlled action for a
+// high-risk route when the semantic engine is unavailable (architecture §16,
+// AS-004, NFR-AVAIL-003): a Laya failure must never silently become ALLOW.
+func (e *Engine) LayaUnavailableFallback() (Decision, bool) {
+	if e.policy.Fallback == nil {
+		return Decision{}, false
+	}
+	f := e.policy.Fallback.LayaUnavailable
+	if f.HighRisk.Action == "" {
+		return Decision{}, false
+	}
+	return Decision{
+		Action:        f.HighRisk.Action,
+		PolicyID:      e.policy.ID,
+		PolicyVersion: e.policy.Version,
+		MatchedRule:   "fallback.laya_unavailable.high_risk",
+		Code:          "LAYA_UNAVAILABLE",
+		Reason:        "semantic engine unavailable on a high-risk route; policy fallback applied",
+	}, true
+}
+
 // better reports whether candidate (id, action) should replace the current
 // best: more severe action wins, ties go to the lexicographically smaller id.
 func better(id string, action core.Action, bestID string, bestAction core.Action) bool {
