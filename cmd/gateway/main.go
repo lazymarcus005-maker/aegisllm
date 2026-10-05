@@ -11,18 +11,40 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aegisllm/gateway/internal/audit"
+	"github.com/aegisllm/gateway/internal/detectors"
 	"github.com/aegisllm/gateway/internal/gateway"
+	"github.com/aegisllm/gateway/internal/policy"
 )
 
 func main() {
 	logger := newLogger()
 	cfg := gateway.LoadConfig()
 
+	// Invalid policy fails startup (T-010).
+	policyPath := os.Getenv("POLICY_FILE")
+	if policyPath == "" {
+		policyPath = "policies/enterprise-default.yaml"
+	}
+	pol, err := policy.LoadFile(policyPath)
+	if err != nil {
+		logger.Error("policy load failed", "path", policyPath, "error", err)
+		os.Exit(1)
+	}
+
 	srv, err := gateway.NewServer(cfg, logger)
 	if err != nil {
 		logger.Error("configuration error", "error", err)
 		os.Exit(1)
 	}
+
+	registry := detectors.NewRegistry(nil)
+	for _, d := range detectors.SecretDetectors(os.Getenv("TELEMETRY_HMAC_KEY")) {
+		registry.Register(d)
+	}
+	sink := audit.NewWriterSink(os.Stdout)
+	srv.SetPipeline(gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink, cfg.SecurityMode))
+	srv.AddReadinessCheck("policy_loaded", func() string { return "" })
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,

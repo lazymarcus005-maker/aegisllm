@@ -28,10 +28,12 @@ type Pipeline interface {
 
 // Server is the OpenAI-compatible security gateway HTTP server (FR-001).
 type Server struct {
-	cfg      Config
-	proxy    *Proxy
-	pipeline Pipeline
-	logger   *slog.Logger
+	cfg        Config
+	proxy      *Proxy
+	pipeline   Pipeline
+	logger     *slog.Logger
+	readyFns   map[string]func() string
+	readyOrder []string
 }
 
 // NewServer validates configuration and builds the server.
@@ -48,11 +50,20 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, proxy: proxy, logger: logger}, nil
+	return &Server{cfg: cfg, proxy: proxy, logger: logger, readyFns: map[string]func() string{}}, nil
 }
 
 // SetPipeline attaches the security pipeline (ticket 02+).
 func (s *Server) SetPipeline(p Pipeline) { s.pipeline = p }
+
+// AddReadinessCheck registers a named readiness probe; a non-empty return
+// string is the failure reason surfaced by /ready (FR-020).
+func (s *Server) AddReadinessCheck(name string, fn func() string) {
+	if _, ok := s.readyFns[name]; !ok {
+		s.readyOrder = append(s.readyOrder, name)
+	}
+	s.readyFns[name] = fn
+}
 
 // Handler returns the routed HTTP handler.
 func (s *Server) Handler() http.Handler {
@@ -71,6 +82,12 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 	if reason := s.readyCheck(); reason != "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": reason})
 		return
+	}
+	for _, name := range s.readyOrder {
+		if reason := s.readyFns[name](); reason != "" {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": name + ": " + reason})
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }

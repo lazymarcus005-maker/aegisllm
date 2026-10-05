@@ -1,0 +1,20 @@
+# enterprise-default policy (spec §8, ticket-02 schema scope)
+id: enterprise-default
+version: 1
+owner: security-team
+effective_date: "2026-10-05"
+
+default:
+  action: allow
+
+secrets:
+  GITLAB_PAT:
+    action: block
+  GITHUB_TOKEN:
+    action: block
+  PEM_PRIVATE_KEY:
+    action: block
+  JWT:
+    action: block
+  BEARER_TOKEN:
+    action: block

@@ -4,12 +4,12 @@
 
 **Blocked by:** 01 (scaffold + pass-through proxy).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Detector framework: Detector.detect(envelope) → findings, DetectorRegistry, per-detector timing hook; each detector independently testable
-- [ ] Secret detectors for GitLab PAT, GitHub token, PEM private key, JWT, bearer token with positive and negative corpora; detected value never stored or logged
-- [ ] Policy-as-code YAML with id, version, owner, effective date, rules; invalid policy fails startup and readiness
-- [ ] PolicyEngine evaluates findings → PolicyDecision deterministically; precedence at minimum: secret block > default
-- [ ] Enforce mode returns the spec §9 security_policy_violation error (code SECRET_DETECTED, request_id, no secret echoed) and makes zero upstream calls and zero Laya calls where the deterministic block is conclusive (AS-001)
-- [ ] Shadow mode: findings computed, policy evaluated, predicted_action + mode=shadow audited, production traffic unmodified (AS-006)
-- [ ] Sanitized audit event carries finding types and value hashes only; tests inject passwords/PATs/JWTs/citizen IDs/phones and assert they never appear in serialized audit output or logs
+- [x] Detector framework: Detector.detect(envelope) → findings, DetectorRegistry, per-detector timing hook; each detector independently testable
+- [x] Secret detectors for GitLab PAT, GitHub token, PEM private key, JWT, bearer token with positive and negative corpora; detected value never stored or logged
+- [x] Policy-as-code YAML with id, version, owner, effective date, rules; invalid policy fails startup and readiness
+- [x] PolicyEngine evaluates findings → PolicyDecision deterministically; precedence at minimum: secret block > default
+- [x] Enforce mode returns the spec §9 security_policy_violation error (code SECRET_DETECTED, request_id, no secret echoed) and makes zero upstream calls and zero Laya calls where the deterministic block is conclusive (AS-001)
+- [x] Shadow mode: findings computed, policy evaluated, predicted_action + mode=shadow audited, production traffic unmodified (AS-006)
+- [x] Sanitized audit event carries finding types and value hashes only; tests inject passwords/PATs/JWTs/citizen IDs/phones and assert they never appear in serialized audit output or logs
