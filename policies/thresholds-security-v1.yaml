@@ -1,0 +1,49 @@
+# Semantic threshold policy (ticket 11, architecture §7.4)
+#
+# Records below are STRUCTURE with evaluated:false — the mechanism is
+# delivered and covered by tests, but the thresholds MUST be re-derived
+# against a real laya-serve run (evaltool -provider laya -calibrate) and the
+# records flipped to evaluated:true before any semantic enforcement goes
+# live (rollout stage 3, INV-010).
+id: semantic-thresholds-security-v1
+version: 1
+owner: security-team
+effective_date: "2026-10-05"
+
+question_schema: security-v1
+checkpoint: multilingual
+checkpoint_revision: ""
+dataset_version: "security-v1-2026-10-05"
+dataset_sha256: ""
+calibration_method: held-out-quantile-fpr
+target_false_positive_rate: 0.05
+
+thresholds:
+  - question: prompt_injection
+    language: th
+    min_confidence: 0.00
+    evaluated: false
+  - question: prompt_injection
+    language: en
+    min_confidence: 0.00
+    evaluated: false
+  - question: system_prompt_extraction
+    language: en
+    min_confidence: 0.00
+    evaluated: false
+  - question: credential_exfiltration
+    language: th
+    min_confidence: 0.00
+    evaluated: false
+  - question: credential_exfiltration
+    language: en
+    min_confidence: 0.00
+    evaluated: false
+  - question: policy_bypass_intent
+    language: en
+    min_confidence: 0.00
+    evaluated: false
+  - question: unsafe_tool_intent
+    language: en
+    min_confidence: 0.00
+    evaluated: false

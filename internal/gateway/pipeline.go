@@ -30,6 +30,7 @@ type SecurityPipeline struct {
 	provider        decision.DecisionProvider
 	questions       *decision.QuestionSchema
 	planner         *decision.Planner
+	thresholds      *policy.SemanticThresholds
 	semanticEnforce bool
 }
 
@@ -58,6 +59,70 @@ func (p *SecurityPipeline) SetDecisionProvider(dp decision.DecisionProvider, qs 
 // EnableSemanticEnforce opts into semantic enforcement for calibrated slices
 // (ticket 11). Default is false.
 func (p *SecurityPipeline) EnableSemanticEnforce() { p.semanticEnforce = true }
+
+// SetSemanticThresholds attaches the calibrated threshold policy (ticket 11).
+// Without it, no semantic slice is eligible for enforcement.
+func (p *SecurityPipeline) SetSemanticThresholds(t *policy.SemanticThresholds) { p.thresholds = t }
+
+// languageOf classifies request text into the schema's language slices.
+func languageOf(text string) string {
+	var thai, latin int
+	for _, r := range text {
+		switch {
+		case r >= 0x0E00 && r <= 0x0E7F:
+			thai++
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+			latin++
+		}
+	}
+	switch {
+	case thai > 0 && latin > 0:
+		return "mixed"
+	case thai > 0:
+		return "th"
+	default:
+		return "en"
+	}
+}
+
+// gateSignals keeps only signals whose question has an evaluated threshold
+// record matching this traffic slice AND whose confidence clears the fitted
+// threshold (INV-010). Without a threshold policy nothing enforces.
+func (p *SecurityPipeline) gateSignals(env *core.InspectionEnvelope, signals []policy.SemanticSignal, evidence decision.DecisionEvidence) []policy.SemanticSignal {
+	if p.thresholds == nil {
+		return nil
+	}
+	lang := languageOf(lastUserText(env))
+	var gated []policy.SemanticSignal
+	for _, sig := range signals {
+		if !sig.Triggered {
+			continue
+		}
+		rec, ok := p.thresholds.Match(sig.QuestionID, lang, env.Application, evidence.Provider)
+		if !ok || !rec.Evaluated {
+			continue // slice not evaluated: evidence only, never enforcement
+		}
+		if sig.Confidence < rec.MinConfidence {
+			continue
+		}
+		gated = append(gated, sig)
+	}
+	return gated
+}
+
+func lastUserText(env *core.InspectionEnvelope) string {
+	for i := len(env.Messages) - 1; i >= 0; i-- {
+		if env.Messages[i].Role != core.RoleUser {
+			continue
+		}
+		for _, part := range env.Messages[i].Parts {
+			if part.Type == core.PartText && part.Text != "" {
+				return part.Text
+			}
+		}
+	}
+	return ""
+}
 
 // ProcessRequest runs the deterministic path. In shadow mode the predicted
 // action is returned and audited, but the server keeps the incumbent path
@@ -106,14 +171,17 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 				layaInfo.Decisions[id] = audit.LayaDecision{Value: d.Value, Confidence: d.Confidence}
 			}
 		}
-		// Feed evidence into the policy engine only when shadow-mode or when
-		// semantic enforcement has been enabled (rollout stage 3, ticket 11).
-		if err == nil && evidence != nil && (p.mode == ModeShadow || p.semanticEnforce) {
-			dec = p.engine.Evaluate(policy.Context{
-				Envelope: env,
-				Findings: all,
-				Semantic: signals,
-			})
+		// Shadow predicts with all evidence; enforce acts only on gated,
+		// calibrated slices (rollout stage 3, ticket 11).
+		if err == nil && evidence != nil {
+			switch {
+			case p.mode == ModeShadow:
+				dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: all, Semantic: signals})
+			case p.semanticEnforce:
+				if gated := p.gateSignals(env, signals, *evidence); len(gated) > 0 {
+					dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: all, Semantic: gated})
+				}
+			}
 		}
 	}
 

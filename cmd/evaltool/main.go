@@ -28,6 +28,10 @@ func main() {
 	layaURL := flag.String("url", "http://localhost:8300", "laya-serve URL (provider=laya)")
 	baselinePath := flag.String("baseline", "", "write baseline JSON here")
 	reportPath := flag.String("report", "", "write markdown report here")
+	calibrate := flag.Bool("calibrate", false, "fit thresholds against the dataset and print YAML records")
+	comparePath := flag.String("compare", "", "compare the fresh run against this baseline (regression gate)")
+	tolerance := flag.Float64("tolerance", 0.05, "regression tolerance fraction for -compare")
+	targetFPR := flag.Float64("target-fpr", 0.05, "target false-positive rate for -calibrate")
 	flag.Parse()
 
 	if *generate {
@@ -81,6 +85,39 @@ func main() {
 	}
 	baseline.Deterministic = evals.RunDeterministic(rows, registry)
 	baseline.Semantic = evals.RunSemantic(rows, provider, allQuestionIDs(qs))
+
+	if *comparePath != "" {
+		oldData, err := os.ReadFile(*comparePath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		oldBase, err := evals.UnmarshalBaseline(oldData)
+		if err != nil {
+			log.Fatal(err)
+		}
+		violations := evals.CompareBaseline(*oldBase, baseline, *tolerance)
+		if len(violations) > 0 {
+			fmt.Fprintln(os.Stderr, "REGRESSIONS DETECTED:")
+			for _, v := range violations {
+				fmt.Fprintln(os.Stderr, "  -", v)
+			}
+			os.Exit(1)
+		}
+		fmt.Printf("no regressions vs %s (tolerance %.2f)\n", *comparePath, *tolerance)
+	}
+
+	if *calibrate {
+		records, err := evals.Calibrate(rows, provider, allQuestionIDs(qs), *targetFPR)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("# fitted threshold records (review, set provenance, flip evaluated where justified)")
+		for _, r := range records {
+			fmt.Printf("  - question: %s\n    language: %s\n    min_confidence: %.3f\n    evaluated: %t\n",
+				r.Question, r.Language, r.MinConfidence, r.Evaluated)
+		}
+		return
+	}
 
 	out, err := evals.MarshalBaseline(baseline)
 	if err != nil {

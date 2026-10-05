@@ -152,6 +152,20 @@ func main() {
 		// Rollout stage 3 (ticket 11): only enable together with calibration.
 		pipe.EnableSemanticEnforce()
 	}
+	// Threshold policy (ticket 11): required for semantic enforcement;
+	// invalid threshold policy fails startup.
+	thresholdsPath := os.Getenv("THRESHOLDS_FILE")
+	if thresholdsPath == "" {
+		thresholdsPath = "policies/thresholds-security-v1.yaml"
+	}
+	if _, err := os.Stat(thresholdsPath); err == nil {
+		thresholds, err := policy.LoadSemanticThresholdsFile(thresholdsPath)
+		if err != nil {
+			logger.Error("threshold policy load failed", "path", thresholdsPath, "error", err)
+			os.Exit(1)
+		}
+		pipe.SetSemanticThresholds(thresholds)
+	}
 
 	srv.SetPipeline(pipe)
 	srv.AddReadinessCheck("policy_loaded", func() string { return "" })

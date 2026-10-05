@@ -245,3 +245,12 @@ func MarshalBaseline(b Baseline) ([]byte, error) {
 	}
 	return append(data, '\n'), nil
 }
+
+// UnmarshalBaseline reads a baseline artifact from JSON.
+func UnmarshalBaseline(data []byte) (*Baseline, error) {
+	var b Baseline
+	if err := json.Unmarshal(data, &b); err != nil {
+		return nil, err
+	}
+	return &b, nil
+}

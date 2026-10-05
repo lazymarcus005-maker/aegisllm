@@ -19,3 +19,15 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: Test
         run: go test ./...
+  eval-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Run evaluation and compare against committed baseline
+        run: |
+          go run ./cmd/evaltool -provider noop -baseline /tmp/current.json
+          go run ./cmd/evaltool -provider noop -baseline /tmp/current.json \
+            -compare evals/baselines/security-v1-noop.json -tolerance 0.05
