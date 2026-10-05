@@ -1,6 +1,6 @@
-# enterprise-default policy (spec §8; ticket-04 schema scope)
+# enterprise-default policy (spec §8; ticket-05 schema scope)
 id: enterprise-default
-version: 3
+version: 4
 owner: security-team
 effective_date: "2026-10-05"
 
@@ -10,7 +10,7 @@ default:
 # Provider-boundary baseline for confidential data (precedence level 5).
 targets:
   cloud:
-    confidential_data: tokenize
+    confidential_data: redact
   local:
     confidential_data: allow
 
@@ -35,21 +35,21 @@ pii:
   TH_CITIZEN_ID:
     providers:
       cloud:
-        action: tokenize
+        action: redact
       local:
         action: allow
   PHONE_NUMBER:
     providers:
       cloud:
-        action: tokenize
+        action: redact
   EMAIL:
     providers:
       cloud:
-        action: tokenize
+        action: redact
   CREDIT_CARD:
     providers:
       cloud:
-        action: tokenize
+        action: redact
 
 # Semantic risk policy (precedence level 7; tickets 08-11 consume).
 semantic:

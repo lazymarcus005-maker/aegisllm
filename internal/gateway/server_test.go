@@ -29,6 +29,10 @@ func newTestGateway(t *testing.T, mutate func(*Config), upstream http.HandlerFun
 		MaxBodyBytes:          1 << 20,
 		SecurityMode:          ModeOff,
 		DefaultTargetProvider: "cloud",
+		HeaderApplication:     "X-Application-Id",
+		HeaderTenant:          "X-Tenant-Id",
+		HeaderUser:            "X-User-Id",
+		HeaderTargetProvider:  "X-Target-Provider",
 	}
 	if mutate != nil {
 		mutate(&cfg)

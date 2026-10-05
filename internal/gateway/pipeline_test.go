@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/aegisllm/gateway/internal/audit"
 	"github.com/aegisllm/gateway/internal/detectors"
+	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
 )
 
@@ -24,8 +26,13 @@ func newRealPipeline(t *testing.T, mode string) (*SecurityPipeline, *bytesBuffer
 	for _, d := range detectors.SecretDetectors("test-telemetry-key") {
 		registry.Register(d)
 	}
+	for _, d := range detectors.PiiDetectors("test-telemetry-key") {
+		registry.Register(d)
+	}
 	sink := &bytesBufferSink{}
-	return NewSecurityPipeline(registry, policy.NewEngine(pol), sink, mode), sink
+	pipe := NewSecurityPipeline(registry, policy.NewEngine(pol), sink, mode)
+	pipe.SetSpanProvider(pii.NewCompositeSpanProvider(pii.NewRegexSpanProvider()))
+	return pipe, sink
 }
 
 type bytesBufferSink struct {
@@ -86,7 +93,7 @@ func TestAS001SecretBlockedInEnforceMode(t *testing.T) {
 	if !strings.Contains(auditOut, `"mode":"enforce"`) || !strings.Contains(auditOut, `"action":"BLOCK"`) {
 		t.Fatalf("audit missing mode/action: %s", auditOut)
 	}
-	if !strings.Contains(auditOut, `"policy_version":3`) {
+	if !strings.Contains(auditOut, `"policy_version":4`) {
 		t.Fatalf("audit missing policy version: %s", auditOut)
 	}
 }
@@ -187,5 +194,83 @@ func TestGatewayLogsCarryNoSecret(t *testing.T) {
 
 	if strings.Contains(logBuf.String(), "glpat-Abc123Xyz") {
 		t.Fatal("raw secret leaked into server logs")
+	}
+}
+
+// Thai request containing a checksum-valid synthetic citizen ID, a phone, and
+// an honorific name, headed for a cloud target.
+const thaiPIIRequest = `{"model":"m","messages":[{"role":"user","content":"ลูกค้าชื่อ นายสมชาย ใจดี โทร 0812345678 เลขบัตร 1234567890121 ค่ะ"}]}`
+
+// AS-002 (redact variant, ticket 05): cloud-bound Thai PII arrives upstream
+// redacted; audit records finding types without raw values.
+func TestAS002ThaiPIIRedactedForCloud(t *testing.T) {
+	var upstreamBody string
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		upstreamBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	pipe, sink := newRealPipeline(t, ModeEnforce)
+	srv.SetPipeline(pipe)
+
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(thaiPIIRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+
+	for _, raw := range []string{"0812345678", "1234567890121", "สมชาย"} {
+		if strings.Contains(upstreamBody, raw) {
+			t.Fatalf("raw PII %q reached the upstream: %s", raw, upstreamBody)
+		}
+	}
+	for _, want := range []string{"[REDACTED:TH_CITIZEN_ID]", "[REDACTED:PHONE_NUMBER]", "[REDACTED:PERSON]"} {
+		if !strings.Contains(upstreamBody, want) {
+			t.Fatalf("expected %s in upstream body: %s", want, upstreamBody)
+		}
+	}
+
+	auditOut := sink.String()
+	if !strings.Contains(auditOut, `"action":"REDACT"`) {
+		t.Fatalf("expected REDACT audit: %s", auditOut)
+	}
+	for _, leak := range []string{"0812345678", "1234567890121", "สมชาย"} {
+		if strings.Contains(auditOut, leak) {
+			t.Fatalf("raw PII %q leaked into audit", leak)
+		}
+	}
+}
+
+// UC-003: governed PII to a local model is allowed without transformation.
+func TestUC003LocalModelAllowsPII(t *testing.T) {
+	var upstreamBody string
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		upstreamBody = string(b)
+		w.WriteHeader(http.StatusOK)
+	})
+	pipe, sink := newRealPipeline(t, ModeEnforce)
+	srv.SetPipeline(pipe)
+
+	req, _ := http.NewRequest("POST", gw.URL+"/v1/chat/completions", strings.NewReader(thaiPIIRequest))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Target-Provider", "local")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	if !strings.Contains(upstreamBody, "0812345678") {
+		t.Fatalf("local model policy must allow PII through: %s", upstreamBody)
+	}
+	if !strings.Contains(sink.String(), `"action":"ALLOW"`) || !strings.Contains(sink.String(), "TH_CITIZEN_ID") {
+		t.Fatalf("audit must record allowed finding types: %s", sink.String())
 	}
 }

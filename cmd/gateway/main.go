@@ -14,6 +14,7 @@ import (
 	"github.com/aegisllm/gateway/internal/audit"
 	"github.com/aegisllm/gateway/internal/detectors"
 	"github.com/aegisllm/gateway/internal/gateway"
+	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
 )
 
@@ -46,7 +47,9 @@ func main() {
 		registry.Register(d)
 	}
 	sink := audit.NewWriterSink(os.Stdout)
-	srv.SetPipeline(gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink, cfg.SecurityMode))
+	pipe := gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink, cfg.SecurityMode)
+	pipe.SetSpanProvider(pii.NewCompositeSpanProvider(pii.NewRegexSpanProvider()))
+	srv.SetPipeline(pipe)
 	srv.AddReadinessCheck("policy_loaded", func() string { return "" })
 
 	httpServer := &http.Server{

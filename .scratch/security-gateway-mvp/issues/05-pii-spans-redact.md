@@ -4,10 +4,10 @@
 
 **Blocked by:** 03 (PII-transformation layer of the precedence chain), 04 (PII detectors).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] PiiSpanProvider interface with RegexSpanProvider and CompositeSpanProvider adapters; Laya explicitly excluded from this interface (FR-006)
-- [ ] Exact spans produced for person names and addresses where regex recognizers exist (e.g. Thai honorific patterns); Presidio/NER adapter deferred, interface ready for it
-- [ ] Transformation planner converts findings + spans into non-overlapping transformations with deterministic precedence: more specific detector > generic, longer validated span > shorter ambiguous, secret > PII
-- [ ] PII transformation policy resolves per provider (cloud → redact, local → allow) through the policy engine, not ad-hoc code
-- [ ] End-to-end REDACT: AS-002 variant — upstream receives redacted content; audit records finding types (TH_CITIZEN_ID, PHONE_NUMBER) with no raw values
+- [x] PiiSpanProvider interface with RegexSpanProvider and CompositeSpanProvider adapters; Laya explicitly excluded from this interface (FR-006)
+- [x] Exact spans produced for person names and addresses where regex recognizers exist (e.g. Thai honorific patterns); Presidio/NER adapter deferred, interface ready for it
+- [x] Transformation planner converts findings + spans into non-overlapping transformations with deterministic precedence: more specific detector > generic, longer validated span > shorter ambiguous, secret > PII
+- [x] PII transformation policy resolves per provider (cloud → redact, local → allow) through the policy engine, not ad-hoc code
+- [x] End-to-end REDACT: AS-002 variant — upstream receives redacted content; audit records finding types (TH_CITIZEN_ID, PHONE_NUMBER) with no raw values
