@@ -10,6 +10,7 @@ import (
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/detectors"
+	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
 	"github.com/aegisllm/gateway/internal/tokenization"
@@ -32,11 +33,16 @@ type SecurityPipeline struct {
 	planner         *decision.Planner
 	thresholds      *policy.SemanticThresholds
 	semanticEnforce bool
+	recorder        observability.Recorder
 }
 
 func NewSecurityPipeline(registry *detectors.Registry, engine *policy.Engine, sink audit.Sink, mode string) *SecurityPipeline {
-	return &SecurityPipeline{registry: registry, engine: engine, audit: sink, mode: mode}
+	return &SecurityPipeline{registry: registry, engine: engine, audit: sink, mode: mode, recorder: observability.Noop{}}
 }
+
+// SetRecorder attaches the metrics recorder (ticket 13). Never receives raw
+// content — only actions, categories, and latencies.
+func (p *SecurityPipeline) SetRecorder(r observability.Recorder) { p.recorder = r }
 
 // SetSpanProvider attaches span-oriented PII detection (ticket 05).
 func (p *SecurityPipeline) SetSpanProvider(sp pii.SpanProvider) { p.spans = sp }
@@ -134,8 +140,17 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 
 	start := time.Now()
 	findings := p.registry.RunAll(env)
+	p.recorder.ObserveScanner(float64(time.Since(start).Microseconds()) / 1000.0)
 	entityFindings := p.entityFindings(env)
 	all := append(append([]core.SecurityFinding{}, findings...), entityFindings...)
+	seenTypes := map[string]bool{}
+	for _, f := range all {
+		key := string(f.Category) + "/" + f.Subtype
+		if !seenTypes[key] {
+			seenTypes[key] = true
+			p.recorder.ObserveFindings(string(f.Category), f.Subtype)
+		}
+	}
 	dec := p.engine.Evaluate(policy.Context{Envelope: env, Findings: all})
 
 	// Semantic evidence (ticket 08): called only when deterministic rules
@@ -149,6 +164,7 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 		evidence, signals, plan, err := p.evaluateSemantic(env, all)
 		layaMS = time.Since(layaStart).Milliseconds()
 		layaInfo = &audit.LayaInfo{}
+		p.recorder.ObserveLaya(float64(layaMS), err != nil)
 		if err != nil {
 			// Provider unavailable (error or open circuit): policy-controlled
 			// fallback — high-risk routes never silently allow (AS-004,
@@ -157,6 +173,7 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 			if plan.Ask && plan.MaxRisk == "high" {
 				if fb, ok := p.engine.LayaUnavailableFallback(); ok {
 					dec = fb
+					p.recorder.ObserveFallback()
 				}
 			}
 		} else if evidence != nil {
@@ -213,6 +230,19 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 		transformed = body
 	}
 	elapsed := time.Since(start)
+	p.recorder.ObserveSecurityLatency(float64(elapsed.Microseconds()) / 1000.0)
+	p.recorder.ObserveRequest(dec.Action, p.mode)
+	if p.mode == ModeShadow {
+		p.recorder.ObserveShadowDisagreement(dec.Action)
+	}
+	if transformed != nil {
+		switch dec.Action {
+		case core.ActionTokenize:
+			p.recorder.ObserveTokens(strings.Count(string(transformed), "<"), "tokenize")
+		case core.ActionRedact:
+			p.recorder.ObserveTokens(strings.Count(string(transformed), "[REDACTED:"), "redact")
+		}
+	}
 
 	latency := map[string]int64{
 		"deterministic":  elapsed.Milliseconds(),

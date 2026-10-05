@@ -7,10 +7,16 @@ services:
       LISTEN_ADDR: ":8080"
       UPSTREAM_BASE_URL: "http://mock-upstream:9090"
       UPSTREAM_AUTH_MODE: "none"
-      SECURITY_MODE: "off"
+      SECURITY_MODE: "shadow"
       LOG_LEVEL: "info"
+      POLICY_FILE: "policies/enterprise-default.yaml"
+      QUESTIONS_FILE: "questions/security-v1.yaml"
+      THRESHOLDS_FILE: "policies/thresholds-security-v1.yaml"
+      TOKEN_VAULT_REDIS_URL: "redis://redis-token-store:6379/0"
+      # TOKEN_VAULT_KEY: inject a 64-hex-char key via secret manager in production
     depends_on:
       - mock-upstream
+      - redis-token-store
 
   mock-upstream:
     build:
@@ -19,11 +25,18 @@ services:
     ports:
       - "9090:9090"
 
-# Added by ticket 06 — enable by uncommenting and wiring TOKEN_VAULT_REDIS_URL.
-#  redis-token-store:
-#    image: redis:7-alpine
-#    ports:
-#      - "6379:6379"
+  redis-token-store:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
 # Semantic decision engine — run the official laya-serve locally (FR-007).
 # Load the multilingual checkpoint for Thai/English routing and never expose

@@ -4,12 +4,12 @@
 
 **Blocked by:** 11 (semantic enforcement), 12 (tool inspection).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] /metrics exposes the spec §15 set including findings_total{category,subtype}, laya_calls_total / laya_errors_total / laya_latency_ms, scanner_latency_ms, gateway_security_latency_ms, shadow_disagreements_total, fallback_total
-- [ ] Trace attributes per spec §15 (request_id, application, policy_version, mode, provider, model, laya_checkpoint, question_schema, action, finding_types) with no raw sensitive values
-- [ ] Security test corpus: encoded/split secrets, Unicode homoglyphs, case variations, JSON and tool-argument nesting, oversized payloads, Laya outage, policy corruption (handoff §12)
-- [ ] Golden request suite consolidated: representative requests with expected findings, policy action, transformed request
-- [ ] docs/threat-model.md covering the handoff §14 checklist and reviewed; docs/operations.md written
-- [ ] Full compose stack (gateway, laya, redis token store, mock upstream, prometheus optional); .env.example; README
-- [ ] Repo-wide check: no raw secret appears in any test log; spec §18 MVP Definition of Done audited item by item with evidence links
+- [x] /metrics exposes the spec §15 set including findings_total{category,subtype}, laya_calls_total / laya_errors_total / laya_latency_ms, scanner_latency_ms, gateway_security_latency_ms, shadow_disagreements_total, fallback_total
+- [x] Trace attributes per spec §15 (request_id, application, policy_version, mode, provider, model, laya_checkpoint, question_schema, action, finding_types) with no raw sensitive values
+- [x] Security test corpus: encoded/split secrets, Unicode homoglyphs, case variations, JSON and tool-argument nesting, oversized payloads, Laya outage, policy corruption (handoff §12)
+- [x] Golden request suite consolidated: representative requests with expected findings, policy action, transformed request
+- [x] docs/threat-model.md covering the handoff §14 checklist and reviewed; docs/operations.md written
+- [x] Full compose stack (gateway, laya, redis token store, mock upstream, prometheus optional); .env.example; README
+- [x] Repo-wide check: no raw secret appears in any test log; spec §18 MVP Definition of Done audited item by item with evidence links

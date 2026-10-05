@@ -37,6 +37,7 @@ type Server struct {
 	logger     *slog.Logger
 	readyFns   map[string]func() string
 	readyOrder []string
+	metrics    http.Handler
 }
 
 // NewServer validates configuration and builds the server.
@@ -59,6 +60,9 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 // SetPipeline attaches the security pipeline (ticket 02+).
 func (s *Server) SetPipeline(p Pipeline) { s.pipeline = p }
 
+// SetMetricsHandler mounts a handler at GET /metrics (spec §15).
+func (s *Server) SetMetricsHandler(h http.Handler) { s.metrics = h }
+
 // AddReadinessCheck registers a named readiness probe; a non-empty return
 // string is the failure reason surfaced by /ready (FR-020).
 func (s *Server) AddReadinessCheck(name string, fn func() string) {
@@ -74,6 +78,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /ready", s.handleReady)
+	if s.metrics != nil {
+		mux.Handle("GET /metrics", s.metrics)
+	}
 	return mux
 }
 

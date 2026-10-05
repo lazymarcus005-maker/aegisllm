@@ -74,6 +74,26 @@ tests/                cross-package test corpora (golden/security/integration)
 docs/                 spec, architecture, handoff, threat model, ADRs
 ```
 
+## Observability
+
+`GET /metrics` exposes the Prometheus metric set from spec §15:
+`security_requests_total{action,mode}`, `findings_total{category,subtype}`,
+`laya_calls_total` / `laya_errors_total` / `laya_latency_ms`,
+`scanner_latency_ms`, `gateway_security_latency_ms`,
+`shadow_disagreements_total`, `fallback_total`, `transformations_total`.
+Docker Compose includes a Prometheus scraping the gateway; see
+[docs/operations.md](docs/operations.md) for runbook guidance.
+
+## Documentation
+
+- [docs/spec.md](docs/spec.md) — requirements (FR/NFR/UC/AS)
+- [docs/architecture.md](docs/architecture.md) — design and trust boundaries
+- [docs/implement.handoff.md](docs/implement.handoff.md) — delivery plan
+- [docs/threat-model.md](docs/threat-model.md) — threats, controls, residual risk
+- [docs/operations.md](docs/operations.md) — runbook
+- [docs/mvp-dod-checklist.md](docs/mvp-dod-checklist.md) — DoD audit with evidence
+- [docs/adr/](docs/adr/) — architecture decision records
+
 ## Development
 
 ```bash

@@ -45,6 +45,7 @@ func ParseChatCompletionsResponse(raw []byte) (*core.InspectionEnvelope, error) 
 				ToolCallID: tc.ID,
 				ToolName:   tc.Function.Name,
 				Arguments:  json.RawMessage(tc.Function.Arguments),
+				Text:       tc.Function.Arguments, // scanable text form
 			})
 		}
 		env.Messages = append(env.Messages, msg)

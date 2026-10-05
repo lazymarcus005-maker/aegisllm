@@ -143,12 +143,18 @@ type LocatedText struct {
 	Text         string
 }
 
-// TextParts returns every non-empty text content part in message order.
+// TextParts returns every scanable text content part in message order:
+// plain text plus tool calls and tool results, whose textual payloads are
+// security-relevant (arguments and results can smuggle secrets).
 func (e *InspectionEnvelope) TextParts() []LocatedText {
 	var out []LocatedText
 	for mi, m := range e.Messages {
 		for pi, p := range m.Parts {
-			if p.Type == PartText && p.Text != "" {
+			if p.Text == "" {
+				continue
+			}
+			switch p.Type {
+			case PartText, PartToolCall, PartToolResult:
 				out = append(out, LocatedText{MessageIndex: mi, PartIndex: pi, Role: m.Role, Text: p.Text})
 			}
 		}

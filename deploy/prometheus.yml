@@ -1,0 +1,5 @@
+scrape_configs:
+  - job_name: security-gateway
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["security-gateway:8080"]

@@ -19,6 +19,7 @@ import (
 	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/detectors"
 	"github.com/aegisllm/gateway/internal/gateway"
+	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
 	"github.com/aegisllm/gateway/internal/tokenization"
@@ -166,6 +167,10 @@ func main() {
 		}
 		pipe.SetSemanticThresholds(thresholds)
 	}
+
+	metrics := observability.New()
+	pipe.SetRecorder(metrics)
+	srv.SetMetricsHandler(metrics.Handler())
 
 	srv.SetPipeline(pipe)
 	srv.AddReadinessCheck("policy_loaded", func() string { return "" })

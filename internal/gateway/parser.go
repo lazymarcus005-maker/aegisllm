@@ -82,6 +82,9 @@ func ParseChatCompletions(raw []byte) (*core.InspectionEnvelope, error) {
 				ToolCallID: tc.ID,
 				ToolName:   tc.Function.Name,
 				Arguments:  json.RawMessage(tc.Function.Arguments),
+				// Arguments are also exposed as text so deterministic
+				// scanners see smuggled content inside nested structures.
+				Text: tc.Function.Arguments,
 			})
 		}
 		if m.ToolCallID != "" {
