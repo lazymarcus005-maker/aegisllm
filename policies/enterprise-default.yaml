@@ -1,6 +1,6 @@
-# enterprise-default policy (spec §8; ticket-03 schema scope)
+# enterprise-default policy (spec §8; ticket-04 schema scope)
 id: enterprise-default
-version: 2
+version: 3
 owner: security-team
 effective_date: "2026-10-05"
 
@@ -25,6 +25,10 @@ secrets:
     action: block
   BEARER_TOKEN:
     action: block
+  AWS_ACCESS_KEY:
+    action: block
+  CONNECTION_STRING:
+    action: block
 
 # PII transformation policy (precedence level 6; ticket 05 consumes).
 pii:
@@ -35,6 +39,14 @@ pii:
       local:
         action: allow
   PHONE_NUMBER:
+    providers:
+      cloud:
+        action: tokenize
+  EMAIL:
+    providers:
+      cloud:
+        action: tokenize
+  CREDIT_CARD:
     providers:
       cloud:
         action: tokenize

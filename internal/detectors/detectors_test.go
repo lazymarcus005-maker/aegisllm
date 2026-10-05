@@ -151,8 +151,8 @@ func TestRegistryRunsInOrderTimesAndAssignsIDs(t *testing.T) {
 	if len(findings) != 2 {
 		t.Fatalf("expected 2 findings, got %d", len(findings))
 	}
-	if len(order) != 5 {
-		t.Fatalf("timing hook called %d times, want 5", len(order))
+	if len(order) != 8 {
+		t.Fatalf("timing hook called %d times, want 8", len(order))
 	}
 	if findings[0].ID == "" || findings[0].ID == findings[1].ID {
 		t.Fatalf("finding ids not assigned: %q %q", findings[0].ID, findings[1].ID)

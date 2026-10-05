@@ -42,6 +42,9 @@ func main() {
 	for _, d := range detectors.SecretDetectors(os.Getenv("TELEMETRY_HMAC_KEY")) {
 		registry.Register(d)
 	}
+	for _, d := range detectors.PiiDetectors(os.Getenv("TELEMETRY_HMAC_KEY")) {
+		registry.Register(d)
+	}
 	sink := audit.NewWriterSink(os.Stdout)
 	srv.SetPipeline(gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink, cfg.SecurityMode))
 	srv.AddReadinessCheck("policy_loaded", func() string { return "" })

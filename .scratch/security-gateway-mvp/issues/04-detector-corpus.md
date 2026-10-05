@@ -4,10 +4,10 @@
 
 **Blocked by:** 02 (detector framework). Parallel with 03.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Secrets: AWS access keys, connection-string candidates, generic high-entropy candidates with contextual evidence — negative corpora tuned to minimize false positives
-- [ ] PII: Thai citizen ID with checksum (synthetic checksum-valid fixtures only; invalid checksum rejected; separator/spacing variants), Thai/mobile phone numbers, email, credit card candidates with Luhn validation, IPv4/IPv6
-- [ ] Findings conform to the spec §10 internal finding schema (category, subtype, detector, location, value_hash); no raw detected value persisted
-- [ ] Organization-specific IDs remain pluggable rules (extension point exists, no specific org rules yet)
-- [ ] Golden tests per detector; deterministic scan p95 ≤ 10 ms on typical payloads measured in the test harness (NFR-PERF-001)
+- [x] Secrets: AWS access keys, connection-string candidates, generic high-entropy candidates with contextual evidence — negative corpora tuned to minimize false positives
+- [x] PII: Thai citizen ID with checksum (synthetic checksum-valid fixtures only; invalid checksum rejected; separator/spacing variants), Thai/mobile phone numbers, email, credit card candidates with Luhn validation, IPv4/IPv6
+- [x] Findings conform to the spec §10 internal finding schema (category, subtype, detector, location, value_hash); no raw detected value persisted
+- [x] Organization-specific IDs remain pluggable rules (extension point exists, no specific org rules yet)
+- [x] Golden tests per detector; deterministic scan p95 ≤ 10 ms on typical payloads measured in the test harness (NFR-PERF-001)

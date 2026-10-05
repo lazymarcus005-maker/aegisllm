@@ -202,7 +202,7 @@ func TestProviderBoundaryAppliesToUnconfiguredPIISubtype(t *testing.T) {
 	e := NewEngine(mustLoadFile(t))
 	dec := e.Evaluate(Context{
 		Envelope: &core.InspectionEnvelope{RequestID: "req-1", Target: core.Target{Provider: "cloud"}},
-		Findings: []core.SecurityFinding{piiFinding("EMAIL")},
+		Findings: []core.SecurityFinding{piiFinding("IP_ADDRESS")},
 	})
 	if dec.Action != core.ActionTokenize || dec.MatchedRule != "targets.cloud" {
 		t.Fatalf("provider baseline must apply: %+v", dec)
@@ -314,7 +314,7 @@ func TestValidationExtendedSchema(t *testing.T) {
 
 func TestFullPolicyFileLoads(t *testing.T) {
 	p := mustLoadFile(t)
-	if p.Version != 2 {
+	if p.Version != 3 {
 		t.Fatalf("version: %d", p.Version)
 	}
 	if len(p.Semantic) == 0 || len(p.PII) == 0 || len(p.Targets) != 2 {
