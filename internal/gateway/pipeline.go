@@ -19,6 +19,14 @@ import (
 // SecurityPipeline is the production Pipeline: deterministic detection and
 // span detection feed the deterministic policy engine, transformations apply
 // per policy, and every run produces a sanitized audit event (tickets 02-08).
+//
+// One inspection routine (inspect) serves all four data boundaries — request,
+// response, tool call, tool result — so detection, spans, semantics, metrics,
+// and audit cannot drift apart per direction. The exported methods are thin
+// direction adapters owning only envelope construction, body transformation,
+// and the response contract. The pipeline predicts and audits; the Server is
+// the single owner of the security mode (FR-018) and propagates it via
+// SetSecurityMode, so a pipeline can never disagree with its deployment.
 type SecurityPipeline struct {
 	registry        *detectors.Registry
 	engine          *policy.Engine
@@ -36,9 +44,14 @@ type SecurityPipeline struct {
 	recorder        observability.Recorder
 }
 
-func NewSecurityPipeline(registry *detectors.Registry, engine *policy.Engine, sink audit.Sink, mode string) *SecurityPipeline {
-	return &SecurityPipeline{registry: registry, engine: engine, audit: sink, mode: mode, recorder: observability.Noop{}}
+func NewSecurityPipeline(registry *detectors.Registry, engine *policy.Engine, sink audit.Sink) *SecurityPipeline {
+	return &SecurityPipeline{registry: registry, engine: engine, audit: sink, mode: ModeOff, recorder: observability.Noop{}}
 }
+
+// SetSecurityMode sets the deployment mode (off | shadow | enforce). Called
+// by Server.SetPipeline: the server owns the mode, the pipeline never states
+// it independently.
+func (p *SecurityPipeline) SetSecurityMode(mode string) { p.mode = mode }
 
 // SetRecorder attaches the metrics recorder (ticket 13). Never receives raw
 // content — only actions, categories, and latencies.
@@ -93,12 +106,15 @@ func languageOf(text string) string {
 
 // gateSignals keeps only signals whose question has an evaluated threshold
 // record matching this traffic slice AND whose confidence clears the fitted
-// threshold (INV-010). Without a threshold policy nothing enforces.
+// threshold (INV-010). Without a threshold policy nothing enforces. The
+// slice language is classified from the boundary's own semantic subject, so
+// tool payloads are not misread as the request's language.
 func (p *SecurityPipeline) gateSignals(env *core.InspectionEnvelope, signals []policy.SemanticSignal, evidence decision.DecisionEvidence) []policy.SemanticSignal {
 	if p.thresholds == nil {
 		return nil
 	}
-	lang := languageOf(lastUserText(env))
+	subject, _ := semanticSubject(env)
+	lang := languageOf(subject)
 	var gated []policy.SemanticSignal
 	for _, sig := range signals {
 		if !sig.Triggered {
@@ -130,111 +146,78 @@ func lastUserText(env *core.InspectionEnvelope) string {
 	return ""
 }
 
-// ProcessRequest runs the deterministic path. In shadow mode the predicted
-// action is returned and audited, but the server keeps the incumbent path
-// (FR-018). In off mode no inspection happens at all.
-func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []byte) (RequestDecision, error) {
-	if p.mode == ModeOff {
-		return RequestDecision{Action: core.ActionAllow}, nil
+// semanticSubject returns the content and role the semantic stage evaluates
+// for this direction: the last user text on the request path, the tool
+// payload on tool boundaries, the model text on responses.
+func semanticSubject(env *core.InspectionEnvelope) (string, core.Role) {
+	if env.Direction == core.DirectionRequest {
+		return lastUserText(env), core.RoleUser
 	}
+	for i := len(env.Messages) - 1; i >= 0; i-- {
+		for _, part := range env.Messages[i].Parts {
+			if part.Type == core.PartText && part.Text != "" {
+				return part.Text, env.Messages[i].Role
+			}
+		}
+	}
+	return "", ""
+}
 
-	start := time.Now()
+// inspection is one boundary crossing's result from the shared routine.
+type inspection struct {
+	env      *core.InspectionEnvelope
+	findings []core.SecurityFinding
+	dec      policy.Decision
+	laya     *audit.LayaInfo
+	layaMS   int64 // semantic provider latency; 0 when not invoked
+	detMS    int64 // deterministic phase (scan + spans + policy), excludes Laya
+	start    time.Time
+}
+
+// inspect runs the shared inspection core for any direction: deterministic
+// scan, span detection, policy evaluation, and — when the planner asks for
+// it and no definitive deterministic block exists — semantic evidence.
+// Shadow re-evaluates with all evidence; enforce acts only on gated
+// calibrated slices (INV-010). Detection, provider, and shadow metrics fire
+// here for every direction, so no boundary drifts silent.
+func (p *SecurityPipeline) inspect(env *core.InspectionEnvelope) *inspection {
+	ins := &inspection{env: env, start: time.Now()}
+
+	scanStart := time.Now()
 	findings := p.registry.RunAll(env)
-	p.recorder.ObserveScanner(float64(time.Since(start).Microseconds()) / 1000.0)
+	p.recorder.ObserveScanner(float64(time.Since(scanStart).Microseconds()) / 1000.0)
 	entityFindings := p.entityFindings(env)
-	all := append(append([]core.SecurityFinding{}, findings...), entityFindings...)
+	ins.findings = append(append([]core.SecurityFinding{}, findings...), entityFindings...)
 	seenTypes := map[string]bool{}
-	for _, f := range all {
+	for _, f := range ins.findings {
 		key := string(f.Category) + "/" + f.Subtype
 		if !seenTypes[key] {
 			seenTypes[key] = true
 			p.recorder.ObserveFindings(string(f.Category), f.Subtype)
 		}
 	}
-	dec := p.engine.Evaluate(policy.Context{Envelope: env, Findings: all})
+	ins.dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: ins.findings})
+	ins.detMS = time.Since(ins.start).Milliseconds()
 
-	// Semantic evidence (ticket 08): called only when deterministic rules
-	// did not already produce a definitive block — a known secret never
-	// reaches Laya (SEC-002, NFR-PERF-004). Evidence feeds policy in shadow
-	// only until semantic enforcement is explicitly enabled.
-	var layaInfo *audit.LayaInfo
-	var layaMS int64
-	if p.provider != nil && p.planner != nil && dec.Action != core.ActionBlock {
-		layaStart := time.Now()
-		evidence, signals, plan, err := p.evaluateSemantic(env, all)
-		layaMS = time.Since(layaStart).Milliseconds()
-		// Metrics and audit record the provider only when it was actually
-		// invoked — planner skips (fast path) mean laya_calls = 0 (AS-001,
-		// spec §15). Errors here are provider invocation failures.
-		if err != nil || evidence != nil {
-			layaInfo = &audit.LayaInfo{}
-			p.recorder.ObserveLaya(float64(layaMS), err != nil)
-		}
-		if err != nil {
-			// Provider unavailable (error or open circuit): policy-controlled
-			// fallback — high-risk routes never silently allow (AS-004,
-			// INV-008, NFR-AVAIL-002/003).
-			layaInfo.Error = "unavailable"
-			if plan.Ask && plan.MaxRisk == "high" {
-				if fb, ok := p.engine.LayaUnavailableFallback(); ok {
-					dec = fb
-					p.recorder.ObserveFallback()
-				}
-			}
-		} else if evidence != nil {
-			layaInfo = layaAuditInfo(evidence)
-		}
-		// Shadow predicts with all evidence; enforce acts only on gated,
-		// calibrated slices (rollout stage 3, ticket 11).
-		if err == nil && evidence != nil {
-			switch {
-			case p.mode == ModeShadow:
-				dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: all, Semantic: signals})
-			case p.semanticEnforce:
-				if gated := p.gateSignals(env, signals, *evidence); len(gated) > 0 {
-					dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: all, Semantic: gated})
-				}
-			}
-		}
+	if p.provider != nil && p.planner != nil && ins.dec.Action != core.ActionBlock {
+		p.semanticStage(ins)
 	}
 
-	var transformed []byte
-	if dec.Action == core.ActionRedact || dec.Action == core.ActionTokenize {
-		namer := pii.RedactNamer
-		if dec.Action == core.ActionTokenize {
-			namer = pii.TokenNamer
-		}
-		plan := pii.Plan(all, namer)
-		if dec.Action == core.ActionTokenize && p.vault != nil && p.crypto != nil {
-			if err := p.storeTokenMappings(env, plan); err != nil {
-				return RequestDecision{}, err
-			}
-		}
-		body, err := applyTransformationsToBody(raw, plan)
-		if err != nil {
-			return RequestDecision{}, err
-		}
-		transformed = body
+	// gateway_security_latency_ms is the deterministic-phase latency: the
+	// semantic provider has its own histogram (spec §15).
+	p.recorder.ObserveSecurityLatency(float64(ins.detMS))
+	if env.Direction == core.DirectionRequest {
+		// requests_total counts HTTP request boundaries; response and tool
+		// boundaries are visible in the audit trail and findings metrics.
+		p.recorder.ObserveRequest(ins.dec.Action, p.mode)
 	}
-	if dec.Action == core.ActionRestrictTools {
-		// T-025: RESTRICT_TOOLS physically removes restricted tools from the
-		// request — never a prompt-level "please don't".
-		body, err := stripRestrictedTools(raw, p.engine.RestrictedTools())
-		if err != nil {
-			return RequestDecision{}, err
-		}
-		transformed = body
-	}
-	elapsed := time.Since(start)
-	p.recorder.ObserveSecurityLatency(float64(elapsed.Microseconds()) / 1000.0)
-	p.recorder.ObserveRequest(dec.Action, p.mode)
 	if p.mode == ModeShadow {
-		p.recorder.ObserveShadowDisagreement(dec.Action)
+		p.recorder.ObserveShadowDisagreement(ins.dec.Action)
 		// FP sample: a semantic-only predicted block over content with no
 		// deterministic finding is the highest-value FP review candidate.
-		if dec.Action == core.ActionBlock || dec.Action == core.ActionReview {
+		if ins.dec.Action == core.ActionBlock || ins.dec.Action == core.ActionReview {
 			hasDeterministic := false
-			for _, f := range all {
+			for _, f := range ins.findings {
 				if f.Category == core.CategorySecret || f.Category == core.CategoryPII {
 					hasDeterministic = true
 					break
@@ -245,68 +228,74 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 			}
 		}
 	}
-	if transformed != nil {
-		switch dec.Action {
-		case core.ActionTokenize:
-			p.recorder.ObserveTokens(strings.Count(string(transformed), "<"), "tokenize")
-		case core.ActionRedact:
-			p.recorder.ObserveTokens(strings.Count(string(transformed), "[REDACTED:"), "redact")
-		}
-	}
-
-	latency := map[string]int64{
-		"deterministic":  elapsed.Milliseconds(),
-		"total_security": elapsed.Milliseconds(),
-	}
-	if layaMS > 0 {
-		latency["laya"] = layaMS
-	}
-
-	p.audit.Record(audit.Event{
-		RequestID:     env.RequestID,
-		Timestamp:     time.Now().UTC(),
-		Direction:     env.Direction,
-		Application:   env.Application,
-		Tenant:        env.Tenant,
-		User:          env.User.Subject,
-		PolicyID:      dec.PolicyID,
-		PolicyVersion: dec.PolicyVersion,
-		Mode:          p.mode,
-		Action:        dec.Action,
-		Code:          dec.Code,
-		MatchedRule:   dec.MatchedRule,
-		FindingTypes:  audit.FindingTypes(all),
-		FindingCount:  len(all),
-		LatencyMS:     latency,
-		Laya:          layaInfo,
-	})
-
-	return RequestDecision{Action: dec.Action, Code: dec.Code, TransformedBody: transformed}, nil
+	return ins
 }
 
-// evaluateSemantic asks the configured questions for the request direction.
-// The semantic subject is the last user text (the model-bound payload); the
-// evidence is normalized by the provider adapter before this method sees it.
+// semanticStage consults the decision provider for one inspected boundary.
+// Called only when the deterministic decision is not already a definitive
+// block — a known secret never reaches Laya (SEC-002, NFR-PERF-004).
+func (p *SecurityPipeline) semanticStage(ins *inspection) {
+	env := ins.env
+	layaStart := time.Now()
+	evidence, signals, plan, err := p.evaluateSemantic(env, ins.findings)
+	ins.layaMS = time.Since(layaStart).Milliseconds()
+	// Metrics and audit record the provider only when it was actually
+	// invoked — planner skips (fast path) mean laya_calls = 0 (AS-001,
+	// spec §15). Errors here are provider invocation failures.
+	if err != nil || evidence != nil {
+		ins.laya = &audit.LayaInfo{}
+		p.recorder.ObserveLaya(float64(ins.layaMS), err != nil)
+	}
+	if err != nil {
+		// Provider unavailable (error or open circuit): policy-controlled
+		// fallback — high-risk routes never silently allow (AS-004,
+		// INV-008, NFR-AVAIL-002/003).
+		ins.laya.Error = "unavailable"
+		if plan.Ask && plan.MaxRisk == "high" {
+			if fb, ok := p.engine.LayaUnavailableFallback(); ok {
+				ins.dec = fb
+				p.recorder.ObserveFallback()
+			}
+		}
+		return
+	}
+	if evidence == nil {
+		return
+	}
+	ins.laya = layaAuditInfo(evidence)
+	// Shadow predicts with all evidence; enforce acts only on gated,
+	// calibrated slices (rollout stage 3, ticket 11).
+	switch {
+	case p.mode == ModeShadow:
+		ins.dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: ins.findings, Semantic: signals})
+	case p.semanticEnforce:
+		if gated := p.gateSignals(env, signals, *evidence); len(gated) > 0 {
+			ins.dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: ins.findings, Semantic: gated})
+		}
+	}
+}
+
+// evaluateSemantic asks the configured questions for one boundary. The
+// semantic subject is the direction's model-bound payload; the evidence is
+// normalized by the provider adapter before this method sees it.
 func (p *SecurityPipeline) evaluateSemantic(env *core.InspectionEnvelope, findings []core.SecurityFinding) (*decision.DecisionEvidence, []policy.SemanticSignal, decision.Plan, error) {
 	// The planner decides whether semantics are worth their latency for this
-	// request (T-016): deterministic secret findings skip Laya entirely
+	// boundary (T-016): deterministic secret findings skip Laya entirely
 	// (SEC-002), and directions without configured questions skip too.
 	plan := p.planner.Plan(env.Direction, env.Application, env.Target, findings)
 	if !plan.Ask {
 		return nil, nil, plan, nil
 	}
 
-	content := lastUserText(env)
+	content, role := semanticSubject(env)
 	if content == "" {
 		return nil, nil, plan, nil // nothing semantic to ask about
 	}
-	role := string(core.RoleUser)
 
-	direction := strings.ToLower(string(env.Direction))
 	req := decision.DecisionRequest{
 		RequestID:   env.RequestID,
-		Direction:   direction,
-		Role:        role,
+		Direction:   strings.ToLower(string(env.Direction)),
+		Role:        string(role),
 		Content:     content,
 		Application: env.Application,
 	}
@@ -329,6 +318,83 @@ func (p *SecurityPipeline) evaluateSemantic(env *core.InspectionEnvelope, findin
 		})
 	}
 	return &evidence, signals, plan, nil
+}
+
+// auditEvent builds the sanitized audit event for one inspected boundary.
+// The latency split is real: deterministic excludes the semantic provider,
+// which is reported separately when it ran (architecture §15).
+func (p *SecurityPipeline) auditEvent(ins *inspection) audit.Event {
+	latency := map[string]int64{
+		"deterministic":  ins.detMS,
+		"total_security": time.Since(ins.start).Milliseconds(),
+	}
+	if ins.layaMS > 0 {
+		latency["laya"] = ins.layaMS
+	}
+	return audit.Event{
+		RequestID:     ins.env.RequestID,
+		Timestamp:     time.Now().UTC(),
+		Direction:     ins.env.Direction,
+		Application:   ins.env.Application,
+		Tenant:        ins.env.Tenant,
+		User:          ins.env.User.Subject,
+		PolicyID:      ins.dec.PolicyID,
+		PolicyVersion: ins.dec.PolicyVersion,
+		Mode:          p.mode,
+		Action:        ins.dec.Action,
+		Code:          ins.dec.Code,
+		MatchedRule:   ins.dec.MatchedRule,
+		FindingTypes:  audit.FindingTypes(ins.findings),
+		FindingCount:  len(ins.findings),
+		LatencyMS:     latency,
+		Laya:          ins.laya,
+	}
+}
+
+// ProcessRequest runs the request-direction adapter. In shadow mode the
+// predicted action is returned and audited, but the server keeps the
+// incumbent path (FR-018). In off mode no inspection happens at all.
+func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []byte) (RequestDecision, error) {
+	if p.mode == ModeOff {
+		return RequestDecision{Action: core.ActionAllow}, nil
+	}
+	ins := p.inspect(env)
+
+	var transformed []byte
+	switch ins.dec.Action {
+	case core.ActionRedact, core.ActionTokenize:
+		namer := pii.RedactNamer
+		if ins.dec.Action == core.ActionTokenize {
+			namer = pii.TokenNamer
+		}
+		plan := pii.Plan(ins.findings, namer)
+		if ins.dec.Action == core.ActionTokenize && p.vault != nil && p.crypto != nil {
+			if err := p.storeTokenMappings(env, plan); err != nil {
+				return RequestDecision{}, err
+			}
+		}
+		body, err := applyTransformationsToBody(raw, plan)
+		if err != nil {
+			return RequestDecision{}, err
+		}
+		transformed = body
+		if ins.dec.Action == core.ActionTokenize {
+			p.recorder.ObserveTokens(strings.Count(string(transformed), "<"), "tokenize")
+		} else {
+			p.recorder.ObserveTokens(strings.Count(string(transformed), "[REDACTED:"), "redact")
+		}
+	case core.ActionRestrictTools:
+		// T-025: RESTRICT_TOOLS physically removes restricted tools from the
+		// request — never a prompt-level "please don't".
+		body, err := stripRestrictedTools(raw, p.engine.RestrictedTools())
+		if err != nil {
+			return RequestDecision{}, err
+		}
+		transformed = body
+	}
+
+	p.audit.Record(p.auditEvent(ins))
+	return RequestDecision{Action: ins.dec.Action, Code: ins.dec.Code, TransformedBody: transformed}, nil
 }
 
 // storeTokenMappings seals each transformed span's original value into the
@@ -386,44 +452,25 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 	if p.mode == ModeOff {
 		return ResponseOutcome{Action: core.ActionAllow}, nil
 	}
-	start := time.Now()
 
 	respEnv, err := ParseChatCompletionsResponse(raw)
 	if err != nil {
 		return ResponseOutcome{}, err
 	}
-	respEnv.Application = reqEnv.Application
-	respEnv.Tenant = reqEnv.Tenant
-	respEnv.User = reqEnv.User
-	respEnv.Target.Provider = reqEnv.Target.Provider
+	deriveResponseEnvelope(respEnv, reqEnv)
 
-	findings := p.registry.RunAll(respEnv)
-	entityFindings := p.entityFindings(respEnv)
-	all := append(append([]core.SecurityFinding{}, findings...), entityFindings...)
-	dec := p.engine.Evaluate(policy.Context{Envelope: respEnv, Findings: all})
+	ins := p.inspect(respEnv)
 
-	outcome := ResponseOutcome{Action: dec.Action, Code: dec.Code}
-	switch dec.Action {
+	outcome := ResponseOutcome{Action: ins.dec.Action, Code: ins.dec.Code}
+	switch ins.dec.Action {
 	case core.ActionBlock, core.ActionReview:
 		// Server rejects the response; nothing is transformed.
 	case core.ActionRedact, core.ActionTokenize:
-		var ts []responseTransform
-		for _, f := range all {
-			if f.Category != core.CategoryPII && f.Category != core.CategorySecret {
-				continue
-			}
-			if f.Location.End <= f.Location.Start {
-				continue
-			}
-			ts = append(ts, responseTransform{
-				ChoiceIndex: f.Location.MessageIndex,
-				PartIndex:   f.Location.PartIndex,
-				Start:       f.Location.Start,
-				End:         f.Location.End,
-				Replacement: "[REDACTED:" + f.Subtype + "]",
-			})
-		}
-		body, terr := applyTransformationsToResponseBody(raw, ts)
+		// Outbound masking reuses the request path's Plan seam: overlap
+		// resolution and detector precedence are identical in both
+		// directions (T-018).
+		plan := pii.Plan(ins.findings, pii.RedactNamer)
+		body, terr := applyPlanToResponseBody(raw, plan)
 		if terr != nil {
 			return ResponseOutcome{}, terr
 		}
@@ -432,7 +479,7 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 	default:
 	}
 
-	if dec.Action != core.ActionBlock && dec.Action != core.ActionReview && p.vault != nil && p.crypto != nil {
+	if ins.dec.Action != core.ActionBlock && ins.dec.Action != core.ActionReview && p.vault != nil && p.crypto != nil {
 		reid := tokenization.NewReidentifier(p.vault, p.crypto)
 		body, changed, rerr := replacePlaceholdersInBody(raw, func(label string) (string, bool) {
 			value, rerr := reid.Reidentify(context.Background(), reqEnv.RequestID, label,
@@ -449,30 +496,20 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 			outcome.TransformedBody = body
 		}
 	}
-	elapsed := time.Since(start)
 
-	p.audit.Record(audit.Event{
-		RequestID:     reqEnv.RequestID,
-		Timestamp:     time.Now().UTC(),
-		Direction:     core.DirectionResponse,
-		Application:   reqEnv.Application,
-		Tenant:        reqEnv.Tenant,
-		User:          reqEnv.User.Subject,
-		PolicyID:      dec.PolicyID,
-		PolicyVersion: dec.PolicyVersion,
-		Mode:          p.mode,
-		Action:        dec.Action,
-		Code:          dec.Code,
-		MatchedRule:   dec.MatchedRule,
-		FindingTypes:  audit.FindingTypes(all),
-		FindingCount:  len(all),
-		LatencyMS: map[string]int64{
-			"deterministic":  elapsed.Milliseconds(),
-			"total_security": elapsed.Milliseconds(),
-		},
-	})
-
+	p.audit.Record(p.auditEvent(ins))
 	return outcome, nil
+}
+
+// deriveResponseEnvelope copies caller identity from the request envelope so
+// response-direction policy sees the same subject, tenant, and target; the
+// request id carries across so audit and re-identification stay correlated.
+func deriveResponseEnvelope(respEnv, reqEnv *core.InspectionEnvelope) {
+	respEnv.RequestID = reqEnv.RequestID
+	respEnv.Application = reqEnv.Application
+	respEnv.Tenant = reqEnv.Tenant
+	respEnv.User = reqEnv.User
+	respEnv.Target.Provider = reqEnv.Target.Provider
 }
 
 // entityFindings runs the span provider over every text part and projects the
@@ -528,94 +565,49 @@ type ToolDecision struct {
 }
 
 // InspectToolCall inspects a tool call before execution (UC-006): the same
-// detectors, planner, and policy engine run with direction TOOL_CALL. Secret
-// material in arguments is caught deterministically; exfiltration or unsafe
-// intent is evaluated semantically when a provider is configured.
+// detectors, span provider, planner, and policy engine run with direction
+// TOOL_CALL. Secret material in arguments is caught deterministically;
+// exfiltration or unsafe intent is evaluated semantically when a provider is
+// configured.
 func (p *SecurityPipeline) InspectToolCall(reqEnv *core.InspectionEnvelope, call ToolCall) (ToolDecision, error) {
-	env := p.toolEnvelope(reqEnv, core.DirectionToolCall, call.Name, call.Arguments)
-	start := time.Now()
-
-	findings := p.registry.RunAll(env)
-	all := append([]core.SecurityFinding{}, findings...)
-	dec := p.engine.Evaluate(policy.Context{Envelope: env, Findings: all})
-
-	var layaInfo *audit.LayaInfo
-	if p.provider != nil && p.planner != nil && dec.Action != core.ActionBlock {
-		plan := p.planner.Plan(core.DirectionToolCall, env.Application, env.Target, all)
-		if plan.Ask {
-			ev, err := p.provider.Evaluate(context.Background(), decision.DecisionRequest{
-				RequestID:   env.RequestID,
-				Direction:   "tool_call",
-				Role:        "assistant",
-				Content:     call.Arguments,
-				Application: env.Application,
-			}, plan.QuestionIDs)
-			if err != nil {
-				layaInfo = &audit.LayaInfo{Error: "unavailable"}
-				if plan.MaxRisk == "high" {
-					if fb, ok := p.engine.LayaUnavailableFallback(); ok {
-						dec = fb
-					}
-				}
-			} else {
-				layaInfo = layaAuditInfo(&ev)
-				var signals []policy.SemanticSignal
-				for _, id := range plan.QuestionIDs {
-					if d, ok := ev.Decisions[id]; ok {
-						signals = append(signals, policy.SemanticSignal{
-							QuestionID: id, Triggered: d.Value, Confidence: d.Confidence,
-							Risk: p.questions.RiskOf(id),
-						})
-					}
-				}
-				// Same gating as the request path: shadow predicts with all
-				// evidence; enforce acts only on calibrated slices.
-				switch {
-				case p.mode == ModeShadow:
-					dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: all, Semantic: signals})
-				case p.semanticEnforce:
-					if gated := p.gateSignals(env, signals, ev); len(gated) > 0 {
-						dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: all, Semantic: gated})
-					}
-				}
-			}
-		}
+	if p.mode == ModeOff {
+		return ToolDecision{Action: core.ActionAllow}, nil
 	}
+	env := toolEnvelope(reqEnv, core.DirectionToolCall, call.Name, call.Arguments)
+	ins := p.inspect(env)
 
-	p.audit.Record(p.toolAuditEvent(env, dec, all, start, layaInfo))
-	out := ToolDecision{Action: dec.Action, Code: dec.Code, MatchedRule: dec.MatchedRule, Reason: dec.Reason}
-	if dec.Action == core.ActionRedact || dec.Action == core.ActionTokenize {
+	out := ToolDecision{Action: ins.dec.Action, Code: ins.dec.Code, MatchedRule: ins.dec.MatchedRule, Reason: ins.dec.Reason}
+	if ins.dec.Action == core.ActionRedact || ins.dec.Action == core.ActionTokenize {
 		// UC-006 hard mask: secret-bearing arguments are returned masked so
 		// the raw material never reaches the tool executor.
-		plan := pii.Plan(all, pii.RedactNamer)
+		plan := pii.Plan(ins.findings, pii.RedactNamer)
 		out.TransformedContent = pii.ApplyToText(call.Arguments, plan)
 	}
+	p.audit.Record(p.auditEvent(ins))
 	return out, nil
 }
 
 // InspectToolResult inspects a tool result before it re-enters model context
-// (UC-007): credentials in results are blocked or redacted per policy — the
-// raw value never re-enters model context.
+// (UC-007): credentials and PII in results are masked per policy — the raw
+// value never re-enters model context.
 func (p *SecurityPipeline) InspectToolResult(reqEnv *core.InspectionEnvelope, result ToolResult) (ToolDecision, error) {
-	env := p.toolEnvelope(reqEnv, core.DirectionToolResult, result.Name, result.Content)
-	start := time.Now()
+	if p.mode == ModeOff {
+		return ToolDecision{Action: core.ActionAllow}, nil
+	}
+	env := toolEnvelope(reqEnv, core.DirectionToolResult, result.Name, result.Content)
+	ins := p.inspect(env)
 
-	findings := p.registry.RunAll(env)
-	all := append([]core.SecurityFinding{}, findings...)
-	dec := p.engine.Evaluate(policy.Context{Envelope: env, Findings: all})
-
-	out := ToolDecision{Action: dec.Action, Code: dec.Code, MatchedRule: dec.MatchedRule, Reason: dec.Reason}
-	if dec.Action == core.ActionRedact || dec.Action == core.ActionTokenize {
-		plan := pii.Plan(all, pii.RedactNamer)
+	out := ToolDecision{Action: ins.dec.Action, Code: ins.dec.Code, MatchedRule: ins.dec.MatchedRule, Reason: ins.dec.Reason}
+	if ins.dec.Action == core.ActionRedact || ins.dec.Action == core.ActionTokenize {
+		plan := pii.Plan(ins.findings, pii.RedactNamer)
 		out.TransformedContent = pii.ApplyToText(result.Content, plan)
 	}
-
-	p.audit.Record(p.toolAuditEvent(env, dec, all, start, nil))
+	p.audit.Record(p.auditEvent(ins))
 	return out, nil
 }
 
 // toolEnvelope builds the inspection envelope for one tool boundary crossing.
-func (p *SecurityPipeline) toolEnvelope(reqEnv *core.InspectionEnvelope, dir core.Direction, toolName, content string) *core.InspectionEnvelope {
+func toolEnvelope(reqEnv *core.InspectionEnvelope, dir core.Direction, toolName, content string) *core.InspectionEnvelope {
 	return &core.InspectionEnvelope{
 		RequestID:   reqEnv.RequestID,
 		Direction:   dir,
@@ -631,30 +623,6 @@ func (p *SecurityPipeline) toolEnvelope(reqEnv *core.InspectionEnvelope, dir cor
 				Text:     content,
 			}},
 		}},
-	}
-}
-
-func (p *SecurityPipeline) toolAuditEvent(env *core.InspectionEnvelope, dec policy.Decision, findings []core.SecurityFinding, start time.Time, laya *audit.LayaInfo) audit.Event {
-	return audit.Event{
-		RequestID:     env.RequestID,
-		Timestamp:     time.Now().UTC(),
-		Direction:     env.Direction,
-		Application:   env.Application,
-		Tenant:        env.Tenant,
-		User:          env.User.Subject,
-		PolicyID:      dec.PolicyID,
-		PolicyVersion: dec.PolicyVersion,
-		Mode:          p.mode,
-		Action:        dec.Action,
-		Code:          dec.Code,
-		MatchedRule:   dec.MatchedRule,
-		FindingTypes:  audit.FindingTypes(findings),
-		FindingCount:  len(findings),
-		LatencyMS: map[string]int64{
-			"deterministic":  time.Since(start).Milliseconds(),
-			"total_security": time.Since(start).Milliseconds(),
-		},
-		Laya: laya,
 	}
 }
 

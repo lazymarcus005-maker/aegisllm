@@ -38,7 +38,8 @@ func newGateway(t *testing.T, mode string, provider decision.DecisionProvider) (
 		registry.Register(d)
 	}
 	sink := &captureSink{}
-	pipe := gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink, mode)
+	// Mode is stated once: the pipeline inherits it from the server.
+	pipe := gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink)
 	pipe.SetSpanProvider(pii.NewCompositeSpanProvider(pii.NewRegexSpanProvider()))
 	key := make([]byte, 32)
 	crypto, err := tokenization.NewCrypto(key)

@@ -92,7 +92,7 @@ func New() *Metrics {
 			Buckets: []float64{1, 5, 10, 25, 50, 100, 250},
 		}),
 		shadowDisagreements: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "shadow_disagreements_total", Help: "Shadow-mode requests whose predicted action differs from the incumbent path.",
+			Name: "shadow_disagreements_total", Help: "Shadow-mode predictions that would change the incumbent path (predicted action not ALLOW), across request, response, and tool boundaries.",
 		}),
 		falsePositiveSample: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "false_positive_sample_total", Help: "Shadow-mode predicted blocks with no deterministic finding, sampled for FP review.",

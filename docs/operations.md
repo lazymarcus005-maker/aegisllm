@@ -41,6 +41,10 @@ Alerts worth wiring: `fallback_total` spikes (Laya instability),
 One JSON object per line on stdout: request_id, direction, application,
 policy version, mode, action, finding types (never raw content), latencies,
 and sanitized Laya evidence (checkpoint, question schema, confidences).
+Latency is split honestly: `latency_ms.deterministic` excludes the semantic
+provider, `latency_ms.laya` is present only when the provider actually ran,
+and `latency_ms.total_security` covers the whole boundary crossing
+(architecture §15).
 Ship stdout to the log platform of choice; keep the raw-content evaluation
 path (if ever enabled) separately governed (PRIV-004).
 

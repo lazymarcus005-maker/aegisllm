@@ -23,10 +23,13 @@ type RequestDecision struct {
 }
 
 // Pipeline runs normalized content through detection and policy on both the
-// request and response directions (FR-001, FR-015).
+// request and response directions (FR-001, FR-015). Implementations receive
+// the deployment mode from the server: the server is the single owner of
+// mode (FR-018), pipelines predict and audit.
 type Pipeline interface {
 	ProcessRequest(env *core.InspectionEnvelope, raw []byte) (RequestDecision, error)
 	ProcessResponse(reqEnv *core.InspectionEnvelope, raw []byte) (ResponseOutcome, error)
+	SetSecurityMode(mode string)
 }
 
 // Server is the OpenAI-compatible security gateway HTTP server (FR-001).
@@ -57,8 +60,13 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	return &Server{cfg: cfg, proxy: proxy, logger: logger, readyFns: map[string]func() string{}}, nil
 }
 
-// SetPipeline attaches the security pipeline (ticket 02+).
-func (s *Server) SetPipeline(p Pipeline) { s.pipeline = p }
+// SetPipeline attaches the security pipeline and propagates the security
+// mode: the pipeline predicts and audits, and can never disagree with the
+// deployment it serves because the fact is stated once, here.
+func (s *Server) SetPipeline(p Pipeline) {
+	s.pipeline = p
+	p.SetSecurityMode(s.cfg.SecurityMode)
+}
 
 // SetMetricsHandler mounts a handler at GET /metrics (spec §15).
 func (s *Server) SetMetricsHandler(h http.Handler) { s.metrics = h }

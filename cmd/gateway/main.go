@@ -83,7 +83,9 @@ func main() {
 		registry.Register(d)
 	}
 	sink := audit.NewWriterSink(os.Stdout)
-	pipe := gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink, cfg.SecurityMode)
+	// Security mode is not stated here: Server.SetPipeline propagates
+	// cfg.SecurityMode into the pipeline — the server owns the mode.
+	pipe := gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink)
 	pipe.SetSpanProvider(pii.NewCompositeSpanProvider(pii.NewRegexSpanProvider()))
 
 	// Token vault (ticket 06): envelope-encrypted mappings with TTL.

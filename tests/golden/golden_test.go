@@ -121,7 +121,7 @@ func TestGoldenRequests(t *testing.T) {
 			defer up.Close()
 
 			sink := &capture{}
-			pipe := newPipeline(t, pol, qs, tc.mode, sink, tc.provider)
+			pipe := newPipeline(t, pol, qs, sink, tc.provider)
 			srv, err := gateway.NewServer(gateway.Config{
 				ListenAddr: ":0", UpstreamBaseURL: up.URL, UpstreamAuthMode: "none",
 				MaxBodyBytes: 1 << 20, SecurityMode: tc.mode, DefaultTargetProvider: "cloud",
@@ -166,7 +166,7 @@ func TestGoldenRequests(t *testing.T) {
 	}
 }
 
-func newPipeline(t *testing.T, pol *policy.Policy, qs *decision.QuestionSchema, mode string, sink *capture, provider decision.DecisionProvider) *gateway.SecurityPipeline {
+func newPipeline(t *testing.T, pol *policy.Policy, qs *decision.QuestionSchema, sink *capture, provider decision.DecisionProvider) *gateway.SecurityPipeline {
 	t.Helper()
 	registry := detectors.NewRegistry(nil)
 	for _, d := range detectors.SecretDetectors("golden-key") {
@@ -175,7 +175,7 @@ func newPipeline(t *testing.T, pol *policy.Policy, qs *decision.QuestionSchema, 
 	for _, d := range detectors.PiiDetectors("golden-key") {
 		registry.Register(d)
 	}
-	pipe := gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink, mode)
+	pipe := gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink)
 	pipe.SetSpanProvider(pii.NewCompositeSpanProvider(pii.NewRegexSpanProvider()))
 	key := make([]byte, 32)
 	crypto, err := tokenization.NewCrypto(key)

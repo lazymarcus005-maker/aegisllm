@@ -158,6 +158,8 @@ func (s stubPipeline) ProcessResponse(*core.InspectionEnvelope, []byte) (Respons
 	return ResponseOutcome{Action: core.ActionAllow}, nil
 }
 
+func (s stubPipeline) SetSecurityMode(string) {}
+
 func TestEnforceModeBlocksOnPipelineBlock(t *testing.T) {
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("upstream must not be called when blocked")

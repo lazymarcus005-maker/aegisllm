@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	"github.com/aegisllm/gateway/internal/core"
+	"github.com/aegisllm/gateway/internal/pii"
 )
 
 // ParseChatCompletionsResponse normalizes an OpenAI chat completions response
@@ -53,10 +54,13 @@ func ParseChatCompletionsResponse(raw []byte) (*core.InspectionEnvelope, error) 
 	return env, nil
 }
 
-// applyTransformationsToResponseBody rewrites choice message content in an
-// OpenAI response body according to the plan (outbound redaction).
-func applyTransformationsToResponseBody(raw []byte, transforms []responseTransform) ([]byte, error) {
-	if len(transforms) == 0 {
+// applyPlanToResponseBody rewrites choice message content in an OpenAI
+// response body according to the plan (outbound redaction). The response
+// envelope maps one message per choice, so plan MessageIndex is the choice
+// index; span replacement itself is pii.ApplyToText, the same seam the
+// request path uses.
+func applyPlanToResponseBody(raw []byte, plan []pii.Transformation) ([]byte, error) {
+	if len(plan) == 0 {
 		return raw, nil
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -74,9 +78,9 @@ func applyTransformationsToResponseBody(raw []byte, transforms []responseTransfo
 		return nil, fmt.Errorf("response transform: body has no choices array")
 	}
 
-	byChoice := map[int][]responseTransform{}
-	for _, t := range transforms {
-		byChoice[t.ChoiceIndex] = append(byChoice[t.ChoiceIndex], t)
+	byChoice := map[int][]pii.Transformation{}
+	for _, t := range plan {
+		byChoice[t.MessageIndex] = append(byChoice[t.MessageIndex], t)
 	}
 	for idx, ts := range byChoice {
 		if idx < 0 || idx >= len(choices) {
@@ -92,7 +96,7 @@ func applyTransformationsToResponseBody(raw []byte, transforms []responseTransfo
 		}
 		switch content := msg["content"].(type) {
 		case string:
-			msg["content"] = applyResponseTransforms(content, filterParts(ts, 0))
+			msg["content"] = pii.ApplyToText(content, filterParts(ts, 0))
 		case []any:
 			for pi, partAny := range content {
 				part, ok := partAny.(map[string]any)
@@ -100,7 +104,7 @@ func applyTransformationsToResponseBody(raw []byte, transforms []responseTransfo
 					continue
 				}
 				if text, ok := part["text"].(string); ok {
-					part["text"] = applyResponseTransforms(text, filterParts(ts, pi))
+					part["text"] = pii.ApplyToText(text, filterParts(ts, pi))
 				}
 			}
 		default:
@@ -110,42 +114,14 @@ func applyTransformationsToResponseBody(raw []byte, transforms []responseTransfo
 	return json.Marshal(doc)
 }
 
-func filterParts(ts []responseTransform, part int) []responseTransform {
-	out := make([]responseTransform, 0, len(ts))
+func filterParts(ts []pii.Transformation, part int) []pii.Transformation {
+	out := make([]pii.Transformation, 0, len(ts))
 	for _, t := range ts {
 		if t.PartIndex == part {
 			out = append(out, t)
 		}
 	}
 	return out
-}
-
-// responseTransform is one outbound replacement within a choice's content.
-type responseTransform struct {
-	ChoiceIndex int
-	PartIndex   int
-	Start       int
-	End         int
-	Replacement string
-}
-
-// applyResponseTransforms replaces from the end backwards so offsets stay
-// valid; transforms must not overlap.
-func applyResponseTransforms(text string, ts []responseTransform) string {
-	ordered := make([]responseTransform, len(ts))
-	copy(ordered, ts)
-	for i := 1; i < len(ordered); i++ { // insertion sort by Start desc (tiny n)
-		for j := i; j > 0 && ordered[j].Start > ordered[j-1].Start; j-- {
-			ordered[j], ordered[j-1] = ordered[j-1], ordered[j]
-		}
-	}
-	for _, t := range ordered {
-		if t.Start < 0 || t.End > len(text) || t.Start >= t.End {
-			continue
-		}
-		text = text[:t.Start] + t.Replacement + text[t.End:]
-	}
-	return text
 }
 
 // placeholderRe matches <TYPE_NNN> token placeholders the model may echo.

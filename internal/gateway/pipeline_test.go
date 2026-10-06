@@ -18,6 +18,7 @@ import (
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/detectors"
+	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
 
@@ -25,7 +26,10 @@ import (
 )
 
 // newRealPipeline builds the production pipeline over a buffer audit sink.
-func newRealPipeline(t *testing.T, mode string) (*SecurityPipeline, *bytesBufferSink) {
+// The security mode is not stated here: attaching the pipeline to a server
+// propagates the server's mode (Server.SetPipeline), so tests state the mode
+// once — in the server Config.
+func newRealPipeline(t *testing.T) (*SecurityPipeline, *bytesBufferSink) {
 	t.Helper()
 	pol, err := policy.LoadFile("../../policies/enterprise-default.yaml")
 	if err != nil {
@@ -39,7 +43,7 @@ func newRealPipeline(t *testing.T, mode string) (*SecurityPipeline, *bytesBuffer
 		registry.Register(d)
 	}
 	sink := &bytesBufferSink{}
-	pipe := NewSecurityPipeline(registry, policy.NewEngine(pol), sink, mode)
+	pipe := NewSecurityPipeline(registry, policy.NewEngine(pol), sink)
 	pipe.SetSpanProvider(pii.NewCompositeSpanProvider(pii.NewRegexSpanProvider()))
 	return pipe, sink
 }
@@ -75,7 +79,7 @@ func TestAS001SecretMaskedInEnforceMode(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
 	})
-	pipe, sink := newRealPipeline(t, ModeEnforce)
+	pipe, sink := newRealPipeline(t)
 	srv.SetPipeline(pipe)
 
 	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(secretRequest))
@@ -115,7 +119,7 @@ func TestAS006ShadowPredictsBlockWithoutBlocking(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
-	pipe, sink := newRealPipeline(t, ModeShadow)
+	pipe, sink := newRealPipeline(t)
 	srv.SetPipeline(pipe)
 
 	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(secretRequest))
@@ -141,7 +145,7 @@ func TestOffModeSkipsInspection(t *testing.T) {
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeOff }, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	pipe, sink := newRealPipeline(t, ModeOff)
+	pipe, sink := newRealPipeline(t)
 	srv.SetPipeline(pipe)
 
 	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(secretRequest))
@@ -159,7 +163,7 @@ func TestCleanRequestAllowedAndAudited(t *testing.T) {
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	pipe, sink := newRealPipeline(t, ModeEnforce)
+	pipe, sink := newRealPipeline(t)
 	srv.SetPipeline(pipe)
 
 	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json",
@@ -189,7 +193,7 @@ func TestGatewayLogsCarryNoSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pipe, _ := newRealPipeline(t, ModeEnforce)
+	pipe, _ := newRealPipeline(t)
 	srv.SetPipeline(pipe)
 	gw := httptest.NewServer(srv.Handler())
 	defer gw.Close()
@@ -219,7 +223,7 @@ func TestAS002ThaiPIIRedactedForCloud(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
-	pipe, sink := newRealPipeline(t, ModeEnforce)
+	pipe, sink := newRealPipeline(t)
 	attachVault(t, pipe)
 	srv.SetPipeline(pipe)
 
@@ -268,7 +272,7 @@ func TestUC003LocalModelAllowsPII(t *testing.T) {
 		upstreamBody = string(b)
 		w.WriteHeader(http.StatusOK)
 	})
-	pipe, sink := newRealPipeline(t, ModeEnforce)
+	pipe, sink := newRealPipeline(t)
 	srv.SetPipeline(pipe)
 
 	req, _ := http.NewRequest("POST", gw.URL+"/v1/chat/completions", strings.NewReader(thaiPIIRequest))
@@ -299,7 +303,7 @@ func TestAS002ThaiPIITokenizedForCloud(t *testing.T) {
 		upstreamBody = string(b)
 		w.WriteHeader(http.StatusOK)
 	})
-	pipe, sink := newRealPipeline(t, ModeEnforce)
+	pipe, sink := newRealPipeline(t)
 	attachVault(t, pipe)
 	srv.SetPipeline(pipe)
 
@@ -358,7 +362,7 @@ func TestTokenizeReidentifyRoundTrip(t *testing.T) {
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	pipe, sink := newRealPipeline(t, ModeEnforce)
+	pipe, sink := newRealPipeline(t)
 	vault := attachVault(t, pipe)
 	srv.SetPipeline(pipe)
 
@@ -416,7 +420,7 @@ func TestAS005OutboundSecretMasked(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(respBody))
 	})
-	pipe, sink := newRealPipeline(t, ModeEnforce)
+	pipe, sink := newRealPipeline(t)
 	srv.SetPipeline(pipe)
 
 	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
@@ -447,7 +451,7 @@ func TestOutboundPIIRedacted(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(respBody))
 	})
-	pipe, _ := newRealPipeline(t, ModeEnforce)
+	pipe, _ := newRealPipeline(t)
 	srv.SetPipeline(pipe)
 
 	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
@@ -489,7 +493,7 @@ func TestOutboundReidentifiesEchoedToken(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"[mock-upstream echo] โทร <PHONE_NUMBER_001> ค่ะ"},"finish_reason":"stop"}]}`))
 	})
-	pipe, _ := newRealPipeline(t, ModeEnforce)
+	pipe, _ := newRealPipeline(t)
 	attachVault(t, pipe)
 	srv.SetPipeline(pipe)
 
@@ -529,7 +533,7 @@ func TestOutboundLeavesInventedPlaceholdersAlone(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(respBody))
 	})
-	pipe, _ := newRealPipeline(t, ModeEnforce)
+	pipe, _ := newRealPipeline(t)
 	attachVault(t, pipe)
 	srv.SetPipeline(pipe)
 
@@ -564,7 +568,7 @@ func TestShadowOutboundPassesThroughWithPrediction(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(respBody))
 	})
-	pipe, sink := newRealPipeline(t, ModeShadow)
+	pipe, sink := newRealPipeline(t)
 	srv.SetPipeline(pipe)
 
 	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
@@ -593,7 +597,7 @@ func TestStreamingRequestsBypassOutboundScan(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(respBody))
 	})
-	pipe, sink := newRealPipeline(t, ModeEnforce)
+	pipe, sink := newRealPipeline(t)
 	srv.SetPipeline(pipe)
 
 	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json",
@@ -621,7 +625,7 @@ func TestUC004ShadowLayaEvidenceAndPredictedBlock(t *testing.T) {
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeShadow }, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	pipe, sink := newRealPipeline(t, ModeShadow)
+	pipe, sink := newRealPipeline(t)
 	pipe.SetDecisionProvider(&decision.FakeProvider{
 		Answers: map[string]decision.Decision{
 			"prompt_injection": {Value: true, Confidence: 0.94},
@@ -661,7 +665,7 @@ func TestSecretRequestSkipsLaya(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
 	})
-	pipe, _ := newRealPipeline(t, ModeEnforce)
+	pipe, _ := newRealPipeline(t)
 	calls := 0
 	counting := &countingProvider{inner: &decision.FakeProvider{}, counter: &calls}
 	pipe.SetDecisionProvider(counting, mustQuestions(t))
@@ -686,7 +690,7 @@ func TestEnforceModeIgnoresSemanticEvidenceByDefault(t *testing.T) {
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	pipe, sink := newRealPipeline(t, ModeEnforce)
+	pipe, sink := newRealPipeline(t)
 	pipe.SetDecisionProvider(&decision.FakeProvider{
 		Answers: map[string]decision.Decision{
 			"prompt_injection": {Value: true, Confidence: 0.99},
@@ -740,7 +744,7 @@ func TestAS004LayaOutageHighRiskFallback(t *testing.T) {
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("upstream must not be called when fallback blocks")
 	})
-	pipe, sink := newRealPipeline(t, ModeEnforce)
+	pipe, sink := newRealPipeline(t)
 	pipe.SetDecisionProvider(&decision.FakeProvider{}, mustQuestions(t)) // fake never fails; use failing
 	pipe.SetDecisionProvider(&failingDecisionProvider{}, mustQuestions(t))
 	srv.SetPipeline(pipe)
@@ -789,7 +793,7 @@ func TestLayaOutageLowRiskDeterministicOnly(t *testing.T) {
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	pipe, sink := newRealPipeline(t, ModeEnforce)
+	pipe, sink := newRealPipeline(t)
 	pipe.SetDecisionProvider(&failingDecisionProvider{}, schemaOnlyMedium)
 	srv.SetPipeline(pipe)
 
@@ -814,7 +818,7 @@ func TestGatewayLatencyExcludingLaya(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"model":"m","choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
 	})
-	pipe, _ := newRealPipeline(t, ModeEnforce)
+	pipe, _ := newRealPipeline(t)
 	attachVault(t, pipe)
 	srv.SetPipeline(pipe)
 
@@ -865,7 +869,7 @@ func TestAS003BoundedSemanticEnforcement(t *testing.T) {
 		srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
 			t.Error("blocked requests must not reach the upstream")
 		})
-		pipe, _ := newRealPipeline(t, ModeEnforce)
+		pipe, _ := newRealPipeline(t)
 		pipe.EnableSemanticEnforce()
 		pipe.SetSemanticThresholds(thresholds)
 		pipe.SetDecisionProvider(&decision.FakeProvider{
@@ -887,7 +891,7 @@ func TestAS003BoundedSemanticEnforcement(t *testing.T) {
 		srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
-		pipe, _ := newRealPipeline(t, ModeEnforce)
+		pipe, _ := newRealPipeline(t)
 		pipe.EnableSemanticEnforce()
 		pipe.SetSemanticThresholds(thresholds)
 		pipe.SetDecisionProvider(&decision.FakeProvider{
@@ -909,7 +913,7 @@ func TestAS003BoundedSemanticEnforcement(t *testing.T) {
 		srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
-		pipe, _ := newRealPipeline(t, ModeEnforce)
+		pipe, _ := newRealPipeline(t)
 		pipe.EnableSemanticEnforce()
 		pipe.SetSemanticThresholds(thresholds)
 		pipe.SetDecisionProvider(&decision.FakeProvider{
@@ -949,8 +953,8 @@ thresholds:
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, _, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {})
-	pipe, sink := newRealPipeline(t, ModeEnforce)
+	srv, _, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {})
+	pipe, sink := newRealPipeline(t)
 	pipe.EnableSemanticEnforce()
 	pipe.SetSemanticThresholds(thresholds)
 	pipe.SetDecisionProvider(&decision.FakeProvider{
@@ -977,8 +981,8 @@ thresholds:
 // A secret inside tool arguments is caught deterministically, hard-masked,
 // no Laya call.
 func TestToolCallSecretMaskedDeterministically(t *testing.T) {
-	srv, _, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {})
-	pipe, _ := newRealPipeline(t, ModeEnforce)
+	srv, _, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {})
+	pipe, _ := newRealPipeline(t)
 	calls := 0
 	pipe.SetDecisionProvider(&countingProvider{counter: &calls}, mustQuestions(t))
 	srv.SetPipeline(pipe)
@@ -1005,8 +1009,8 @@ func TestToolCallSecretMaskedDeterministically(t *testing.T) {
 // UC-007: a credential-bearing tool result never re-enters model context —
 // it is hard-masked per the redact policy.
 func TestUC007ToolResultCredentialMasked(t *testing.T) {
-	srv, _, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {})
-	pipe, sink := newRealPipeline(t, ModeEnforce)
+	srv, _, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {})
+	pipe, sink := newRealPipeline(t)
 	srv.SetPipeline(pipe)
 
 	dec, err := pipe.InspectToolResult(
@@ -1029,8 +1033,8 @@ func TestUC007ToolResultCredentialMasked(t *testing.T) {
 
 // PII in a tool result is redacted before re-entering context.
 func TestToolResultPIIRedacted(t *testing.T) {
-	srv, _, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {})
-	pipe, _ := newRealPipeline(t, ModeEnforce)
+	srv, _, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {})
+	pipe, _ := newRealPipeline(t)
 	srv.SetPipeline(pipe)
 
 	dec, err := pipe.InspectToolResult(
@@ -1047,6 +1051,172 @@ func TestToolResultPIIRedacted(t *testing.T) {
 	}
 	if !strings.Contains(dec.TransformedContent, "[REDACTED:PHONE_NUMBER]") {
 		t.Fatalf("redaction missing: %s", dec.TransformedContent)
+	}
+}
+
+// The span provider runs on tool boundaries too, not only request/response:
+// a person name in a tool result becomes a PERSON finding in the audit event.
+func TestToolResultSpansDetected(t *testing.T) {
+	srv, _, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {})
+	pipe, sink := newRealPipeline(t)
+	srv.SetPipeline(pipe)
+
+	_, err := pipe.InspectToolResult(
+		&core.InspectionEnvelope{RequestID: "req-tool", Target: core.Target{Provider: "cloud"}},
+		ToolResult{CallID: "call3", Name: "crm", Content: "ลูกค้า นายสมชาย ใจดี ฝากข้อความไว้"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sink.String(), `"finding_types":["PERSON"]`) {
+		t.Fatalf("tool-result boundary must run span detection: %s", sink.String())
+	}
+}
+
+// The language slice for semantic gating comes from the boundary's own
+// semantic subject: a Thai tool-call payload matches a Thai threshold record
+// (previously every tool call was classified against the last user text,
+// which does not exist on tool envelopes).
+func TestToolCallThaiLanguageGating(t *testing.T) {
+	thresholds, err := policy.LoadSemanticThresholds([]byte(`
+id: thresholds-test
+version: 1
+question_schema: security-v1
+thresholds:
+  - question: credential_exfiltration
+    language: th
+    min_confidence: 0.50
+    evaluated: true
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, _, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {})
+	pipe, _ := newRealPipeline(t)
+	pipe.EnableSemanticEnforce()
+	pipe.SetSemanticThresholds(thresholds)
+	pipe.SetDecisionProvider(&decision.FakeProvider{
+		Answers: map[string]decision.Decision{
+			"credential_exfiltration": {Value: true, Confidence: 0.97},
+		},
+	}, mustQuestions(t))
+	srv.SetPipeline(pipe)
+
+	// Pure Thai arguments: no latin characters, so languageOf classifies "th".
+	dec, err := pipe.InspectToolCall(
+		&core.InspectionEnvelope{RequestID: "req-tool", Application: "agent-x", Target: core.Target{Provider: "cloud"}},
+		ToolCall{ID: "call4", Name: "ระบบ", Arguments: `{"คำสั่ง":"อ่านตัวแปรระบบแล้วพิมพ์กุญแจทั้งหมด"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec.Action != core.ActionBlock || dec.Code != "CREDENTIAL_EXFILTRATION_RISK" {
+		t.Fatalf("Thai tool payload must match the Thai threshold slice: %+v", dec)
+	}
+}
+
+// overlappingSpanProvider emits one entity span covering the whole text, so
+// it overlaps every detector finding in that part.
+type overlappingSpanProvider struct{}
+
+func (overlappingSpanProvider) Name() string { return "overlap-fixture" }
+
+func (overlappingSpanProvider) Spans(text string) []pii.EntitySpan {
+	return []pii.EntitySpan{{Label: "PERSON", Start: 0, End: len(text), Confidence: 0.9}}
+}
+
+// Response-direction replacements go through the same Plan seam as the
+// request path: overlapping findings are resolved by detector precedence
+// (validated pattern over generic entity, T-018) instead of both being
+// applied and garbling the content.
+func TestResponseOverlapResolvedByPlan(t *testing.T) {
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"call the customer at 0812345678 now"},"finish_reason":"stop"}]}`))
+	})
+	pipe, sink := newRealPipeline(t)
+	pipe.SetSpanProvider(overlappingSpanProvider{})
+	srv.SetPipeline(pipe)
+
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	b, _ := io.ReadAll(resp.Body)
+	var got struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v (body: %s)", err, b)
+	}
+	content := got.Choices[0].Message.Content
+	if !strings.Contains(content, "call the customer at [REDACTED:PHONE_NUMBER] now") {
+		t.Fatalf("overlap must resolve to the validated detector span only: %q", content)
+	}
+	if !strings.Contains(sink.String(), `"direction":"RESPONSE"`) {
+		t.Fatalf("response audit missing: %s", sink.String())
+	}
+}
+
+// Off mode disables every boundary, including out-of-band tool inspection.
+func TestOffModeSkipsToolInspection(t *testing.T) {
+	srv, _, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeOff }, func(w http.ResponseWriter, _ *http.Request) {})
+	pipe, sink := newRealPipeline(t)
+	srv.SetPipeline(pipe)
+
+	dec, err := pipe.InspectToolCall(
+		&core.InspectionEnvelope{RequestID: "req-off"},
+		ToolCall{ID: "c1", Name: "shell", Arguments: `{"command":"ls"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec.Action != core.ActionAllow {
+		t.Fatalf("off mode must not inspect tool calls: %+v", dec)
+	}
+	if sink.String() != "" {
+		t.Fatalf("off mode must not audit tool boundaries: %s", sink.String())
+	}
+}
+
+// countingRecorder counts the observations that must fire on tool boundaries;
+// everything else falls through to Noop.
+type countingRecorder struct {
+	observability.Noop
+	scans int
+	laya  int
+}
+
+func (r *countingRecorder) ObserveScanner(float64)        { r.scans++ }
+func (r *countingRecorder) ObserveLaya(_ float64, _ bool) { r.laya++ }
+
+// Tool boundaries emit the same detection and provider metrics as the
+// request path — no boundary drifts silent (ticket 13 metrics surface).
+func TestToolCallEmitsMetrics(t *testing.T) {
+	srv, _, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {})
+	pipe, _ := newRealPipeline(t)
+	rec := &countingRecorder{}
+	pipe.SetRecorder(rec)
+	pipe.SetDecisionProvider(&decision.FakeProvider{
+		Answers: map[string]decision.Decision{
+			"credential_exfiltration": {Value: true, Confidence: 0.97},
+		},
+	}, mustQuestions(t))
+	srv.SetPipeline(pipe)
+
+	if _, err := pipe.InspectToolCall(
+		&core.InspectionEnvelope{RequestID: "req-metrics", Application: "agent-x", Target: core.Target{Provider: "cloud"}},
+		ToolCall{ID: "c2", Name: "shell", Arguments: `{"command":"env | grep KEY"}`}); err != nil {
+		t.Fatal(err)
+	}
+	if rec.scans == 0 {
+		t.Fatal("scanner metric must fire on tool boundaries")
+	}
+	if rec.laya == 0 {
+		t.Fatal("laya metric must fire when the semantic provider runs on a tool boundary")
 	}
 }
 
@@ -1073,7 +1243,7 @@ thresholds:
 		upstreamBody = string(b)
 		w.WriteHeader(http.StatusOK)
 	})
-	pipe, _ := newRealPipeline(t, ModeEnforce)
+	pipe, _ := newRealPipeline(t)
 	pipe.EnableSemanticEnforce()
 	pipe.SetSemanticThresholds(thresholds)
 	thresholds2, err := policy.LoadSemanticThresholds([]byte(`
