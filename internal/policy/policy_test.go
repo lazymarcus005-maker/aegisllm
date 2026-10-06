@@ -164,14 +164,14 @@ secrets:
 	}
 }
 
-func TestSecretBlockBeatsPIITokenize(t *testing.T) {
+func TestSecretProtectionBeatsPIITokenize(t *testing.T) {
 	e := NewEngine(mustLoadFile(t))
 	dec := e.Evaluate(Context{
 		Envelope: &core.InspectionEnvelope{RequestID: "req-1", Target: core.Target{Provider: "cloud"}},
 		Findings: []core.SecurityFinding{piiFinding("TH_CITIZEN_ID"), secretFinding("GITLAB_PAT")},
 	})
-	if dec.Action != core.ActionBlock || dec.MatchedRule != "secrets.GITLAB_PAT" {
-		t.Fatalf("spec §7 example (secret > PII) violated: %+v", dec)
+	if dec.Action != core.ActionRedact || dec.MatchedRule != "secrets.GITLAB_PAT" {
+		t.Fatalf("spec §7 precedence (secret level > PII level) violated: %+v", dec)
 	}
 }
 
@@ -314,7 +314,7 @@ func TestValidationExtendedSchema(t *testing.T) {
 
 func TestFullPolicyFileLoads(t *testing.T) {
 	p := mustLoadFile(t)
-	if p.Version != 6 {
+	if p.Version != 7 {
 		t.Fatalf("version: %d", p.Version)
 	}
 	if len(p.Semantic) == 0 || len(p.PII) == 0 || len(p.Targets) != 2 {

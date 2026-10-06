@@ -54,6 +54,25 @@ path (if ever enabled) separately governed (PRIV-004).
 - `QUESTIONS_FILE` (default `questions/security-v1.yaml`) — question wording
   is versioned code; changes require a re-run of evals (spec §17).
 
+### Secret handling: hard mask vs block
+
+`secrets.<SUBTYPE>.action` accepts `redact` (hard mask) or `block`.
+`enterprise-default.yaml` (version 7) ships `redact` for all secret subtypes:
+
+- **`redact` (hard mask)** — the matched span is replaced with
+  `[REDACTED:SUBTYPE]` and the request/response/tool call proceeds; the raw
+  value never leaves the gateway and is not recoverable (no vault entry, no
+  re-identification). Applies in every direction: request, response
+  (AS-005), tool-call arguments (UC-006), and tool results (UC-007).
+  Laya is never invoked on a secret finding (SEC-002).
+- **`block`** — the whole request/response is rejected with
+  `security_policy_violation` / `SECRET_DETECTED`. Set per-subtype when a
+  category is too sensitive to forward even masked.
+
+Note: when a REDACT decision covers a request, every detected span in it
+(secrets and PII alike) is masked with `[REDACTED:…]` for that request —
+per-subtype PII tokenization only applies when no secret rule fires.
+
 ## Token vault
 
 - `TOKEN_VAULT_KEY` — 64 hex chars (32-byte AES-256 KEK). In production,

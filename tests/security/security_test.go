@@ -98,26 +98,40 @@ func post(t *testing.T, url, body string) (int, string) {
 }
 
 // Secrets smuggled inside nested JSON and tool-argument structures are still
-// scanned (the parser flattens content for inspection).
-func TestNestedSecretInToolArgumentsDetected(t *testing.T) {
-	gw, _, _ := newGateway(t, gateway.ModeEnforce, nil)
+// scanned (the parser flattens content for inspection) and hard-masked: the
+// request proceeds but the audit records the REDACT with the finding.
+func TestNestedSecretInToolArgumentsMasked(t *testing.T) {
+	gw, sink, _ := newGateway(t, gateway.ModeEnforce, nil)
 	body := `{"model":"m","messages":[{"role":"assistant","tool_calls":[{"id":"1","type":"function","function":{"name":"file_write","arguments":"{\"path\":\"/tmp/x\",\"content\":\"cat ~/.gitlab-token glpat-0123456789abcdefghij\"}"}}]}]}`
 	status, out := post(t, gw.URL, body)
-	if status != http.StatusForbidden || !strings.Contains(out, "SECRET_DETECTED") {
-		t.Fatalf("nested secret not blocked: %d %s", status, out)
+	if status != http.StatusOK {
+		t.Fatalf("masked request must proceed: %d %s", status, out)
+	}
+	auditOut := sink.buf.String()
+	if !strings.Contains(auditOut, `"action":"REDACT"`) || !strings.Contains(auditOut, "GITLAB_PAT") {
+		t.Fatalf("nested secret not audited as masked: %s", auditOut)
+	}
+	if strings.Contains(auditOut, "glpat-0123456789abcdefghij") {
+		t.Fatal("raw secret leaked into audit output")
 	}
 }
 
 // Case variations of the bearer keyword are covered by the case-insensitive
-// rule; token casing itself is significant and must not be normalized.
-func TestBearerCaseVariationsDetected(t *testing.T) {
-	gw, _, _ := newGateway(t, gateway.ModeEnforce, nil)
+// rule; token casing itself is significant and must not be normalized. Under
+// the redact policy every variant is hard-masked and the request proceeds.
+func TestBearerCaseVariationsMasked(t *testing.T) {
+	gw, sink, _ := newGateway(t, gateway.ModeEnforce, nil)
 	for _, variant := range []string{"Bearer", "bearer", "BEARER"} {
 		body := `{"model":"m","messages":[{"role":"user","content":"` + variant + ` abcdefghijklmnop123456789"}]}`
 		status, out := post(t, gw.URL, body)
-		if status != http.StatusForbidden {
-			t.Fatalf("%s variant not blocked: %d %s", variant, status, out)
+		if status != http.StatusOK {
+			t.Fatalf("%s variant must be masked, not rejected: %d %s", variant, status, out)
 		}
+		auditOut := sink.buf.String()
+		if !strings.Contains(auditOut, `"action":"REDACT"`) || !strings.Contains(auditOut, "BEARER_TOKEN") {
+			t.Fatalf("%s variant not audited as masked: %s", variant, auditOut)
+		}
+		sink.buf.Reset()
 	}
 }
 

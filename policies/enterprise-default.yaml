@@ -1,6 +1,6 @@
 # enterprise-default policy (spec §8; ticket-12 schema scope)
 id: enterprise-default
-version: 6
+version: 7
 owner: security-team
 effective_date: "2026-10-05"
 
@@ -14,21 +14,25 @@ targets:
   local:
     confidential_data: allow
 
+# Secret protection (precedence level 2). redact = hard mask: the matched
+# span is replaced with [REDACTED:SUBTYPE] and the request/response continues;
+# the raw value never leaves the gateway and is never recoverable (no vault
+# entry). Use action: block to reject the whole request/response instead.
 secrets:
   GITLAB_PAT:
-    action: block
+    action: redact
   GITHUB_TOKEN:
-    action: block
+    action: redact
   PEM_PRIVATE_KEY:
-    action: block
+    action: redact
   JWT:
-    action: block
+    action: redact
   BEARER_TOKEN:
-    action: block
+    action: redact
   AWS_ACCESS_KEY:
-    action: block
+    action: redact
   CONNECTION_STRING:
-    action: block
+    action: redact
 
 # PII transformation policy (precedence level 6; ticket 05 consumes).
 pii:

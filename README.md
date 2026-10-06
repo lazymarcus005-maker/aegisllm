@@ -4,7 +4,9 @@ A pluggable LLM security gateway that sits between applications/agents and an
 existing LLM Gateway. It inspects content before and after LLM requests and
 produces deterministic enforcement actions based on deterministic secret/PII
 detection, span-oriented PII detection, Laya semantic decision evidence,
-identity/application/model metadata, and versioned policy-as-code.
+identity/application/model metadata, and versioned policy-as-code. Detected
+secrets are hard-masked (`[REDACTED:SUBTYPE]`) by the default policy so the
+raw value never leaves the gateway; per-subtype `block` is also available.
 
 > Deterministic code enforces policy. Laya contributes semantic classification
 > and risk signals. The LLM being protected never gets authority to override

@@ -58,13 +58,23 @@ func (s *bytesBufferSink) String() string { return s.buf.String() }
 
 const secretRequest = `{"model":"m","messages":[{"role":"user","content":"Use this GitLab token: glpat-Abc123Xyz_-456DefGhi"}]}`
 
-// AS-001: a known secret is blocked before the upstream, deterministically,
-// with zero upstream calls, and the raw secret never reaches the audit log.
-func TestAS001SecretBlockedInEnforceMode(t *testing.T) {
-	srv, gw, up := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
-		t.Error("upstream must not be called when a known secret is blocked")
+// AS-001: a known secret is hard-masked before the upstream (redact policy),
+// deterministically: the request proceeds with [REDACTED:GITLAB_PAT], the raw
+// secret never leaves the gateway, and it never reaches the audit log.
+func TestAS001SecretMaskedInEnforceMode(t *testing.T) {
+	var upstreamGot string
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		upstreamGot = string(b)
+		if strings.Contains(upstreamGot, "glpat-Abc123Xyz") {
+			t.Error("raw secret reached the upstream")
+		}
+		if !strings.Contains(upstreamGot, "[REDACTED:GITLAB_PAT]") {
+			t.Errorf("upstream body missing hard mask: %s", upstreamGot)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
 	})
-	up.Close() // ensure any upstream call would fail loudly
 	pipe, sink := newRealPipeline(t, ModeEnforce)
 	srv.SetPipeline(pipe)
 
@@ -74,22 +84,8 @@ func TestAS001SecretBlockedInEnforceMode(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusForbidden {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: %d", resp.StatusCode)
-	}
-	var out struct {
-		Error struct {
-			Type      string `json:"type"`
-			Code      string `json:"code"`
-			RequestID string `json:"request_id"`
-		} `json:"error"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&out)
-	if out.Error.Type != "security_policy_violation" || out.Error.Code != "SECRET_DETECTED" {
-		t.Fatalf("error contract: %+v", out.Error)
-	}
-	if out.Error.RequestID == "" {
-		t.Fatal("request_id required in policy rejection")
 	}
 
 	auditOut := sink.String()
@@ -99,8 +95,11 @@ func TestAS001SecretBlockedInEnforceMode(t *testing.T) {
 	if !strings.Contains(auditOut, `"finding_types":["GITLAB_PAT"]`) {
 		t.Fatalf("audit missing finding types: %s", auditOut)
 	}
-	if !strings.Contains(auditOut, `"mode":"enforce"`) || !strings.Contains(auditOut, `"action":"BLOCK"`) {
+	if !strings.Contains(auditOut, `"mode":"enforce"`) || !strings.Contains(auditOut, `"action":"REDACT"`) {
 		t.Fatalf("audit missing mode/action: %s", auditOut)
+	}
+	if !strings.Contains(auditOut, `"code":"SECRET_DETECTED"`) {
+		t.Fatalf("audit missing secret code: %s", auditOut)
 	}
 	if !regexp.MustCompile(`"policy_version":[0-9]+`).MatchString(auditOut) {
 		t.Fatalf("audit missing policy version: %s", auditOut)
@@ -108,7 +107,7 @@ func TestAS001SecretBlockedInEnforceMode(t *testing.T) {
 }
 
 // AS-006: in shadow mode the request still follows the incumbent path while
-// the predicted BLOCK is audited with mode=shadow.
+// the predicted action is audited with mode=shadow.
 func TestAS006ShadowPredictsBlockWithoutBlocking(t *testing.T) {
 	upCalled := false
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeShadow }, func(w http.ResponseWriter, _ *http.Request) {
@@ -129,7 +128,7 @@ func TestAS006ShadowPredictsBlockWithoutBlocking(t *testing.T) {
 		t.Fatalf("shadow must not modify production behavior: called=%v status=%d", upCalled, resp.StatusCode)
 	}
 	auditOut := sink.String()
-	if !strings.Contains(auditOut, `"mode":"shadow"`) || !strings.Contains(auditOut, `"action":"BLOCK"`) {
+	if !strings.Contains(auditOut, `"mode":"shadow"`) || !strings.Contains(auditOut, `"action":"REDACT"`) {
 		t.Fatalf("shadow audit must record predicted action: %s", auditOut)
 	}
 	if strings.Contains(auditOut, "glpat-Abc123Xyz") {
@@ -409,9 +408,9 @@ func requestIDFromAudit(t *testing.T, auditOut string) string {
 
 // --- ticket 07: outbound protection + re-identification ---
 
-// AS-005: a secret the model emits never reaches the client under block
-// policy; the outbound audit event records the predicted BLOCK.
-func TestAS005OutboundSecretBlocked(t *testing.T) {
+// AS-005: a secret the model emits is hard-masked before the client sees it;
+// the outbound audit event records REDACT with the secret finding.
+func TestAS005OutboundSecretMasked(t *testing.T) {
 	respBody := `{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"here is your key: glpat-Abc123Xyz_-456DefGhi"},"finish_reason":"stop"}]}`
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -426,17 +425,17 @@ func TestAS005OutboundSecretBlocked(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusForbidden {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: %d", resp.StatusCode)
 	}
 	b, _ := io.ReadAll(resp.Body)
 	if strings.Contains(string(b), "glpat-Abc123Xyz") {
 		t.Fatal("raw secret reached the client")
 	}
-	if !strings.Contains(string(b), "security_policy_violation") {
-		t.Fatalf("expected policy error contract: %s", b)
+	if !strings.Contains(string(b), "[REDACTED:GITLAB_PAT]") {
+		t.Fatalf("client response missing hard mask: %s", b)
 	}
-	if !strings.Contains(sink.String(), `"direction":"RESPONSE"`) || !strings.Contains(sink.String(), `"action":"BLOCK"`) {
+	if !strings.Contains(sink.String(), `"direction":"RESPONSE"`) || !strings.Contains(sink.String(), `"action":"REDACT"`) {
 		t.Fatalf("outbound audit event missing: %s", sink.String())
 	}
 }
@@ -581,8 +580,8 @@ func TestShadowOutboundPassesThroughWithPrediction(t *testing.T) {
 	if !strings.Contains(string(b), "glpat-Abc123Xyz") {
 		t.Fatal("shadow mode must not modify the incumbent response")
 	}
-	if !strings.Contains(sink.String(), `"direction":"RESPONSE"`) || !strings.Contains(sink.String(), `"action":"BLOCK"`) {
-		t.Fatalf("shadow must audit the predicted outbound block: %s", sink.String())
+	if !strings.Contains(sink.String(), `"direction":"RESPONSE"`) || !strings.Contains(sink.String(), `"action":"REDACT"`) {
+		t.Fatalf("shadow must audit the predicted outbound action: %s", sink.String())
 	}
 }
 
@@ -655,11 +654,12 @@ func TestUC004ShadowLayaEvidenceAndPredictedBlock(t *testing.T) {
 	}
 }
 
-// SEC-002 + NFR-PERF-004: a known secret is deterministically blocked and
+// SEC-002 + NFR-PERF-004: a known secret is deterministically hard-masked and
 // the semantic provider is never called.
 func TestSecretRequestSkipsLaya(t *testing.T) {
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
-		t.Error("upstream must not be called")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
 	})
 	pipe, _ := newRealPipeline(t, ModeEnforce)
 	calls := 0
@@ -672,11 +672,11 @@ func TestSecretRequestSkipsLaya(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: %d", resp.StatusCode)
 	}
 	if calls != 0 {
-		t.Fatalf("Laya must not be called on deterministic block, got %d calls", calls)
+		t.Fatalf("Laya must not be called on deterministic secret handling, got %d calls", calls)
 	}
 }
 
@@ -974,8 +974,9 @@ thresholds:
 	}
 }
 
-// A secret inside tool arguments is caught deterministically, no Laya call.
-func TestToolCallSecretBlockedDeterministically(t *testing.T) {
+// A secret inside tool arguments is caught deterministically, hard-masked,
+// no Laya call.
+func TestToolCallSecretMaskedDeterministically(t *testing.T) {
 	srv, _, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {})
 	pipe, _ := newRealPipeline(t, ModeEnforce)
 	calls := 0
@@ -989,16 +990,21 @@ func TestToolCallSecretBlockedDeterministically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dec.Action != core.ActionBlock || dec.Code != "SECRET_DETECTED" {
-		t.Fatalf("secret in arguments must block: %+v", dec)
+	if dec.Action != core.ActionRedact || dec.Code != "SECRET_DETECTED" {
+		t.Fatalf("secret in arguments must be masked: %+v", dec)
+	}
+	if !strings.Contains(dec.TransformedContent, "[REDACTED:PEM_PRIVATE_KEY]") ||
+		strings.Contains(dec.TransformedContent, "MIIB") {
+		t.Fatalf("tool-call arguments not hard-masked: %s", dec.TransformedContent)
 	}
 	if calls != 0 {
 		t.Fatalf("Laya must not be called, got %d", calls)
 	}
 }
 
-// UC-007: a credential-bearing tool result never re-enters model context.
-func TestUC007ToolResultCredentialBlocked(t *testing.T) {
+// UC-007: a credential-bearing tool result never re-enters model context —
+// it is hard-masked per the redact policy.
+func TestUC007ToolResultCredentialMasked(t *testing.T) {
 	srv, _, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {})
 	pipe, sink := newRealPipeline(t, ModeEnforce)
 	srv.SetPipeline(pipe)
@@ -1009,8 +1015,12 @@ func TestUC007ToolResultCredentialBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dec.Action != core.ActionBlock {
+	if dec.Action != core.ActionRedact {
 		t.Fatalf("UC-007 violated: %+v", dec)
+	}
+	if strings.Contains(dec.TransformedContent, "eyJhbGciOiJIUzI1NiJ9") ||
+		!strings.Contains(dec.TransformedContent, "[REDACTED:") {
+		t.Fatalf("tool result not hard-masked: %s", dec.TransformedContent)
 	}
 	if !strings.Contains(sink.String(), `"direction":"TOOL_RESULT"`) || !strings.Contains(sink.String(), "JWT") {
 		t.Fatalf("tool result audit missing: %s", sink.String())

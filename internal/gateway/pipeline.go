@@ -376,9 +376,10 @@ type ResponseOutcome struct {
 }
 
 // ProcessResponse scans the upstream response before it reaches the client
-// (FR-015, architecture §12). Secret findings block per policy (AS-005);
-// PII findings are redacted regardless of the request-side transformation
-// flavor (UC-008). Token placeholders the model echoed back are re-identified
+// (FR-015, architecture §12). Secret and PII findings are transformed per
+// policy: BLOCK/REVIEW rejects the whole response (AS-005 under block
+// policy); REDACT masks every matched span before the client sees it. Token
+// placeholders the model echoed back are re-identified
 // only when they resolve against tokens issued in this request's namespace
 // for the calling application (T-023); invented markers stay untouched.
 func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw []byte) (ResponseOutcome, error) {
@@ -408,7 +409,10 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 	case core.ActionRedact, core.ActionTokenize:
 		var ts []responseTransform
 		for _, f := range all {
-			if f.Category != core.CategoryPII || f.Location.End <= f.Location.Start {
+			if f.Category != core.CategoryPII && f.Category != core.CategorySecret {
+				continue
+			}
+			if f.Location.End <= f.Location.Start {
 				continue
 			}
 			ts = append(ts, responseTransform{
@@ -579,7 +583,14 @@ func (p *SecurityPipeline) InspectToolCall(reqEnv *core.InspectionEnvelope, call
 	}
 
 	p.audit.Record(p.toolAuditEvent(env, dec, all, start, layaInfo))
-	return ToolDecision{Action: dec.Action, Code: dec.Code, MatchedRule: dec.MatchedRule, Reason: dec.Reason}, nil
+	out := ToolDecision{Action: dec.Action, Code: dec.Code, MatchedRule: dec.MatchedRule, Reason: dec.Reason}
+	if dec.Action == core.ActionRedact || dec.Action == core.ActionTokenize {
+		// UC-006 hard mask: secret-bearing arguments are returned masked so
+		// the raw material never reaches the tool executor.
+		plan := pii.Plan(all, pii.RedactNamer)
+		out.TransformedContent = pii.ApplyToText(call.Arguments, plan)
+	}
+	return out, nil
 }
 
 // InspectToolResult inspects a tool result before it re-enters model context
