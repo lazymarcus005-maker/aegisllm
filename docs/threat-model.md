@@ -37,6 +37,8 @@ Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
 | Classifier false negatives/positives | eval harness with FNR-emphasized slices; regression CI gates promotion (§17) | thresholds are only as good as the labelled data |
 | Audit-log leakage | audit struct cannot carry raw content by construction (ticket 02 tests) | downstream log sinks must be access-controlled |
 | Configuration poisoning | KnownFields-strict YAML loaders; validated declarative actions, thresholds, count rules, operator-only effective-policy summary, and versioned policy files | supply chain of those files — protect the repo and require policy review |
+| Semantic calibration poisoning/tampering | SHA-256-bound question/dataset provenance, provider/checkpoint binding, strict slice coverage and explicit reviewed promotion | operators must protect reviewed artifacts and the real Laya image |
+| Malformed semantic evidence | missing/extra decisions, unknown questions, schema/checkpoint mismatch, and non-finite/out-of-range confidence are rejected; fallback matrix is policy-controlled | high-risk availability impact is deliberate |
 | Supply-chain dependency risk | small dependency surface: yaml.v3, go-redis, miniredis (test), prometheus client | pin versions in go.sum; review updates |
 | Oversized request / DoS | MaxBytesReader → 413 before inspection; read-header timeout; Laya circuit breaker | volumetric DDoS protection belongs to the edge |
 | Tenant/application abuse and cost amplification | verified-identity token bucket and concurrency semaphore, normalized prompt budget, bounded response/stream lifetime, global Laya semaphore, bounded key cleanup | process-local limits do not enforce a global budget across instances; distributed limiter is deferred |
@@ -51,6 +53,9 @@ Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
 - Laya unavailable → risk-sensitive fallback: high-risk routes take
   `fallback.laya_unavailable.high_risk` (BLOCK by default), others continue
   deterministic-only.
+- Semantic enforcement cannot be enabled with the committed noop/synthetic
+  artifact: startup requires a real reachable provider, promoted provenance,
+  complete eligible slices, and passing criteria.
 - Policy engine failure → fail closed (500 on pipeline error; BLOCK on
   unknown action).
 - Audit sink failure → console sink; production deployments should buffer

@@ -23,8 +23,11 @@ Production requires `DEPLOYMENT_PROFILE=production`, `SECURITY_MODE=enforce`,
 and `AUTH_MODE=jwt`. Startup fails before the listener opens unless all of
 the following are present and valid: a 64-hex-character `TOKEN_VAULT_KEY`, a
 Redis `TOKEN_VAULT_REDIS_URL`, `TELEMETRY_HMAC_KEY`, `UPSTREAM_BASE_URL`, and
-the reviewed policy, question, and threshold files. Known mock-upstream
-hostnames are rejected in production. Inject secret values at deploy time;
+the reviewed policy and question files. If semantic enforcement is requested,
+the threshold artifact is additionally required to be readable, promoted, and
+strictly provenance-valid. Deterministic-only production may set
+`SECURITY_SEMANTIC_ENFORCE=false` and reports semantic `disabled`. Known
+mock-upstream hostnames are rejected in production. Inject secret values at deploy time;
 never commit a populated `.env.production` or compose file. Use
 `.env.production.example` and `docker-compose.production.example.yml` as
 placeholder-only references.
@@ -81,17 +84,20 @@ or JWTs.
   traffic unchanged. Use this first on real traffic (rollout stage 1).
 - `SECURITY_MODE=enforce` — deterministic policy acts. Semantic rules act
   ONLY when `SECURITY_SEMANTIC_ENFORCE=true` AND a calibrated threshold
-  record (evaluated: true) matches the traffic slice (rollout stage 3).
+  artifact is explicitly promoted, all required decisions are present, and
+  provider/schema/checkpoint bindings match (rollout stage 3).
 
 ## Readiness & health
 
 - `GET /health` — liveness.
 - `GET /ready` — returns the compatible `status` field plus
   `deployment_profile`, `security_mode`, and sanitized dependency states. It
-  checks upstream reachability, policy loaded, question schema loaded, token
-  store (Redis ping when configured), and laya-serve (when `LAYA_URL` is
-  configured). It never returns credentials, auth configuration values, or
-  inspected content. Non-200 →
+  also returns `semantic.status` (`disabled`, `shadow`, `ready`, or `unready`),
+  provider, schema version, threshold policy id/version, checkpoint id, and
+  calibration timestamp. It checks upstream reachability, policy loaded,
+  question schema loaded, token store (Redis ping when configured), and
+  laya-serve (when `LAYA_URL` is configured). It never returns credentials,
+  endpoint URLs, auth configuration values, or inspected content. Non-200 →
   not ready.
 
 ## Metrics (spec §15)
@@ -118,6 +124,10 @@ the predicted action and `applied_action=ALLOW`.
 Alerts worth wiring: `fallback_total` spikes (Laya instability),
 `laya_errors_total` rate, p95 `gateway_security_latency_ms` > 25 ms,
 `shadow_disagreements_total` growth rate (tuning signal).
+P0.5 adds bounded `semantic_calibration_artifact_info`,
+`semantic_rejected_evidence_total`, schema/checkpoint mismatch counters,
+`semantic_missing_decisions_total`, and reason-labelled
+`semantic_fallback_total`.
 
 ## Audit events
 
@@ -143,6 +153,49 @@ path (if ever enabled) separately governed (PRIV-004).
   enforcement permission slip (INV-010).
 - `QUESTIONS_FILE` (default `questions/security-v1.yaml`) — question wording
   is versioned code; changes require a re-run of evals (spec §17).
+
+### P0.5 calibration gate
+
+Threshold artifacts bind the question schema id/version/hash, held-out dataset
+id/version/hash, provider, checkpoint/model revision, RFC3339 calibration and
+evaluation timestamps, bounded per-language/risk sample counts and metrics,
+tool version, and explicit `evaluated`/`promoted` state. The gateway rejects
+tampered hashes, duplicate or missing question/language slices, unknown
+questions, missing decisions, schema/checkpoint mismatches, and invalid
+confidence values. High-risk semantic evidence errors use the strict policy's
+BLOCK fallback; direction/provider-specific alternatives belong in the policy
+fallback matrix.
+
+The workflow is intentionally explicit:
+
+```bash
+go run ./cmd/evaltool -action evaluate -provider laya -url http://127.0.0.1:8300 \
+  -baseline /tmp/semantic-eval.json -report /tmp/semantic-eval.md
+go run ./cmd/evaltool -action calibrate -provider laya -url http://127.0.0.1:8300 \
+  -output /tmp/thresholds-candidate.yaml
+go run ./cmd/evaltool -action verify -provider laya -url http://127.0.0.1:8300 \
+  -artifact /tmp/thresholds-candidate.yaml
+go run ./cmd/evaltool -action promote -provider laya -url http://127.0.0.1:8300 \
+  -artifact /tmp/thresholds-candidate.yaml -output /tmp/thresholds-reviewed.yaml
+```
+
+`promote` only writes the reviewed artifact; it does not change environment
+flags, copy files into the repository, push, or merge. The committed
+`policies/thresholds-security-v1.yaml` and
+`evals/reports/security-v1-synthetic-non-promoted.yaml` are synthetic/noop
+examples and must never be promoted.
+
+### Laya deployment contract
+
+Laya is an operator-provided private service, not an image or credential
+owned by this repository. Production Compose requires `LAYA_IMAGE` from the
+operator and uses an optional `semantic` profile; the image value is never
+hard-coded. Put the gateway and Laya on a private internal network, expose
+only Laya's health/evaluation port to the gateway, and do not publish it to
+the host or internet. Configure `LAYA_TIMEOUT` and `MAX_CONCURRENT_LAYA` as
+bounded latency/concurrency controls. CI uses only the in-repository
+synthetic `cmd/fakelaya` HTTP provider and it is not a production calibration
+source.
 
 ### Secret handling: hard mask vs block
 
@@ -180,7 +233,8 @@ per-subtype PII tokenization only applies when no secret rule fires.
 
 1. Offline evals (`cmd/evaltool`), 2. dev shadow, 3. UAT shadow, 4.
 deterministic enforcement, 5. semantic canary on one calibrated slice
-(`SECURITY_SEMANTIC_ENFORCE=true` + a single `evaluated: true` record),
+(`SECURITY_SEMANTIC_ENFORCE=true` only after a complete promoted artifact;
+canary scope is controlled by policy/routing),
 6. expand only after measured review. Regression CI fails promotion on
 tolerance violations (`evaltool -compare`).
 

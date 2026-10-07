@@ -82,6 +82,8 @@ All configuration is environment-based; see [.env.example](.env.example).
 | `MAX_CONCURRENT_LAYA` | `4` | Global in-process Laya evaluation cap |
 | `LIMITER_MAX_KEYS` / `LIMITER_KEY_IDLE_TIMEOUT` | `10000` / `10m` | Bounded limiter key lifecycle |
 | `SECURITY_MODE` | `off` | `off`, `shadow`, `enforce` |
+| `SECURITY_SEMANTIC_ENFORCE` | `false` | Requires a reachable real Laya provider and a promoted, provenance-bound threshold artifact |
+| `LAYA_URL` / `LAYA_TIMEOUT` | — / `5s` | Operator-provided private Laya endpoint and bounded request timeout |
 | `AUTH_MODE` | `off` | `off` for development compatibility or `jwt` for authenticated ingress |
 | `JWT_PUBLIC_KEY_FILE` | — | PEM RSA (RS256) or P-256 EC (ES256) public key for JWT mode |
 | `JWT_HMAC_SECRET` | — | Development/test only HS256 secret; rejected in shadow/production |
@@ -93,6 +95,14 @@ All configuration is environment-based; see [.env.example](.env.example).
 | `TOKEN_VAULT_REDIS_URL` | in-memory in development | Required in production |
 | `TELEMETRY_HMAC_KEY` | empty in development | Required in production |
 | `DEFAULT_TARGET_PROVIDER` | `cloud` | Provider class when `X-Target-Provider` absent |
+
+Semantic enforcement is fail-closed at startup: `SECURITY_SEMANTIC_ENFORCE=true`
+requires `LAYA_URL`, a non-noop provider, matching question-schema and
+checkpoint provenance, complete language/risk coverage, passing metrics, and
+an explicitly promoted artifact. Production may remain deterministic-only with
+the flag false; `/ready` then reports `semantic.status=disabled`. The committed
+threshold file and `evals/reports/security-v1-synthetic-non-promoted.yaml` are
+synthetic/noop examples and are not production-ready.
 
 With `AUTH_MODE=off`, development retains the compatibility headers
 `X-Application-Id`, `X-Tenant-Id`, `X-User-Id`, and `X-Target-Provider`. With
@@ -158,6 +168,12 @@ docs/                 spec, architecture, handoff, threat model, ADRs
 `stream_actions_total`, `stream_bytes_inspected_total`, and
 `stream_events_inspected_total`; runtime metrics have no tenant/application
 labels.
+
+P0.5 additionally exposes bounded `semantic_calibration_artifact_info`,
+`semantic_rejected_evidence_total`, schema/checkpoint mismatch, missing
+decision, and reason-labelled semantic fallback metrics. Readiness exposes
+only semantic state and safe artifact identifiers; it never exposes endpoint
+credentials or artifact content.
 Docker Compose includes a Prometheus scraping the gateway; see
 [docs/operations.md](docs/operations.md) for runbook guidance.
 

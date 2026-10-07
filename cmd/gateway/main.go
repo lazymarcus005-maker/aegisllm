@@ -119,18 +119,16 @@ func main() {
 
 	// Semantic decision provider (ticket 08): local laya-serve when
 	// configured, otherwise a noop provider and no semantic calls.
-	if layaURL := os.Getenv("LAYA_URL"); layaURL != "" {
-		timeout := 5 * time.Second
-		if v := os.Getenv("LAYA_TIMEOUT"); v != "" {
-			if d, err := time.ParseDuration(v); err == nil && d > 0 {
-				timeout = d
-			}
-		}
-		laya := decision.NewLayaProvider(layaURL, os.Getenv("LAYA_EVALUATE_PATH"), timeout)
+	var laya *decision.LayaProvider
+	providerName := "noop"
+	if cfg.LayaURL != "" {
+		laya = decision.NewLayaProvider(cfg.LayaURL, cfg.LayaEvaluatePath, cfg.LayaTimeout)
+		laya.SetQuestionSchema(questionSchema.Schema)
 		breaker := decision.NewCircuitBreaker(3, 30*time.Second)
 		provider := decision.NewResilientProvider(laya, breaker)
 		limited := decision.NewLimitedProvider(provider, cfg.MaxConcurrentLaya, metrics.SetActiveLayaEvaluations)
 		pipe.SetDecisionProvider(limited, questionSchema)
+		providerName = "laya"
 		srv.AddReadinessCheck("laya", func() string {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -143,20 +141,49 @@ func main() {
 	} else {
 		pipe.SetDecisionProvider(&decision.NoopProvider{}, questionSchema)
 	}
-	if os.Getenv("SECURITY_SEMANTIC_ENFORCE") == "true" {
-		// Rollout stage 3 (ticket 11): only enable together with calibration.
+	var thresholds *policy.SemanticThresholds
+	if cfg.ThresholdsFile != "" {
+		if _, statErr := os.Stat(cfg.ThresholdsFile); statErr == nil {
+			var loadErr error
+			thresholds, loadErr = policy.LoadSemanticThresholdsFile(cfg.ThresholdsFile)
+			if loadErr != nil {
+				logger.Error("threshold policy load failed", "path", cfg.ThresholdsFile)
+				os.Exit(1)
+			}
+			pipe.SetSemanticThresholds(thresholds)
+			metrics.ObserveCalibrationArtifact(thresholds.ID, thresholds.Version, thresholds.Provider, thresholds.Checkpoint, thresholds.QuestionSchemaID, thresholds.State, thresholds.CalibrationTimestamp)
+		}
+	}
+	if cfg.SemanticEnforce {
 		pipe.EnableSemanticEnforce()
 	}
-	// Threshold policy (ticket 11): required for semantic enforcement;
-	// invalid threshold policy fails startup.
-	if _, err := os.Stat(cfg.ThresholdsFile); err == nil {
-		thresholds, err := policy.LoadSemanticThresholdsFile(cfg.ThresholdsFile)
-		if err != nil {
-			logger.Error("threshold policy load failed", "path", cfg.ThresholdsFile)
-			os.Exit(1)
-		}
-		pipe.SetSemanticThresholds(thresholds)
+	checkpoint, thresholdID, thresholdVersion, calibrationTimestamp := "", "", 0, ""
+	if thresholds != nil {
+		checkpoint, thresholdID, thresholdVersion, calibrationTimestamp = thresholds.Checkpoint, thresholds.ID, thresholds.Version, thresholds.CalibrationTimestamp
 	}
+	srv.SetSemanticReadiness(func() gateway.SemanticReadiness {
+		status := "disabled"
+		if !cfg.SemanticEnforce {
+			if cfg.SecurityMode == gateway.ModeShadow {
+				status = "shadow"
+			}
+		} else {
+			status = "ready"
+			if laya == nil || thresholds == nil {
+				status = "unready"
+			}
+			if laya != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				if err := laya.Health(ctx); err != nil {
+					status = "unready"
+				}
+				cancel()
+			}
+		}
+		return gateway.SemanticReadiness{Status: status, Provider: providerName, SchemaVersion: questionSchema.Schema,
+			ThresholdPolicyID: thresholdID, ThresholdPolicyVersion: thresholdVersion,
+			CheckpointID: checkpoint, CalibrationTimestamp: calibrationTimestamp}
+	})
 
 	pipe.SetRecorder(metrics)
 	srv.SetMetricsHandler(metrics.Handler())

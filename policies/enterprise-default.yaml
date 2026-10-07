@@ -112,3 +112,18 @@ fallback:
   laya_unavailable:
     high_risk: block
     low_risk: deterministic_only
+  # P0.5 semantic evidence failures are explicit policy decisions. High-risk
+  # unknown/error paths remain BLOCK in the strict profile.
+  semantic:
+    - risk: high
+      direction: "*"
+      provider: "*"
+      on_error: block
+    - risk: medium
+      direction: "*"
+      provider: "*"
+      on_error: review
+    - risk: low
+      direction: "*"
+      provider: "*"
+      on_error: review

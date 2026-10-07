@@ -17,7 +17,7 @@ func NewLimitedProvider(inner DecisionProvider, maxConcurrent int, active func(i
 	return &LimitedProvider{inner: inner, slots: make(chan struct{}, maxConcurrent), active: active}
 }
 
-func (p *LimitedProvider) Name() string { return "limited-" + p.inner.Name() }
+func (p *LimitedProvider) Name() string { return p.inner.Name() }
 
 func (p *LimitedProvider) Evaluate(ctx context.Context, req DecisionRequest, ids []string) (DecisionEvidence, error) {
 	select {

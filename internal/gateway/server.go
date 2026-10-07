@@ -59,6 +59,20 @@ type Server struct {
 	dashboard      *dashboard.Dashboard
 	authn          *auth.Authenticator
 	policy         *policy.Policy
+	semanticStatus func() SemanticReadiness
+}
+
+// SemanticReadiness is the sanitized semantic contract exposed by /ready.
+// It intentionally contains no URL, credentials, raw artifact data, or
+// request content.
+type SemanticReadiness struct {
+	Status                 string `json:"status"`
+	Provider               string `json:"provider,omitempty"`
+	SchemaVersion          string `json:"schema_version,omitempty"`
+	ThresholdPolicyID      string `json:"threshold_policy_id,omitempty"`
+	ThresholdPolicyVersion int    `json:"threshold_policy_version,omitempty"`
+	CheckpointID           string `json:"checkpoint_id,omitempty"`
+	CalibrationTimestamp   string `json:"calibration_timestamp,omitempty"`
 }
 
 // NewServer validates configuration and builds the server.
@@ -104,12 +118,22 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, proxy: proxy, logger: logger, readyFns: map[string]func() string{}, authn: authn,
+	srv := &Server{cfg: cfg, proxy: proxy, logger: logger, readyFns: map[string]func() string{}, authn: authn,
 		runtimeMetrics: observability.Noop{}, limiter: limiter.New(limiter.Config{
 			RequestsPerSecond: cfg.RequestsPerSecond, Burst: cfg.RateBurst,
 			MaxConcurrent: cfg.MaxConcurrentRequests, MaxKeys: cfg.LimiterMaxKeys,
 			KeyIdleTimeout: cfg.LimiterKeyIdleTimeout,
-		})}, nil
+		})}
+	srv.semanticStatus = func() SemanticReadiness {
+		status := "disabled"
+		if cfg.SemanticEnforce {
+			status = "unready"
+		} else if cfg.SecurityMode == ModeShadow {
+			status = "shadow"
+		}
+		return SemanticReadiness{Status: status}
+	}
+	return srv, nil
 }
 
 // SetPipeline attaches the security pipeline and propagates the security
@@ -123,6 +147,8 @@ func (s *Server) SetPipeline(p Pipeline) {
 // SetPolicy attaches the already validated policy for the operator-only
 // effective-policy endpoint. The endpoint exposes only Policy.Summary().
 func (s *Server) SetPolicy(p *policy.Policy) { s.policy = p }
+
+func (s *Server) SetSemanticReadiness(fn func() SemanticReadiness) { s.semanticStatus = fn }
 
 // SetMetricsHandler mounts a handler at GET /metrics (spec §15). The
 // production observability handler also provides the metrics source used by
@@ -211,6 +237,15 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 		"security_mode":      s.cfg.SecurityMode,
 		"dependencies":       dependencies,
 	}
+	semantic := SemanticReadiness{Status: "disabled"}
+	if s.semanticStatus != nil {
+		semantic = s.semanticStatus()
+	}
+	semantic = sanitizeSemanticReadiness(semantic)
+	response["semantic"] = semantic
+	if semantic.Status == "unready" && firstReason == "" {
+		firstReason = "semantic: semantic contract is not ready"
+	}
 	if firstReason != "" {
 		response["status"] = "not_ready"
 		response["reason"] = firstReason
@@ -218,6 +253,34 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func sanitizeSemanticReadiness(in SemanticReadiness) SemanticReadiness {
+	switch in.Status {
+	case "disabled", "shadow", "ready", "unready":
+	default:
+		in.Status = "unready"
+	}
+	in.Provider = safeSemanticMetadata(in.Provider)
+	in.SchemaVersion = safeSemanticMetadata(in.SchemaVersion)
+	in.ThresholdPolicyID = safeSemanticMetadata(in.ThresholdPolicyID)
+	in.CheckpointID = safeSemanticMetadata(in.CheckpointID)
+	in.CalibrationTimestamp = safeSemanticMetadata(in.CalibrationTimestamp)
+	return in
+}
+
+func safeSemanticMetadata(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 64 {
+		value = value[:64]
+	}
+	for i, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("._:-", r) {
+			continue
+		}
+		value = value[:i] + "_" + value[i+len(string(r)):]
+	}
+	return value
 }
 
 func (s *Server) readyCheck() string {

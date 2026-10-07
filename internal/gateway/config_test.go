@@ -177,6 +177,15 @@ func TestProductionConfigValidationSuccess(t *testing.T) {
 	}
 }
 
+func TestDeterministicOnlyProductionMayOmitThresholds(t *testing.T) {
+	cfg := productionConfig(t)
+	cfg.SemanticEnforce = false
+	cfg.ThresholdsFile = filepath.Join(t.TempDir(), "not-present.yaml")
+	if err := ValidateConfig(cfg); err != nil {
+		t.Fatalf("deterministic-only production rejected without thresholds: %v", err)
+	}
+}
+
 func TestProductionConfigValidationFailures(t *testing.T) {
 	base := productionConfig(t)
 	badFile := func(t *testing.T, content string) string {
@@ -204,8 +213,16 @@ func TestProductionConfigValidationFailures(t *testing.T) {
 		{"invalid policy", func(c *Config, t *testing.T) { c.PolicyFile = badFile(t, "not: a policy") }, "POLICY_FILE"},
 		{"missing questions", func(c *Config, _ *testing.T) { c.QuestionsFile = filepath.Join("/tmp", "missing-questions.yaml") }, "QUESTIONS_FILE"},
 		{"invalid questions", func(c *Config, t *testing.T) { c.QuestionsFile = badFile(t, "schema: broken") }, "QUESTIONS_FILE"},
-		{"missing thresholds", func(c *Config, _ *testing.T) { c.ThresholdsFile = filepath.Join("/tmp", "missing-thresholds.yaml") }, "THRESHOLDS_FILE"},
-		{"invalid thresholds", func(c *Config, t *testing.T) { c.ThresholdsFile = badFile(t, "id: broken") }, "THRESHOLDS_FILE"},
+		{"missing thresholds when semantic enforcement is requested", func(c *Config, _ *testing.T) {
+			c.SemanticEnforce = true
+			c.LayaURL = "http://laya.example.invalid:8300"
+			c.ThresholdsFile = filepath.Join("/tmp", "missing-thresholds.yaml")
+		}, "THRESHOLDS_FILE"},
+		{"invalid thresholds when semantic enforcement is requested", func(c *Config, t *testing.T) {
+			c.SemanticEnforce = true
+			c.LayaURL = "http://laya.example.invalid:8300"
+			c.ThresholdsFile = badFile(t, "id: broken")
+		}, "THRESHOLDS_FILE"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

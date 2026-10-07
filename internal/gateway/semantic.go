@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -93,15 +95,42 @@ func (p *SecurityPipeline) semanticStage(ctx context.Context, ins *inspection) {
 	ins.layaMS = time.Since(layaStart).Milliseconds()
 	if err != nil || evidence != nil {
 		ins.laya = &audit.LayaInfo{}
+		if evidence != nil {
+			ins.laya = layaAuditInfo(evidence, p.questions)
+		}
 		p.recorder.ObserveLaya(float64(ins.layaMS), err != nil)
 	}
 	if err != nil {
-		ins.laya.Error = "unavailable"
-		if plan.Ask && plan.MaxRisk == "high" {
-			if fb, ok := p.engine.LayaUnavailableFallback(); ok {
+		if ins.laya.Error == "" {
+			ins.laya.Error = "unavailable"
+			if evidence != nil {
+				ins.laya.Error = "rejected"
+			}
+		}
+		if plan.Ask {
+			provider := ""
+			if p.provider != nil {
+				provider = p.provider.Name()
+			}
+			var fb policy.Decision
+			var ok bool
+			if evidence == nil {
+				// Preserve the established outage contract and its stable audit
+				// code. Evidence-shape failures use the new reasoned matrix.
+				if plan.MaxRisk == "high" {
+					fb, ok = p.engine.LayaUnavailableFallback()
+				}
+			} else {
+				fb, ok = p.engine.SemanticFallback(plan.MaxRisk, strings.ToLower(string(env.Direction)), provider, err.Error())
+			}
+			if ok {
 				ins.dec = fb
 				ins.explanation.Decision = fb
-				p.recorder.ObserveFallback()
+				if evidence == nil {
+					p.recorder.ObserveFallbackReason("provider")
+				} else {
+					p.recorder.ObserveFallbackReason("semantic_evidence_rejected")
+				}
 			}
 		}
 		return
@@ -109,7 +138,7 @@ func (p *SecurityPipeline) semanticStage(ctx context.Context, ins *inspection) {
 	if evidence == nil {
 		return
 	}
-	ins.laya = layaAuditInfo(evidence)
+	ins.laya = layaAuditInfo(evidence, p.questions)
 	switch {
 	case p.mode == ModeShadow:
 		ins.explanation = p.engine.Explain(policy.Context{Envelope: env, Findings: ins.findings, Semantic: signals})
@@ -139,6 +168,9 @@ func (p *SecurityPipeline) evaluateSemantic(ctx context.Context, env *core.Inspe
 	if err != nil {
 		return nil, nil, plan, err
 	}
+	if err := p.validateEvidence(evidence, plan.QuestionIDs); err != nil {
+		return &evidence, nil, plan, err
+	}
 	var signals []policy.SemanticSignal
 	for _, id := range plan.QuestionIDs {
 		d, ok := evidence.Decisions[id]
@@ -152,9 +184,66 @@ func (p *SecurityPipeline) evaluateSemantic(ctx context.Context, env *core.Inspe
 	return &evidence, signals, plan, nil
 }
 
-func layaAuditInfo(ev *decision.DecisionEvidence) *audit.LayaInfo {
-	info := &audit.LayaInfo{Provider: ev.Provider, Checkpoint: ev.Checkpoint, SchemaVersion: ev.SchemaVersion, Route: ev.Route}
+func (p *SecurityPipeline) validateEvidence(evidence decision.DecisionEvidence, required []string) error {
+	if strings.TrimSpace(evidence.Provider) == "" || strings.EqualFold(evidence.Provider, "noop") {
+		p.recorder.ObserveSemanticRejected("provider")
+		return fmt.Errorf("semantic provider is missing or noop")
+	}
+	if p.questions == nil {
+		p.recorder.ObserveSemanticRejected("schema")
+		return fmt.Errorf("question schema is not loaded")
+	}
+	if evidence.SchemaVersion != p.questions.Schema {
+		p.recorder.ObserveSchemaMismatch()
+		return fmt.Errorf("semantic schema mismatch")
+	}
+	if p.thresholds != nil && p.thresholds.QuestionSchema != "" && p.thresholds.QuestionSchema != "legacy" {
+		if evidence.SchemaVersion != p.thresholds.QuestionSchemaID {
+			p.recorder.ObserveSchemaMismatch()
+			return fmt.Errorf("semantic schema mismatch")
+		}
+		if p.thresholds.Checkpoint != "" && evidence.Checkpoint != p.thresholds.Checkpoint {
+			p.recorder.ObserveCheckpointMismatch()
+			return fmt.Errorf("semantic checkpoint mismatch")
+		}
+		if p.thresholds.Provider != "" && p.thresholds.Provider != "legacy" && !strings.EqualFold(evidence.Provider, p.thresholds.Provider) {
+			p.recorder.ObserveSemanticRejected("provider")
+			return fmt.Errorf("semantic provider mismatch")
+		}
+	}
+	wanted := make(map[string]bool, len(required))
+	for _, id := range required {
+		wanted[id] = true
+	}
+	for id := range evidence.Decisions {
+		if !wanted[id] {
+			p.recorder.ObserveSemanticRejected("unknown_question")
+			return fmt.Errorf("semantic evidence contains unknown question")
+		}
+	}
+	for _, id := range required {
+		d, ok := evidence.Decisions[id]
+		if !ok {
+			p.recorder.ObserveMissingDecision()
+			return fmt.Errorf("semantic evidence is missing a required decision")
+		}
+		if math.IsNaN(d.Confidence) || math.IsInf(d.Confidence, 0) || d.Confidence < 0 || d.Confidence > 1 {
+			p.recorder.ObserveSemanticRejected("confidence")
+			return fmt.Errorf("semantic evidence confidence is out of range")
+		}
+	}
+	return nil
+}
+
+func layaAuditInfo(ev *decision.DecisionEvidence, schema *decision.QuestionSchema) *audit.LayaInfo {
+	info := &audit.LayaInfo{Provider: safeSemanticMetadata(ev.Provider), Checkpoint: safeSemanticMetadata(ev.Checkpoint), SchemaVersion: safeSemanticMetadata(ev.SchemaVersion), Route: safeSemanticMetadata(ev.Route)}
 	for id, d := range ev.Decisions {
+		if schema == nil || schema.RiskOf(id) == "" {
+			continue
+		}
+		if math.IsNaN(d.Confidence) || math.IsInf(d.Confidence, 0) || d.Confidence < 0 || d.Confidence > 1 {
+			continue
+		}
 		if info.Decisions == nil {
 			info.Decisions = map[string]audit.LayaDecision{}
 		}

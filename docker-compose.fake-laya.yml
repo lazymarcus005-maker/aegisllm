@@ -1,0 +1,17 @@
+# CI-only semantic provider. This is synthetic and must never be used as a
+# production calibration source.
+services:
+  fake-laya:
+    build:
+      context: .
+      dockerfile: Dockerfile.fake-laya
+    profiles: [semantic-ci]
+    expose:
+      - "8300"
+  security-gateway:
+    profiles: [semantic-ci]
+    environment:
+      LAYA_URL: "http://fake-laya:8300"
+      SECURITY_SEMANTIC_ENFORCE: "false"
+    depends_on:
+      - fake-laya

@@ -331,6 +331,47 @@ func (e *Engine) LayaUnavailableFallback() (Decision, bool) {
 		Code: "LAYA_UNAVAILABLE", Reason: "semantic engine unavailable; policy fallback applied"}, true
 }
 
+// SemanticFallback resolves the most specific configured fallback for an
+// evidence error. A missing rule deliberately returns false so callers can
+// retain the deterministic decision; strict policies should configure high
+// risk rules explicitly.
+func (e *Engine) SemanticFallback(risk, direction, provider, reason string) (Decision, bool) {
+	if e.policy.Fallback == nil {
+		return Decision{}, false
+	}
+	best := -1
+	bestScore := -1
+	for i, rule := range e.policy.Fallback.Semantic {
+		if rule.Risk != risk || !fallbackDimensionMatches(rule.Direction, direction) || !fallbackDimensionMatches(rule.Provider, provider) {
+			continue
+		}
+		score := 0
+		if rule.Direction != "" && rule.Direction != "*" {
+			score++
+		}
+		if rule.Provider != "" && rule.Provider != "*" {
+			score++
+		}
+		if score > bestScore {
+			best, bestScore = i, score
+		}
+	}
+	if best < 0 {
+		if risk != "high" {
+			return Decision{}, false
+		}
+		return e.LayaUnavailableFallback()
+	}
+	rule := e.policy.Fallback.Semantic[best]
+	return Decision{Action: rule.OnError.Action, PolicyID: e.policy.ID, PolicyVersion: e.policy.Version,
+		MatchedRule: "fallback.semantic." + risk, PrecedenceStage: StageFallback,
+		Code: "SEMANTIC_EVIDENCE_REJECTED", Reason: "semantic evidence rejected; " + reason}, true
+}
+
+func fallbackDimensionMatches(pattern, value string) bool {
+	return pattern == "" || pattern == "*" || strings.EqualFold(pattern, value)
+}
+
 func betterCandidate(a, b candidate) bool {
 	if actionSeverity[a.action] != actionSeverity[b.action] {
 		return actionSeverity[a.action] > actionSeverity[b.action]

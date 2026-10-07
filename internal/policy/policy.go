@@ -154,7 +154,36 @@ type FallbackRule struct {
 // Fallback is the failure-behavior section; behavior wiring lands with the
 // semantic planner (ticket 09).
 type Fallback struct {
-	LayaUnavailable FallbackRule `yaml:"laya_unavailable"`
+	LayaUnavailable FallbackRule           `yaml:"laya_unavailable"`
+	Semantic        []SemanticFallbackRule `yaml:"semantic,omitempty"`
+}
+
+// SemanticFallbackRule is a bounded risk/direction/provider fallback. The
+// dimensions are policy labels, never request content or credentials.
+type SemanticFallbackRule struct {
+	Risk      string     `yaml:"risk"`
+	Direction string     `yaml:"direction,omitempty"`
+	Provider  string     `yaml:"provider,omitempty"`
+	OnError   ActionRule `yaml:"on_error"`
+}
+
+// ValidateSemanticFallbackMatrix ensures strict deployments have an explicit
+// high-risk BLOCK path for every direction/provider unless a more specific
+// rule overrides it.
+func (p *Policy) ValidateSemanticFallbackMatrix() error {
+	if p.Fallback == nil {
+		return errors.New("policy: semantic fallback matrix is required")
+	}
+	hasHighBlock := false
+	for _, rule := range p.Fallback.Semantic {
+		if rule.Risk == "high" && (rule.Direction == "" || rule.Direction == "*") && (rule.Provider == "" || rule.Provider == "*") && rule.OnError.Action == core.ActionBlock {
+			hasHighBlock = true
+		}
+	}
+	if !hasHighBlock {
+		return errors.New("policy: semantic fallback matrix needs a high-risk default BLOCK")
+	}
+	return nil
 }
 
 // ToolRules governs tool definitions the policy may strip on RESTRICT_TOOLS.
@@ -409,8 +438,29 @@ func (p *Policy) Validate() error {
 		if f.LowRisk != "" && f.LowRisk != lowRiskDeterministicOnly && !isValidAction(core.Action(strings.ToUpper(f.LowRisk))) {
 			return fmt.Errorf("policy: fallback.laya_unavailable.low_risk %q is not an action or %q", f.LowRisk, lowRiskDeterministicOnly)
 		}
+		seen := map[string]bool{}
+		for i, rule := range p.Fallback.Semantic {
+			if rule.Risk != "high" && rule.Risk != "medium" && rule.Risk != "low" {
+				return fmt.Errorf("policy: fallback.semantic[%d].risk must be high, medium, or low", i)
+			}
+			if rule.Direction != "" && rule.Direction != "*" && !validFallbackDirection(rule.Direction) {
+				return fmt.Errorf("policy: fallback.semantic[%d].direction is invalid", i)
+			}
+			if rule.OnError.Action == "" {
+				return fmt.Errorf("policy: fallback.semantic[%d].on_error is required", i)
+			}
+			key := rule.Risk + "\x00" + rule.Direction + "\x00" + rule.Provider
+			if seen[key] {
+				return fmt.Errorf("policy: duplicate fallback.semantic rule %q", key)
+			}
+			seen[key] = true
+		}
 	}
 	return nil
+}
+
+func validFallbackDirection(value string) bool {
+	return value == "request" || value == "response" || value == "tool_call" || value == "tool_result"
 }
 
 // normalizeCompatibility makes the v7 policy vocabulary part of the same

@@ -476,6 +476,24 @@ owner
 effective date
 ```
 
+#### P0.5 enforcement gate
+
+`SECURITY_SEMANTIC_ENFORCE=true` is a typed startup contract, not a rollout
+hint. It requires a reachable operator-provided Laya URL, a real non-noop
+provider, and a promoted threshold artifact whose question-schema and
+held-out-dataset SHA-256 values match the loaded files. The artifact also
+records checkpoint/model revision, timestamps, per-language/risk sample
+counts, FPR/FNR/precision/recall, criteria, tool version, and explicit
+evaluated/promoted state. Every eligible question/language slice is unique and
+covered; high-risk slices cannot be omitted.
+
+At runtime, evidence is rejected when decisions are missing or extra, a
+question is unknown, schema/checkpoint/provider metadata differs, or confidence
+is non-finite/out of range. Rejection selects the validated risk/direction/
+provider fallback matrix; strict high-risk policy defaults to BLOCK. It is
+never converted into a false answer or safe allow. `/ready` exposes only
+`disabled|shadow|ready|unready` plus bounded safe metadata.
+
 ---
 
 ### 7.5 Decision Provider Interface

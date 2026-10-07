@@ -3,11 +3,15 @@
 services:
   security-gateway:
     image: ghcr.io/example/aegisllm-gateway:replace-with-reviewed-tag
+    networks: [default, laya-private]
     ports:
       - "8080:8080"
     environment:
       DEPLOYMENT_PROFILE: "production"
       SECURITY_MODE: "enforce"
+      # Keep false until a real Laya calibration artifact is reviewed and
+      # promoted. The committed noop/synthetic artifact is never sufficient.
+      SECURITY_SEMANTIC_ENFORCE: "false"
       AUTH_MODE: "jwt"
       LISTEN_ADDR: ":8080"
       JWT_PUBLIC_KEY_FILE: "/run/secrets/aegis-jwt-public.pem"
@@ -24,6 +28,8 @@ services:
       POLICY_FILE: "policies/enterprise-default.yaml"
       QUESTIONS_FILE: "questions/security-v1.yaml"
       THRESHOLDS_FILE: "policies/thresholds-security-v1.yaml"
+      LAYA_URL: "${LAYA_URL:-}"
+      LAYA_TIMEOUT: "5s"
       TOKEN_VAULT_KEY: "${TOKEN_VAULT_KEY:?inject a 64-hex-char key from a secret manager}"
       TOKEN_VAULT_REDIS_URL: "redis://redis.example.invalid:6379/0"
       TELEMETRY_HMAC_KEY: "${TELEMETRY_HMAC_KEY:?inject a telemetry HMAC key from a secret manager}"
@@ -55,3 +61,19 @@ services:
       LIMITER_KEY_IDLE_TIMEOUT: "10m"
     # Redis and the upstream are intentionally external. Never point this
     # production profile at the repository's mock-upstream service.
+
+  # Optional operator-managed profile. LAYA_IMAGE is deliberately required
+  # from the environment; no official image is assumed or hard-coded here.
+  laya:
+    image: "${LAYA_IMAGE:?set LAYA_IMAGE to an operator-reviewed image}"
+    profiles: [semantic]
+    expose:
+      - "8300"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [laya-private]
+
+networks:
+  laya-private:
+    internal: true

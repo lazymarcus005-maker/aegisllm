@@ -104,7 +104,7 @@ func NewResilientProvider(inner DecisionProvider, breaker *CircuitBreaker) *Resi
 	return &ResilientProvider{inner: inner, breaker: breaker}
 }
 
-func (r *ResilientProvider) Name() string { return "resilient-" + r.inner.Name() }
+func (r *ResilientProvider) Name() string { return r.inner.Name() }
 
 func (r *ResilientProvider) Evaluate(ctx context.Context, req DecisionRequest, ids []string) (DecisionEvidence, error) {
 	if !r.breaker.Allow() {

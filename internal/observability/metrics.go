@@ -4,6 +4,7 @@
 package observability
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/aegisllm/gateway/internal/core"
@@ -22,6 +23,11 @@ type Recorder interface {
 	ObserveSecurityLatency(ms float64)
 	ObserveShadowDisagreement(predicted core.Action)
 	ObserveFallback()
+	ObserveFallbackReason(reason string)
+	ObserveSemanticRejected(reason string)
+	ObserveSchemaMismatch()
+	ObserveCheckpointMismatch()
+	ObserveMissingDecision()
 	ObserveTokens(n int, action string)
 	ObserveFalsePositiveSample()
 }
@@ -68,6 +74,12 @@ type Metrics struct {
 	breakerOpen         prometheus.Counter
 	activeRequests      prometheus.Gauge
 	activeLaya          prometheus.Gauge
+	calibrationInfo     *prometheus.GaugeVec
+	semanticRejected    *prometheus.CounterVec
+	schemaMismatch      prometheus.Counter
+	checkpointMismatch  prometheus.Counter
+	missingDecisions    prometheus.Counter
+	fallbackReasons     *prometheus.CounterVec
 	streamActions       *prometheus.CounterVec
 	streamBytes         *prometheus.CounterVec
 	streamEvents        *prometheus.CounterVec
@@ -158,6 +170,12 @@ func New() *Metrics {
 		breakerOpen:         prometheus.NewCounter(prometheus.CounterOpts{Name: "breaker_open_total", Help: "Requests rejected because the upstream circuit breaker is open."}),
 		activeRequests:      prometheus.NewGauge(prometheus.GaugeOpts{Name: "active_requests", Help: "Current admitted gateway requests."}),
 		activeLaya:          prometheus.NewGauge(prometheus.GaugeOpts{Name: "active_laya_evaluations", Help: "Current in-flight Laya evaluations."}),
+		calibrationInfo:     prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "semantic_calibration_artifact_info", Help: "Bounded metadata for the loaded semantic calibration artifact."}, []string{"artifact_id", "artifact_version", "provider", "checkpoint", "schema_version", "state", "calibration_timestamp"}),
+		semanticRejected:    prometheus.NewCounterVec(prometheus.CounterOpts{Name: "semantic_rejected_evidence_total", Help: "Semantic evidence rejected for a bounded reason."}, []string{"reason"}),
+		schemaMismatch:      prometheus.NewCounter(prometheus.CounterOpts{Name: "semantic_schema_mismatch_total", Help: "Semantic question schema binding mismatches."}),
+		checkpointMismatch:  prometheus.NewCounter(prometheus.CounterOpts{Name: "semantic_checkpoint_mismatch_total", Help: "Semantic checkpoint binding mismatches."}),
+		missingDecisions:    prometheus.NewCounter(prometheus.CounterOpts{Name: "semantic_missing_decisions_total", Help: "Semantic evidence missing required decisions."}),
+		fallbackReasons:     prometheus.NewCounterVec(prometheus.CounterOpts{Name: "semantic_fallback_total", Help: "Semantic fallback actions by bounded reason."}, []string{"reason"}),
 		streamActions:       prometheus.NewCounterVec(prometheus.CounterOpts{Name: "stream_actions_total", Help: "Streaming predicted and applied actions by bounded direction and endpoint family."}, []string{"direction", "endpoint_family", "predicted_action", "applied_action", "mode"}),
 		streamBytes:         prometheus.NewCounterVec(prometheus.CounterOpts{Name: "stream_bytes_inspected_total", Help: "Streaming response bytes inspected."}, []string{"direction", "endpoint_family"}),
 		streamEvents:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "stream_events_inspected_total", Help: "Streaming SSE events inspected."}, []string{"direction", "endpoint_family"}),
@@ -168,7 +186,9 @@ func New() *Metrics {
 		m.layaLatency, m.scannerLatency, m.securityLatency, m.shadowDisagreements,
 		m.falsePositiveSample, m.fallbackTotal, m.transformations, m.rateLimited,
 		m.concurrencyRejected, m.promptRejected, m.responseTooLarge, m.upstreamTimeout,
-		m.breakerOpen, m.activeRequests, m.activeLaya, m.streamActions, m.streamBytes, m.streamEvents)
+		m.breakerOpen, m.activeRequests, m.activeLaya, m.calibrationInfo, m.semanticRejected,
+		m.schemaMismatch, m.checkpointMismatch, m.missingDecisions, m.fallbackReasons,
+		m.streamActions, m.streamBytes, m.streamEvents)
 	return m
 }
 
@@ -309,6 +329,35 @@ func (m *Metrics) ObserveShadowDisagreement(predicted core.Action) {
 
 func (m *Metrics) ObserveFallback() { m.fallbackTotal.Inc() }
 
+func (m *Metrics) ObserveFallbackReason(reason string) {
+	m.fallbackTotal.Inc()
+	m.fallbackReasons.WithLabelValues(boundedReason(reason)).Inc()
+}
+
+func (m *Metrics) ObserveSemanticRejected(reason string) {
+	m.semanticRejected.WithLabelValues(boundedReason(reason)).Inc()
+}
+
+func (m *Metrics) ObserveSchemaMismatch() {
+	m.schemaMismatch.Inc()
+	m.ObserveSemanticRejected("schema")
+}
+
+func (m *Metrics) ObserveCheckpointMismatch() {
+	m.checkpointMismatch.Inc()
+	m.ObserveSemanticRejected("checkpoint")
+}
+
+func (m *Metrics) ObserveMissingDecision() {
+	m.missingDecisions.Inc()
+	m.ObserveSemanticRejected("missing_decision")
+}
+
+func (m *Metrics) ObserveCalibrationArtifact(id string, version int, provider, checkpoint, schemaVersion, state, timestamp string) {
+	m.calibrationInfo.Reset()
+	m.calibrationInfo.WithLabelValues(boundedMetadata(id), fmt.Sprintf("%d", version), boundedMetadata(provider), boundedMetadata(checkpoint), boundedMetadata(schemaVersion), boundedMetadata(state), boundedMetadata(timestamp)).Set(1)
+}
+
 func (m *Metrics) ObserveTokens(n int, action string) {
 	if n > 0 {
 		m.transformations.WithLabelValues(action).Add(float64(n))
@@ -352,6 +401,28 @@ func (m *Metrics) IncActiveRequests()             { m.activeRequests.Inc() }
 func (m *Metrics) DecActiveRequests()             { m.activeRequests.Dec() }
 func (m *Metrics) SetActiveLayaEvaluations(n int) { m.activeLaya.Set(float64(n)) }
 
+func boundedReason(reason string) string {
+	switch reason {
+	case "provider", "schema", "checkpoint", "unknown_question", "confidence", "missing_decision", "semantic_evidence_rejected":
+		return reason
+	default:
+		return "other"
+	}
+}
+
+func boundedMetadata(value string) string {
+	if len(value) > 64 {
+		value = value[:64]
+	}
+	for i, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == ':' || r == '-' {
+			continue
+		}
+		value = value[:i] + "_" + value[i+len(string(r)):]
+	}
+	return value
+}
+
 // Noop is a Recorder that discards everything (tests, metrics disabled).
 type Noop struct{}
 
@@ -362,6 +433,11 @@ func (Noop) ObserveScanner(float64)                                             
 func (Noop) ObserveSecurityLatency(float64)                                                     {}
 func (Noop) ObserveShadowDisagreement(core.Action)                                              {}
 func (Noop) ObserveFallback()                                                                   {}
+func (Noop) ObserveFallbackReason(string)                                                       {}
+func (Noop) ObserveSemanticRejected(string)                                                     {}
+func (Noop) ObserveSchemaMismatch()                                                             {}
+func (Noop) ObserveCheckpointMismatch()                                                         {}
+func (Noop) ObserveMissingDecision()                                                            {}
 func (Noop) ObserveTokens(int, string)                                                          {}
 func (Noop) ObserveStream(core.Direction, string, core.Action, core.Action, string, int64, int) {}
 func (Noop) ObserveFalsePositiveSample()                                                        {}

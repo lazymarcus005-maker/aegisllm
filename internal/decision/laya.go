@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -78,6 +79,7 @@ type layaResponse struct {
 type LayaProvider struct {
 	baseURL string
 	path    string
+	schema  string
 	client  *http.Client
 }
 
@@ -91,11 +93,21 @@ func NewLayaProvider(baseURL, path string, timeout time.Duration) *LayaProvider 
 	return &LayaProvider{
 		baseURL: baseURL,
 		path:    path,
+		schema:  "security-v1",
 		client:  &http.Client{Timeout: timeout},
 	}
 }
 
 func (l *LayaProvider) Name() string { return "laya" }
+
+// SetQuestionSchema binds the wire request to the schema loaded by the
+// gateway. It is deliberately a public setter so evaltool and the gateway
+// share the same provider adapter without duplicating HTTP code.
+func (l *LayaProvider) SetQuestionSchema(schema string) {
+	if schema != "" {
+		l.schema = schema
+	}
+}
 
 // Health reports whether laya-serve is reachable (FR-020).
 func (l *LayaProvider) Health(ctx context.Context) error {
@@ -108,7 +120,7 @@ func (l *LayaProvider) Health(ctx context.Context) error {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 500 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("laya health: status %d", resp.StatusCode)
 	}
 	return nil
@@ -125,7 +137,7 @@ func (l *LayaProvider) Evaluate(ctx context.Context, dreq DecisionRequest, quest
 			Content:     dreq.Content,
 			Application: dreq.Application,
 		},
-		QuestionSchema: "security-v1",
+		QuestionSchema: l.schema,
 		Questions:      questionIDs,
 	})
 	if err != nil {
@@ -148,8 +160,11 @@ func (l *LayaProvider) Evaluate(ctx context.Context, dreq DecisionRequest, quest
 	if err := json.NewDecoder(resp.Body).Decode(&lr); err != nil {
 		return DecisionEvidence{}, fmt.Errorf("laya response decode: %w", err)
 	}
+	if strings.TrimSpace(lr.Provider) == "" || strings.EqualFold(lr.Provider, "noop") || !strings.EqualFold(lr.Provider, "laya") {
+		return DecisionEvidence{}, fmt.Errorf("laya response: invalid provider identity")
+	}
 	ev := DecisionEvidence{
-		Provider:      "laya",
+		Provider:      lr.Provider,
 		Checkpoint:    lr.Checkpoint,
 		SchemaVersion: lr.SchemaVersion,
 		Route:         lr.Route,

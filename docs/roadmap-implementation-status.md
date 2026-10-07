@@ -14,9 +14,10 @@ separate feature-roadmap file).
 
 ## P1 — semantic and operational maturity
 
-- [ ] P1.1 Laya shadow integration, failure fallback, and calibrated semantic enforcement.
+- [x] P0.5 Fail-closed semantic calibration gate: typed enablement contract, provenance-bound threshold artifacts, runtime evidence binding, policy fallback matrix, sanitized readiness, bounded metrics, and explicit evaltool verify/promote workflow. Semantic enforcement remains disabled until a real Laya artifact is promoted.
+- [x] P1.1 Laya shadow integration and failure fallback; semantic enforcement is implemented but intentionally not production-enabled by the committed synthetic artifact.
 - [ ] P1.2 Tool/MCP inspection and restricted-tool enforcement.
-- [ ] P1.3 Sanitized audit, metrics, evaluation datasets, and regression promotion gates.
+- [x] P1.3 Sanitized audit, metrics, evaluation datasets, and deterministic regression/promotion gates.
 
 ## P2 — expanded coverage
 

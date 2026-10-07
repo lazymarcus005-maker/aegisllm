@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aegisllm.invalid/schemas/calibration-report-v1.json",
+  "title": "AegisLLM semantic calibration report",
+  "type": "object",
+  "required": ["artifact_id", "artifact_version", "question_schema", "dataset", "provider", "evaluated", "promoted", "slices", "promotion_criteria"],
+  "properties": {
+    "artifact_id": {"type": "string", "minLength": 1},
+    "artifact_version": {"type": "integer", "minimum": 1},
+    "question_schema": {"$ref": "#/$defs/provenance"},
+    "dataset": {"$ref": "#/$defs/provenance"},
+    "provider": {"type": "string", "minLength": 1},
+    "checkpoint": {"type": "string"},
+    "model_revision": {"type": "string"},
+    "calibration_timestamp": {"type": "string", "format": "date-time"},
+    "evaluation_timestamp": {"type": "string", "format": "date-time"},
+    "tool_version": {"type": "string", "minLength": 1},
+    "evaluated": {"type": "boolean"},
+    "promoted": {"type": "boolean"},
+    "slices": {"type": "array", "items": {"$ref": "#/$defs/slice"}},
+    "promotion_criteria": {"$ref": "#/$defs/criteria"}
+  },
+  "$defs": {
+    "provenance": {
+      "type": "object",
+      "required": ["id", "version", "sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[A-Fa-f0-9]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "slice": {
+      "type": "object",
+      "required": ["question", "language", "risk", "samples", "false_positive_rate", "false_negative_rate", "precision", "recall"],
+      "properties": {
+        "question": {"type": "string"},
+        "language": {"enum": ["th", "en", "mixed"]},
+        "risk": {"enum": ["high", "medium", "low"]},
+        "samples": {"type": "integer", "minimum": 1},
+        "false_positive_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "false_negative_rate": {"type": "number", "minimum": 0, "maximum": 1},
+        "precision": {"type": "number", "minimum": 0, "maximum": 1},
+        "recall": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": false
+    },
+    "criteria": {
+      "type": "object",
+      "required": ["max_false_positive_rate", "max_false_negative_rate", "min_precision", "min_recall", "min_samples"],
+      "additionalProperties": false
+    }
+  }
+}

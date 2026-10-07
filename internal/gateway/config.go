@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"net/url"
@@ -69,6 +70,10 @@ type Config struct {
 	ServerIdleTimeout             time.Duration
 	ServerShutdownTimeout         time.Duration
 	SecurityMode                  string // off | shadow | enforce
+	SemanticEnforce               bool
+	LayaURL                       string
+	LayaEvaluatePath              string
+	LayaTimeout                   time.Duration
 	HeaderApplication             string
 	HeaderTenant                  string
 	HeaderUser                    string
@@ -142,6 +147,10 @@ func configFrom(get func(string) string) Config {
 		ServerIdleTimeout:             getenvDuration(get, "SERVER_IDLE_TIMEOUT", 2*time.Minute),
 		ServerShutdownTimeout:         getenvDuration(get, "SERVER_SHUTDOWN_TIMEOUT", 10*time.Second),
 		SecurityMode:                  getenvDefault(get, "SECURITY_MODE", ModeOff),
+		SemanticEnforce:               getenvBool(get, "SECURITY_SEMANTIC_ENFORCE", false),
+		LayaURL:                       get("LAYA_URL"),
+		LayaEvaluatePath:              getenvDefault(get, "LAYA_EVALUATE_PATH", "/v1/evaluate"),
+		LayaTimeout:                   getenvDuration(get, "LAYA_TIMEOUT", 5*time.Second),
 		HeaderApplication:             getenvDefault(get, "HEADER_APPLICATION", "X-Application-Id"),
 		HeaderTenant:                  getenvDefault(get, "HEADER_TENANT", "X-Tenant-Id"),
 		HeaderUser:                    getenvDefault(get, "HEADER_USER", "X-User-Id"),
@@ -221,6 +230,9 @@ func ValidateConfig(cfg Config) error {
 	if err := validateAuthConfig(cfg, profile); err != nil {
 		return err
 	}
+	if err := validateSemanticConfig(cfg); err != nil {
+		return err
+	}
 	if profile != ProfileProduction {
 		return nil
 	}
@@ -273,8 +285,58 @@ func ValidateConfig(cfg Config) error {
 	if err := validateQuestionsFile(cfg.QuestionsFile); err != nil {
 		return err
 	}
-	if err := validateThresholdsFile(cfg.ThresholdsFile); err != nil {
-		return err
+	// Threshold artifacts are mandatory and strictly validated only when
+	// semantic enforcement is requested. Deterministic-only production may
+	// omit or ignore semantic artifacts and reports semantic=disabled.
+	return nil
+}
+
+func validateSemanticConfig(cfg Config) error {
+	if !cfg.SemanticEnforce {
+		return nil
+	}
+	if cfg.SecurityMode != ModeEnforce {
+		return errors.New("SECURITY_SEMANTIC_ENFORCE=true requires SECURITY_MODE=enforce")
+	}
+	if strings.TrimSpace(cfg.LayaURL) == "" {
+		return errors.New("SECURITY_SEMANTIC_ENFORCE=true requires LAYA_URL")
+	}
+	u, ok := parseDependencyURL(cfg.LayaURL)
+	if !ok || (u.Scheme != "http" && u.Scheme != "https") || strings.EqualFold(u.Hostname(), "noop") {
+		return errors.New("LAYA_URL is invalid for semantic enforcement")
+	}
+	if strings.TrimSpace(cfg.ThresholdsFile) == "" {
+		return errors.New("SECURITY_SEMANTIC_ENFORCE=true requires THRESHOLDS_FILE")
+	}
+	pol, err := policy.LoadFile(cfg.PolicyFile)
+	if err != nil {
+		return errors.New("POLICY_FILE is missing or invalid")
+	}
+	if err := pol.ValidateSemanticFallbackMatrix(); err != nil {
+		return errors.New("POLICY_FILE lacks a strict semantic fallback matrix")
+	}
+	qs, err := decision.LoadQuestionsFile(cfg.QuestionsFile)
+	if err != nil {
+		return errors.New("QUESTIONS_FILE is missing or invalid")
+	}
+	thresholds, err := policy.LoadSemanticThresholdsFile(cfg.ThresholdsFile)
+	if err != nil {
+		return errors.New("THRESHOLDS_FILE is missing or invalid")
+	}
+	questionData, err := os.ReadFile(cfg.QuestionsFile)
+	if err != nil {
+		return errors.New("QUESTIONS_FILE is unreadable")
+	}
+	sum := sha256.Sum256(questionData)
+	questionIDs := make([]string, 0, len(qs.Questions))
+	for _, q := range qs.Questions {
+		questionIDs = append(questionIDs, q.ID)
+	}
+	if thresholds.QuestionSchemaSHA256 != "" && !strings.EqualFold(thresholds.QuestionSchemaSHA256, hex.EncodeToString(sum[:])) {
+		return errors.New("THRESHOLDS_FILE question schema hash mismatch")
+	}
+	if err := thresholds.ValidateForEnforcement(qs.Schema, qs.Version, questionIDs, "laya"); err != nil {
+		return errors.New("THRESHOLDS_FILE is not promotion-ready")
 	}
 	return nil
 }
@@ -361,6 +423,12 @@ func (c Config) withRuntimeDefaults() Config {
 	}
 	if c.ServerShutdownTimeout <= 0 {
 		c.ServerShutdownTimeout = defaults.ServerShutdownTimeout
+	}
+	if c.LayaTimeout <= 0 {
+		c.LayaTimeout = defaults.LayaTimeout
+	}
+	if c.LayaEvaluatePath == "" {
+		c.LayaEvaluatePath = defaults.LayaEvaluatePath
 	}
 	return c
 }
