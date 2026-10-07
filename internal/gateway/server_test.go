@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/aegisllm/gateway/internal/core"
+	"github.com/aegisllm/gateway/internal/dashboard"
+	"github.com/aegisllm/gateway/internal/observability"
 )
 
 func testLogger() *slog.Logger {
@@ -130,6 +132,58 @@ func TestHealthAndReady(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 || !strings.Contains(string(body), "ready") {
 		t.Fatalf("ready: %d %s", resp.StatusCode, body)
+	}
+}
+
+func TestProtectionStatsAndDashboardEndpoints(t *testing.T) {
+	srv, gw, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	metrics := observability.New()
+	metrics.ObserveRequest(core.ActionBlock, "enforce")
+	metrics.ObserveFindings(string(core.CategoryPII), "phone")
+	srv.SetProtectionDashboard(dashboard.New(metrics))
+
+	resp, err := http.Get(gw.URL + "/api/protection-stats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+		t.Fatalf("stats response: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	var stats struct {
+		TotalPrevented uint64 `json:"total_prevented"`
+		ByCategory     []struct {
+			Category string `json:"category"`
+			Subtype  string `json:"subtype"`
+			Count    uint64 `json:"count"`
+		} `json:"by_category"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalPrevented != 1 || len(stats.ByCategory) != 1 || stats.ByCategory[0].Subtype != "phone" {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+
+	resp, err = http.Get(gw.URL + "/dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "Protection Leaderboard") {
+		t.Fatalf("dashboard response: %d %s", resp.StatusCode, body)
+	}
+
+	resp, err = http.Get(gw.URL + "/dashboard/style.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dashboard asset status: %d", resp.StatusCode)
 	}
 }
 
