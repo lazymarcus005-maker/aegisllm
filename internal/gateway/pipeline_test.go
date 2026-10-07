@@ -62,22 +62,11 @@ func (s *bytesBufferSink) String() string { return s.buf.String() }
 
 const secretRequest = `{"model":"m","messages":[{"role":"user","content":"Use this GitLab token: glpat-Abc123Xyz_-456DefGhi"}]}`
 
-// AS-001: a known secret is hard-masked before the upstream (redact policy),
-// deterministically: the request proceeds with [REDACTED:GITLAB_PAT], the raw
-// secret never leaves the gateway, and it never reaches the audit log.
-func TestAS001SecretMaskedInEnforceMode(t *testing.T) {
-	var upstreamGot string
+// AS-001: a high-confidence/high-risk secret is blocked before the upstream.
+func TestAS001HighRiskSecretBlockedInEnforceMode(t *testing.T) {
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		upstreamGot = string(b)
-		if strings.Contains(upstreamGot, "glpat-Abc123Xyz") {
-			t.Error("raw secret reached the upstream")
-		}
-		if !strings.Contains(upstreamGot, "[REDACTED:GITLAB_PAT]") {
-			t.Errorf("upstream body missing hard mask: %s", upstreamGot)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+		t.Error("blocked secret reached the upstream")
+		w.WriteHeader(http.StatusInternalServerError)
 	})
 	pipe, sink := newRealPipeline(t)
 	srv.SetPipeline(pipe)
@@ -88,7 +77,7 @@ func TestAS001SecretMaskedInEnforceMode(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status: %d", resp.StatusCode)
 	}
 
@@ -99,7 +88,7 @@ func TestAS001SecretMaskedInEnforceMode(t *testing.T) {
 	if !strings.Contains(auditOut, `"finding_types":["GITLAB_PAT"]`) {
 		t.Fatalf("audit missing finding types: %s", auditOut)
 	}
-	if !strings.Contains(auditOut, `"mode":"enforce"`) || !strings.Contains(auditOut, `"action":"REDACT"`) {
+	if !strings.Contains(auditOut, `"mode":"enforce"`) || !strings.Contains(auditOut, `"action":"BLOCK"`) {
 		t.Fatalf("audit missing mode/action: %s", auditOut)
 	}
 	if !strings.Contains(auditOut, `"code":"SECRET_DETECTED"`) {
@@ -132,7 +121,7 @@ func TestAS006ShadowPredictsBlockWithoutBlocking(t *testing.T) {
 		t.Fatalf("shadow must not modify production behavior: called=%v status=%d", upCalled, resp.StatusCode)
 	}
 	auditOut := sink.String()
-	if !strings.Contains(auditOut, `"mode":"shadow"`) || !strings.Contains(auditOut, `"action":"REDACT"`) {
+	if !strings.Contains(auditOut, `"mode":"shadow"`) || !strings.Contains(auditOut, `"action":"BLOCK"`) {
 		t.Fatalf("shadow audit must record predicted action: %s", auditOut)
 	}
 	if strings.Contains(auditOut, "glpat-Abc123Xyz") {
@@ -275,7 +264,7 @@ func TestUC003LocalModelAllowsPII(t *testing.T) {
 	pipe, sink := newRealPipeline(t)
 	srv.SetPipeline(pipe)
 
-	req, _ := http.NewRequest("POST", gw.URL+"/v1/chat/completions", strings.NewReader(thaiPIIRequest))
+	req, _ := http.NewRequest("POST", gw.URL+"/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"โทร 0812345678 ค่ะ"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Target-Provider", "local")
 	resp, err := http.DefaultClient.Do(req)
@@ -289,8 +278,30 @@ func TestUC003LocalModelAllowsPII(t *testing.T) {
 	if !strings.Contains(upstreamBody, "0812345678") {
 		t.Fatalf("local model policy must allow PII through: %s", upstreamBody)
 	}
-	if !strings.Contains(sink.String(), `"action":"ALLOW"`) || !strings.Contains(sink.String(), "TH_CITIZEN_ID") {
+	if !strings.Contains(sink.String(), `"action":"ALLOW"`) || !strings.Contains(sink.String(), "PHONE_NUMBER") {
 		t.Fatalf("audit must record allowed finding types: %s", sink.String())
+	}
+}
+
+func TestMultiplePIIEscalatesLocalRequestToReview(t *testing.T) {
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("multiple PII request reached the upstream")
+	})
+	pipe, sink := newRealPipeline(t)
+	srv.SetPipeline(pipe)
+	req, _ := http.NewRequest("POST", gw.URL+"/v1/chat/completions", strings.NewReader(thaiPIIRequest))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Target-Provider", "local")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("multiple PII must be reviewed: %d", resp.StatusCode)
+	}
+	if !strings.Contains(sink.String(), `"matched_rule":"pii.MULTIPLE_PII.local"`) {
+		t.Fatalf("multiple PII rule missing: %s", sink.String())
 	}
 }
 
@@ -429,17 +440,15 @@ func TestAS005OutboundSecretMasked(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status: %d", resp.StatusCode)
 	}
 	b, _ := io.ReadAll(resp.Body)
 	if strings.Contains(string(b), "glpat-Abc123Xyz") {
 		t.Fatal("raw secret reached the client")
 	}
-	if !strings.Contains(string(b), "[REDACTED:GITLAB_PAT]") {
-		t.Fatalf("client response missing hard mask: %s", b)
-	}
-	if !strings.Contains(sink.String(), `"direction":"RESPONSE"`) || !strings.Contains(sink.String(), `"action":"REDACT"`) {
+	_ = b
+	if !strings.Contains(sink.String(), `"direction":"RESPONSE"`) || !strings.Contains(sink.String(), `"action":"BLOCK"`) {
 		t.Fatalf("outbound audit event missing: %s", sink.String())
 	}
 }
@@ -584,7 +593,7 @@ func TestShadowOutboundPassesThroughWithPrediction(t *testing.T) {
 	if !strings.Contains(string(b), "glpat-Abc123Xyz") {
 		t.Fatal("shadow mode must not modify the incumbent response")
 	}
-	if !strings.Contains(sink.String(), `"direction":"RESPONSE"`) || !strings.Contains(sink.String(), `"action":"REDACT"`) {
+	if !strings.Contains(sink.String(), `"direction":"RESPONSE"`) || !strings.Contains(sink.String(), `"action":"BLOCK"`) {
 		t.Fatalf("shadow must audit the predicted outbound action: %s", sink.String())
 	}
 }
@@ -676,7 +685,7 @@ func TestSecretRequestSkipsLaya(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status: %d", resp.StatusCode)
 	}
 	if calls != 0 {
@@ -994,12 +1003,11 @@ func TestToolCallSecretMaskedDeterministically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dec.Action != core.ActionRedact || dec.Code != "SECRET_DETECTED" {
-		t.Fatalf("secret in arguments must be masked: %+v", dec)
+	if dec.Action != core.ActionBlock || dec.Code != "SECRET_DETECTED" {
+		t.Fatalf("secret in arguments must be blocked: %+v", dec)
 	}
-	if !strings.Contains(dec.TransformedContent, "[REDACTED:PEM_PRIVATE_KEY]") ||
-		strings.Contains(dec.TransformedContent, "MIIB") {
-		t.Fatalf("tool-call arguments not hard-masked: %s", dec.TransformedContent)
+	if dec.TransformedContent != "" {
+		t.Fatalf("blocked tool-call must not return content: %s", dec.TransformedContent)
 	}
 	if calls != 0 {
 		t.Fatalf("Laya must not be called, got %d", calls)
@@ -1019,12 +1027,11 @@ func TestUC007ToolResultCredentialMasked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dec.Action != core.ActionRedact {
+	if dec.Action != core.ActionBlock {
 		t.Fatalf("UC-007 violated: %+v", dec)
 	}
-	if strings.Contains(dec.TransformedContent, "eyJhbGciOiJIUzI1NiJ9") ||
-		!strings.Contains(dec.TransformedContent, "[REDACTED:") {
-		t.Fatalf("tool result not hard-masked: %s", dec.TransformedContent)
+	if dec.TransformedContent != "" {
+		t.Fatalf("blocked tool result must not return content: %s", dec.TransformedContent)
 	}
 	if !strings.Contains(sink.String(), `"direction":"TOOL_RESULT"`) || !strings.Contains(sink.String(), "JWT") {
 		t.Fatalf("tool result audit missing: %s", sink.String())

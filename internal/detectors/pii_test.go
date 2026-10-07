@@ -84,6 +84,11 @@ func TestEmailDetection(t *testing.T) {
 	if got := d.Detect(envelopeWith("not an email address")); len(got) != 0 {
 		t.Fatalf("false positive: %+v", got)
 	}
+	for _, invalid := range []string{"a..b@example.com", "a@-example.com", "a@example-.com"} {
+		if got := d.Detect(envelopeWith(invalid)); len(got) != 0 {
+			t.Errorf("invalid email %q matched: %+v", invalid, got)
+		}
+	}
 }
 
 func TestCreditCardDetection(t *testing.T) {
@@ -118,6 +123,13 @@ func TestIPDetection(t *testing.T) {
 	got := d.Detect(envelopeWith("2001:0db8:85a3:0000:0000:8a2e:0370:7334"))
 	if got[0].Attributes["ip_version"] != "6" {
 		t.Fatalf("ip version attribute: %+v", got[0].Attributes)
+	}
+	if got[0].Attributes["ip_scope"] != "public" {
+		t.Fatalf("public scope attribute: %+v", got[0].Attributes)
+	}
+	private := d.Detect(envelopeWith("private 10.0.0.7 and compressed 2001:db8::1"))
+	if len(private) != 2 || private[0].Attributes["ip_scope"] != "private" {
+		t.Fatalf("private IP scope: %+v", private)
 	}
 }
 

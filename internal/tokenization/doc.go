@@ -1,2 +1,2 @@
-// Package tokenization is delivered by its implementation ticket (see .scratch/security-gateway-mvp/issues/).
+// Package tokenization stores encrypted, scoped mappings for reversible tokens.
 package tokenization

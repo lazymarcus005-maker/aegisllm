@@ -1,2 +1,2 @@
-// Package audit is delivered by its implementation ticket (see .scratch/security-gateway-mvp/issues/).
+// Package audit records sanitized security events without raw content.
 package audit

@@ -96,14 +96,14 @@ func TestEngineDefaultsToAllowOnClean(t *testing.T) {
 	}
 }
 
-func TestEngineUnknownSecretSubtypeFallsToDefault(t *testing.T) {
+func TestEngineUnknownHighConfidenceSecretBlocks(t *testing.T) {
 	e := NewEngine(mustLoad(t, validPolicy))
 	dec := e.Evaluate(Context{
 		Envelope: &core.InspectionEnvelope{RequestID: "req-1"},
 		Findings: []core.SecurityFinding{secretFinding("SOME_UNKNOWN_SECRET")},
 	})
-	if dec.Action != core.ActionAllow {
-		t.Fatalf("unknown subtype must fall through to default, got %s", dec.Action)
+	if dec.Action != core.ActionBlock {
+		t.Fatalf("high-confidence unknown secret must block, got %s", dec.Action)
 	}
 }
 
@@ -170,8 +170,61 @@ func TestSecretProtectionBeatsPIITokenize(t *testing.T) {
 		Envelope: &core.InspectionEnvelope{RequestID: "req-1", Target: core.Target{Provider: "cloud"}},
 		Findings: []core.SecurityFinding{piiFinding("TH_CITIZEN_ID"), secretFinding("GITLAB_PAT")},
 	})
-	if dec.Action != core.ActionRedact || dec.MatchedRule != "secrets.GITLAB_PAT" {
+	if dec.Action != core.ActionBlock || dec.MatchedRule != "secrets.GITLAB_PAT" {
 		t.Fatalf("spec §7 precedence (secret level > PII level) violated: %+v", dec)
+	}
+}
+
+func TestHighConfidenceSecretAlwaysBlocks(t *testing.T) {
+	doc := `
+id: p
+version: 1
+default:
+  action: allow
+secrets:
+  GENERIC_API_KEY:
+    action: redact
+`
+	e := NewEngine(mustLoad(t, doc))
+	dec := e.Evaluate(Context{Envelope: &core.InspectionEnvelope{}, Findings: []core.SecurityFinding{{
+		Category: core.CategorySecret, Subtype: "GENERIC_API_KEY", Confidence: 0.95,
+	}}})
+	if dec.Action != core.ActionBlock {
+		t.Fatalf("high-confidence secret must block: %+v", dec)
+	}
+}
+
+func TestLowConfidenceUnknownSecretDefaultsToRedact(t *testing.T) {
+	e := NewEngine(mustLoad(t, validPolicy))
+	dec := e.Evaluate(Context{Findings: []core.SecurityFinding{{
+		Category: core.CategorySecret, Subtype: "UNCONFIGURED_SECRET", Confidence: 0.7,
+	}}})
+	if dec.Action != core.ActionRedact {
+		t.Fatalf("low-confidence secret must default to redact: %+v", dec)
+	}
+}
+
+func TestMultiplePIIEscalatesAtPIIPrecedenceLevel(t *testing.T) {
+	doc := `
+id: p
+version: 1
+default:
+  action: allow
+pii:
+  PHONE_NUMBER:
+    providers:
+      local:
+        action: allow
+  MULTIPLE_PII:
+    providers:
+      local:
+        action: review
+`
+	e := NewEngine(mustLoad(t, doc))
+	findings := []core.SecurityFinding{piiFinding("PHONE_NUMBER"), piiFinding("EMAIL"), piiFinding("IP_ADDRESS")}
+	dec := e.Evaluate(Context{Envelope: &core.InspectionEnvelope{Target: core.Target{Provider: "local"}}, Findings: findings})
+	if dec.Action != core.ActionReview || dec.MatchedRule != "pii.MULTIPLE_PII.local" {
+		t.Fatalf("multiple PII must escalate: %+v", dec)
 	}
 }
 

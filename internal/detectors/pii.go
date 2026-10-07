@@ -22,13 +22,55 @@ func PiiDetectors(telemetryKey string) []Detector {
 	return []Detector{
 		newThaiCitizenIDDetector(telemetryKey),
 		mk("phone-number", SubtypePhoneNumber, 0.9,
-			`\+66[-\s]?(?:6|8|9)\d?[-\s]?\d{3,4}[-\s]?\d{3,4}\b`,
-			`\b0(?:6|8|9)\d?[-\s]?\d{3,4}[-\s]?\d{3,4}\b`,
+			`\+66[-\s]?(?:6|8|9)\d{1}[-\s]?\d{3}[-\s]?\d{4}\b`,
+			`\b0(?:6|8|9)\d{1}[-\s]?\d{3}[-\s]?\d{4}\b`,
 			`\b0[2-7]\d[-\s]?\d{3}[-\s]?\d{4}\b`),
-		mk("email", SubtypeEmail, 1.0, `\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`),
+		newEmailDetector(telemetryKey),
 		newCreditCardDetector(telemetryKey),
 		newIPDetector(telemetryKey),
 	}
+}
+
+type emailDetector struct {
+	telemetryHMAC string
+	candidate     *regexp.Regexp
+}
+
+func newEmailDetector(telemetryKey string) *emailDetector {
+	return &emailDetector{
+		telemetryHMAC: telemetryKey,
+		candidate: regexp.MustCompile(
+			`[A-Za-z0-9!#$%&'*+/=?^_{}|~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_{}|~-]+)*@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+`),
+	}
+}
+
+func (d *emailDetector) Name() string { return "email" }
+
+func (d *emailDetector) Detect(env *core.InspectionEnvelope) []core.SecurityFinding {
+	var out []core.SecurityFinding
+	for _, lt := range env.TextParts() {
+		for _, loc := range d.candidate.FindAllStringIndex(lt.Text, -1) {
+			if loc[0] > 0 && emailBoundaryForbidden(rune(lt.Text[loc[0]-1])) {
+				continue
+			}
+			if loc[1] < len(lt.Text) && emailBoundaryForbidden(rune(lt.Text[loc[1]])) {
+				continue
+			}
+			raw := lt.Text[loc[0]:loc[1]]
+			parts := strings.Split(raw, "@")
+			if len(parts) != 2 || strings.Contains(parts[0], "..") || strings.Contains(parts[1], "..") {
+				continue
+			}
+			f := (&patternDetector{subtype: SubtypeEmail, category: core.CategoryPII, confidence: 1.0, telemetryHMAC: d.telemetryHMAC}).finding(lt, loc, raw)
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func emailBoundaryForbidden(r rune) bool {
+	return r == '.' || r == '_' || r == '+' || r == '-' ||
+		(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 }
 
 // thaiCitizenIDDetector matches 13-digit candidates (with or without the
@@ -166,7 +208,7 @@ func newIPDetector(telemetryKey string) *ipDetector {
 	return &ipDetector{
 		telemetryHMAC: telemetryKey,
 		ipv4:          compile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`),
-		ipv6:          compile(`\b(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}\b`),
+		ipv6:          compile(`(?i)[0-9a-f:]{2,39}`),
 	}
 }
 
@@ -197,6 +239,11 @@ func (d *ipDetector) scan(lt core.LocatedText, res []*regexp.Regexp, version str
 				f.Attributes = map[string]string{}
 			}
 			f.Attributes["ip_version"] = version
+			if ip := net.ParseIP(value); ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()) {
+				f.Attributes["ip_scope"] = "private"
+			} else {
+				f.Attributes["ip_scope"] = "public"
+			}
 			out = append(out, f)
 		}
 	}

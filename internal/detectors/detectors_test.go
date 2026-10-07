@@ -151,14 +151,40 @@ func TestRegistryRunsInOrderTimesAndAssignsIDs(t *testing.T) {
 	if len(findings) != 2 {
 		t.Fatalf("expected 2 findings, got %d", len(findings))
 	}
-	if len(order) != 8 {
-		t.Fatalf("timing hook called %d times, want 8", len(order))
+	if len(order) != len(SecretDetectors("")) {
+		t.Fatalf("timing hook called %d times, want %d", len(order), len(SecretDetectors("")))
 	}
 	if findings[0].ID == "" || findings[0].ID == findings[1].ID {
 		t.Fatalf("finding ids not assigned: %q %q", findings[0].ID, findings[1].ID)
 	}
 	if !strings.HasPrefix(findings[0].ID, "finding-req-test-") {
 		t.Fatalf("id not request-scoped: %s", findings[0].ID)
+	}
+}
+
+func TestAdditionalSecretPatterns(t *testing.T) {
+	cases := []struct {
+		name    string
+		text    string
+		subtype string
+	}{
+		{"openai", "key=sk-abcdefghijklmnopqrstuvwxyz123456", SubtypeOpenAIAPIKey},
+		{"anthropic", "key=sk-ant-abcdefghijklmnopqrstuvwxyz123456", SubtypeAnthropicAPIKey},
+		{"aws secret", "AWS_SECRET_ACCESS_KEY=abcdEFGHijklmnop/0123456789+abcdEFGHijklmnop", SubtypeAWSSecret},
+		{"slack", "xoxb-1234567890-abcdefghij", SubtypeSlackToken},
+		{"google", "AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz123456", SubtypeGoogleAPIKey},
+		{"generic", "api_key: qwertyUIOP1234567890-_abcd", SubtypeGenericAPIKey},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []core.SecurityFinding
+			for _, d := range SecretDetectors("") {
+				got = append(got, d.Detect(envelopeWith(tc.text))...)
+			}
+			if len(got) != 1 || got[0].Subtype != tc.subtype {
+				t.Fatalf("findings=%+v, want one %s", got, tc.subtype)
+			}
+		})
 	}
 }
 

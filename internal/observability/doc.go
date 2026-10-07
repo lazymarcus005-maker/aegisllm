@@ -1,2 +1,2 @@
-// Package observability is delivered by its implementation ticket (see .scratch/security-gateway-mvp/issues/).
+// Package observability collects content-free security and latency metrics.
 package observability

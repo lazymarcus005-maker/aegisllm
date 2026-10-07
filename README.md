@@ -55,20 +55,22 @@ Identity/application/model metadata comes from trusted headers:
 
 ## Repository layout
 
-Conceptual modules from `implement.handoff.md`, adapted to Go conventions:
+Layered modules from `docs/code-structure.md`, adapted to Go conventions:
 
 ```
 cmd/gateway/          gateway binary
 cmd/mockupstream/     OpenAI-compatible mock upstream for local dev
 internal/core/        domain models: InspectionEnvelope, findings, enums
-internal/gateway/     HTTP server, OpenAI parser, upstream proxy, config
-internal/detectors/   deterministic detection framework + detectors
-internal/pii/         PII span providers + transformation planner
-internal/decision/    DecisionProvider abstraction (Laya adapter, planner)
-internal/policy/      policy-as-code schema + deterministic engine
-internal/tokenization/ tokenizer + encrypted token vault
-internal/audit/       sanitized audit events
-internal/observability/ metrics + tracing
+internal/gateway/     transport server + application pipeline orchestration
+internal/detectors/   infrastructure: deterministic detection framework
+internal/pii/         infrastructure: PII spans + transformation planner
+internal/decision/    infrastructure: DecisionProvider and Laya adapter
+internal/policy/      domain policy-as-code schema + deterministic engine
+internal/tokenization/ infrastructure: tokenizer + encrypted token vault
+internal/audit/       infrastructure: sanitized audit events
+internal/observability/ infrastructure: metrics + tracing
+internal/dashboard/   transport: sanitized protection statistics
+web/leaderboard/      transport: embedded dashboard assets
 policies/             versioned policy-as-code (YAML)
 questions/            versioned Laya security question schemas
 evals/                datasets, baselines, reports

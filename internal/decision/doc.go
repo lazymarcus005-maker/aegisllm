@@ -1,2 +1,2 @@
-// Package decision is delivered by its implementation ticket (see .scratch/security-gateway-mvp/issues/).
+// Package decision adapts semantic providers and plans question evaluation.
 package decision
