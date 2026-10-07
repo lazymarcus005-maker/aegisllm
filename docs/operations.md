@@ -159,6 +159,11 @@ Runtime protection metrics also include `rate_limited_total`,
 application labels. Alert on sustained limiter rejection, response-budget
 rejections, upstream timeouts, or an open breaker.
 
+P1.4 adds `evasion_events_total{type,encoding_depth,action,budget_rejected}`.
+Labels are bounded evasion classes only; canonical, decoded, and raw values are
+never metrics or audit fields. Budget rejection in the production profile is
+fail-closed and emits only the sanitized `EVASION_REJECTED` reason.
+
 Streaming adds `stream_actions_total{direction,endpoint_family,predicted_action,applied_action,mode}`,
 `stream_bytes_inspected_total{direction,endpoint_family}`, and
 `stream_events_inspected_total{direction,endpoint_family}`. Labels use the
@@ -201,6 +206,19 @@ path (if ever enabled) separately governed (PRIV-004).
   enforcement permission slip (INV-010).
 - `QUESTIONS_FILE` (default `questions/security-v1.yaml`) — question wording
   is versioned code; changes require a re-run of evals (spec §17).
+
+### Evasion policy and limitations
+
+The `evasion` policy block controls enabled transforms, decode depth/work,
+decoded expansion ratio, JSON depth/node/string limits, budget action,
+per-evasion actions, and stable allowlist IDs. Keep the production transform
+set small. A clean same-part NFKC/control/confusable projection can be
+redacted or tokenized using its source span; decoded, structured-escaped, and
+cross-message findings cannot be safely rewritten and therefore use the
+configured fail-closed action. The one-window streaming holdback is reused for
+split chunks. Operators should validate local/balanced changes against
+`evals/datasets/evasion-p1.4.jsonl` and the report in
+`evals/reports/evasion-p1.4.md` before enforcement.
 
 ### P0.5 calibration gate
 

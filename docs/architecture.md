@@ -147,6 +147,23 @@ Existing LLM Gateway
 Target LLM
 ```
 
+### 4.1 Canonicalization and evasion stage
+
+The deterministic stage first builds a bounded scan projection. Maintained
+Unicode NFKC normalization, removal/flagging of zero-width and bidi controls,
+and targeted Latin/Cyrillic/Greek/fullwidth confusable mappings feed the
+existing detectors. Per-byte source maps preserve same-part UTF-8 spans.
+Base64 (standard/raw/URL-safe), percent, JSON Unicode, and optional strict hex
+candidates are decoded only within policy depth/work/expansion limits; decoded
+findings record an encoding chain but never decoded content. Cross-part and
+decoded findings are marked unsafe and therefore cannot create a redact or
+tokenize offset. The policy stage defaults secret unsafe spans to BLOCK and
+configured PII unsafe spans to REVIEW/BLOCK.
+
+The existing streaming holdback is the stateful cross-chunk projection. It
+feeds the same pipeline on each rolling window, so streaming does not create a
+second divergent detector implementation.
+
 ---
 
 ## 5. Trust Boundaries

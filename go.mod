@@ -8,6 +8,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
 	github.com/redis/go-redis/v9 v9.22.0
+	golang.org/x/text v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

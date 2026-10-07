@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -61,6 +62,51 @@ func (s *bytesBufferSink) Record(e audit.Event) {
 func (s *bytesBufferSink) String() string { return s.buf.String() }
 
 const secretRequest = `{"model":"m","messages":[{"role":"user","content":"Use this GitLab token: glpat-Abc123Xyz_-456DefGhi"}]}`
+
+func TestP14EncodedSecretBlockedBeforeUpstream(t *testing.T) {
+	called := false
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	pipe, sink := newRealPipeline(t)
+	srv.SetPipeline(pipe)
+	secret := "sk-abcdefghijklmnopqrstuvwxyz123456"
+	variants := []string{base64.StdEncoding.EncodeToString([]byte(secret)), "%73%6b%2dabcdefghijklmnopqrstuvwxyz123456"}
+	for _, variant := range variants {
+		body := `{"model":"m","messages":[{"role":"user","content":"` + variant + `"}]}`
+		resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("variant %q status=%d", variant, resp.StatusCode)
+		}
+	}
+	if called {
+		t.Fatal("encoded secret reached upstream")
+	}
+	if strings.Contains(sink.String(), secret) {
+		t.Fatal("raw decoded secret leaked into audit")
+	}
+}
+
+func TestP14CrossMessageSecretFailsClosedWithoutForwarding(t *testing.T) {
+	pipe, _ := newRealPipeline(t)
+	pipe.SetSecurityMode(ModeEnforce)
+	env, err := NormalizerFor("/v1/chat/completions").ParseRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"sk-"},{"role":"user","content":"abcdefghijklmnopqrstuvwxyz123456"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := pipe.ProcessRequest(env, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != core.ActionBlock || decision.Transformations != nil || decision.TransformedBody != nil {
+		t.Fatalf("cross-message secret was not fail-closed: %+v", decision)
+	}
+}
 
 // AS-001: a high-confidence/high-risk secret is blocked before the upstream.
 func TestAS001HighRiskSecretBlockedInEnforceMode(t *testing.T) {

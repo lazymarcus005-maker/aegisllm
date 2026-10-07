@@ -114,6 +114,15 @@ All configuration is environment-based; see [.env.example](.env.example).
 | `TELEMETRY_HMAC_KEY_FILE` | empty in development | Reloadable mounted secret; production requires the file |
 | `DEFAULT_TARGET_PROVIDER` | `cloud` | Provider class when `X-Target-Provider` absent |
 
+Evasion scanning is declared in the selected policy under `evasion`. The
+reviewed profiles enable bounded NFKC/control/confusable projection, standard
+and URL-safe Base64, percent encoding, JSON Unicode escapes, recursive JSON
+string inspection, and one decode level by default. Limits cover decode work,
+expansion, JSON depth/nodes/string bytes, and candidate size. Decoded or
+cross-part findings carry only bounded `encoding_chain` metadata and fail
+closed when the original span cannot be safely rewritten. Local and balanced
+profiles must explicitly choose any broader transform or action.
+
 The registry format and rollout/failover rules are documented in
 [docs/routing.md](docs/routing.md); a development mock example is
 [examples/upstream-registry.yaml](examples/upstream-registry.yaml). Production

@@ -215,6 +215,31 @@ type RoutingPolicy struct {
 	ProviderBoundaries map[string]RouteConstraint `yaml:"provider_boundaries,omitempty"`
 }
 
+// EvasionAllowlist is a stable, content-free exception identifier for one
+// bounded evasion class. Exceptions are deliberately scoped by type/category;
+// raw values are never placed in policy or audit records.
+type EvasionAllowlist struct {
+	ID          string `yaml:"id"`
+	EvasionType string `yaml:"evasion_type"`
+	Category    string `yaml:"category,omitempty"`
+}
+
+// EvasionPolicy controls the canonicalization and decoding stage. Zero limits
+// are filled with conservative runtime defaults by the scanner.
+type EvasionPolicy struct {
+	Enabled             bool                  `yaml:"enabled"`
+	Transforms          []string              `yaml:"transforms,omitempty"`
+	MaxDecodeDepth      int                   `yaml:"max_decode_depth,omitempty"`
+	MaxDecodeWorkBytes  int                   `yaml:"max_decode_work_bytes,omitempty"`
+	MaxDecodedExpansion int                   `yaml:"max_decoded_expansion_ratio,omitempty"`
+	MaxJSONDepth        int                   `yaml:"max_json_depth,omitempty"`
+	MaxJSONNodes        int                   `yaml:"max_json_nodes,omitempty"`
+	MaxJSONStringBytes  int                   `yaml:"max_json_string_bytes,omitempty"`
+	BudgetAction        ActionRule            `yaml:"budget_action,omitempty"`
+	Actions             map[string]ActionRule `yaml:"actions,omitempty"`
+	Allowlists          []EvasionAllowlist    `yaml:"allowlist,omitempty"`
+}
+
 // ConfidenceEscalation turns detector confidence into a declarative action.
 // Subtype and provider are optional matchers.
 type ConfidenceEscalation struct {
@@ -265,6 +290,7 @@ type Policy struct {
 	FindingCountEscalation []FindingCountEscalation         `yaml:"finding_count_escalation,omitempty"`
 	SafeDefault            ActionRule                       `yaml:"safe_default,omitempty"`
 	Routing                *RoutingPolicy                   `yaml:"routing,omitempty"`
+	Evasion                EvasionPolicy                    `yaml:"evasion,omitempty"`
 }
 
 // RestrictedTools lists tool names RESTRICT_TOOLS may strip from requests.
@@ -319,6 +345,12 @@ func (p *Policy) Summary() []RuleSummary {
 		}
 		out = append(out, RuleSummary{ID: id, Stage: "finding_count_escalation", Category: rule.Category, Subtype: rule.Subtype, Provider: rule.Provider, Action: rule.Action.Action, MinCount: &count})
 	}
+	for evasionType, rule := range p.Evasion.Actions {
+		out = append(out, RuleSummary{ID: "evasion." + evasionType, Stage: "canonicalization", Category: "EVASION", Subtype: evasionType, Action: rule.Action})
+	}
+	if p.Evasion.BudgetAction.Action != "" {
+		out = append(out, RuleSummary{ID: "evasion.budget", Stage: "canonicalization", Category: "EVASION", Subtype: "budget_exceeded", Action: p.Evasion.BudgetAction.Action})
+	}
 	out = append(out, RuleSummary{ID: "safe_default", Stage: "safe_default", Action: p.SafeDefault.Action}, RuleSummary{ID: "default", Stage: "default", Action: p.Default.Action})
 	slices.SortFunc(out, func(a, b RuleSummary) int { return strings.Compare(a.ID, b.ID) })
 	return out
@@ -362,6 +394,40 @@ func (p *Policy) Validate() error {
 	}
 	if p.SafeDefault.Action == "" {
 		return errors.New("policy: safe_default.action is required")
+	}
+	if p.Evasion.BudgetAction.Action != "" && !isValidAction(p.Evasion.BudgetAction.Action) {
+		return errors.New("policy: evasion.budget_action is invalid")
+	}
+	seenEvasionIDs := map[string]bool{}
+	for i, exception := range p.Evasion.Allowlists {
+		if strings.TrimSpace(exception.ID) == "" || strings.TrimSpace(exception.EvasionType) == "" {
+			return fmt.Errorf("policy: evasion.allowlist[%d] requires id and evasion_type", i)
+		}
+		if seenEvasionIDs[exception.ID] {
+			return fmt.Errorf("policy: duplicate evasion allowlist id %q", exception.ID)
+		}
+		seenEvasionIDs[exception.ID] = true
+	}
+	for evasionType, rule := range p.Evasion.Actions {
+		if strings.TrimSpace(evasionType) == "" || rule.Action == "" || !isValidAction(rule.Action) {
+			return fmt.Errorf("policy: evasion.actions.%s.action is invalid", evasionType)
+		}
+	}
+	for i, transform := range p.Evasion.Transforms {
+		switch strings.ToLower(strings.TrimSpace(transform)) {
+		case "nfkc", "controls", "confusable_skeleton", "base64", "percent", "json_unicode", "hex":
+		default:
+			return fmt.Errorf("policy: evasion.transforms[%d] %q is unknown", i, transform)
+		}
+	}
+	for name, limit := range map[string]int{
+		"max_decode_depth": p.Evasion.MaxDecodeDepth, "max_decode_work_bytes": p.Evasion.MaxDecodeWorkBytes,
+		"max_decoded_expansion_ratio": p.Evasion.MaxDecodedExpansion, "max_json_depth": p.Evasion.MaxJSONDepth,
+		"max_json_nodes": p.Evasion.MaxJSONNodes, "max_json_string_bytes": p.Evasion.MaxJSONStringBytes,
+	} {
+		if limit < 0 {
+			return fmt.Errorf("policy: evasion.%s must not be negative", name)
+		}
 	}
 	for category, rule := range p.CategoryActions {
 		if strings.TrimSpace(category) == "" || rule.Action == "" {

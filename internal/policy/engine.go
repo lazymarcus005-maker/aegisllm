@@ -31,6 +31,7 @@ type PrecedenceStage string
 
 const (
 	StageExplicitDeny        PrecedenceStage = "explicit_deny"
+	StageCanonicalization    PrecedenceStage = "canonicalization"
 	StageSecretProtection    PrecedenceStage = "secret_protection"
 	StageTenantRestriction   PrecedenceStage = "tenant_restriction"
 	StageApplication         PrecedenceStage = "application_restriction"
@@ -120,6 +121,10 @@ func (e *Engine) evaluate(ctx Context) Decision {
 		}
 	}
 
+	if d, ok := e.bestEvasion(ctx); ok {
+		return d
+	}
+
 	if d, ok := e.bestFinding(core.CategorySecret, ctx); ok {
 		return d
 	}
@@ -144,6 +149,52 @@ func (e *Engine) evaluate(ctx Context) Decision {
 		return d
 	}
 	return dec(e.policy.Default.Action, "default", StageDefault, "", "no rule matched; default action")
+}
+
+func (e *Engine) bestEvasion(ctx Context) (Decision, bool) {
+	var best candidate
+	found := false
+	for _, f := range ctx.Findings {
+		evasionType := ""
+		if f.Attributes != nil {
+			evasionType = f.Attributes["evasion_type"]
+		}
+		if evasionType == "" && f.Attributes != nil && f.Attributes["unsafe_span"] == "true" {
+			evasionType = "unsafe_span"
+		}
+		if evasionType == "" {
+			continue
+		}
+		rule, ok := e.policy.Evasion.Actions[evasionType+"/"+string(f.Category)]
+		if !ok {
+			rule, ok = e.policy.Evasion.Actions[evasionType]
+		}
+		if !ok {
+			switch {
+			case f.Category == core.CategorySecret:
+				rule = ActionRule{Action: core.ActionBlock}
+			case f.Category == core.CategoryPII:
+				rule = ActionRule{Action: core.ActionReview}
+			case evasionType == "budget_exceeded":
+				rule = e.policy.Evasion.BudgetAction
+			default:
+				continue
+			}
+		}
+		if rule.Action == "" {
+			rule = e.policy.SafeDefault
+		}
+		c := candidate{action: rule.Action, rule: "evasion." + evasionType, stage: StageCanonicalization, priority: 20}
+		if !found || betterCandidate(c, best) {
+			best, found = c, true
+		}
+	}
+	if !found {
+		return Decision{}, false
+	}
+	return Decision{Action: best.action, PolicyID: e.policy.ID, PolicyVersion: e.policy.Version,
+		MatchedRule: best.rule, PrecedenceStage: best.stage, Code: "EVASION_REJECTED",
+		Reason: "bounded canonicalization policy rejected an unsafe or over-budget representation"}, true
 }
 
 type candidate struct {

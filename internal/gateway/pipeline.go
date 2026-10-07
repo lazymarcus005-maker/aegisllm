@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"strings"
 	"time"
 
 	"github.com/aegisllm/gateway/internal/audit"
@@ -53,6 +54,33 @@ func (p *SecurityPipeline) SetSpanProvider(sp pii.SpanProvider) { p.spans = sp }
 // fail closed; balanced/development routes retain deterministic findings and
 // expose the fallback through sanitized audit and metrics.
 func (p *SecurityPipeline) SetSpanPolicy(required bool) { p.spanRequired = required }
+
+func (p *SecurityPipeline) evasionConfig() detectors.EvasionConfig {
+	if p == nil || p.engine == nil || p.engine.Policy() == nil {
+		return detectors.DefaultEvasionConfig()
+	}
+	e := p.engine.Policy().Evasion
+	// Policies written before P1.4 receive the safe defaults. A non-empty
+	// evasion block is authoritative, including enabled: false.
+	if !e.Enabled && len(e.Transforms) == 0 && e.MaxDecodeDepth == 0 && e.MaxDecodeWorkBytes == 0 && e.MaxJSONDepth == 0 && e.MaxJSONNodes == 0 {
+		return detectors.DefaultEvasionConfig()
+	}
+	cfg := detectors.EvasionConfig{Enabled: e.Enabled, Transforms: e.Transforms,
+		MaxDecodeDepth: e.MaxDecodeDepth, MaxDecodeWorkBytes: e.MaxDecodeWorkBytes,
+		MaxExpansionRatio: e.MaxDecodedExpansion, MaxJSONDepth: e.MaxJSONDepth,
+		MaxJSONNodes: e.MaxJSONNodes, MaxJSONStringBytes: e.MaxJSONStringBytes,
+		BudgetAction: e.BudgetAction.Action, Allowlist: map[string]bool{}}
+	for _, exception := range e.Allowlists {
+		cfg.Allowlist[exception.ID] = true
+		cfg.Allowlist[exception.EvasionType] = true
+	}
+	for _, transform := range e.Transforms {
+		if strings.EqualFold(transform, "hex") {
+			cfg.EnableHex = true
+		}
+	}
+	return cfg
+}
 
 func (p *SecurityPipeline) Close() {
 	if provider, ok := p.spans.(interface{ Close() }); ok {

@@ -134,23 +134,22 @@ func TestBearerCaseVariationsBlocked(t *testing.T) {
 	}
 }
 
-// Known limitations, pinned as tests so that any future detection change is
-// a conscious decision:
-//   - base64-encoded secrets are not detected by the MVP pattern set
-//   - Unicode homoglyph substitution defeats literal pattern matching
-//   - secrets split across separate messages are not correlated (rolling
-//     window scanning is the documented V0.2 streaming work, §13)
-func TestKnownEvasionLimitations(t *testing.T) {
+// P1.4 protects the previously documented Unicode evasion while retaining a
+// benign Base64 regression case.
+func TestProtectedEvasionCorpusCases(t *testing.T) {
 	gw, _, _ := newGateway(t, gateway.ModeEnforce, nil)
-	cases := []string{
-		"bm90LWFuLWFjdHVhbC10b2tlbi1idXQtYS1iYXNlNjQtcGF5bG9hZA==",
-		"my token is ｇｌｐａｔ－０１２３４５６７８９ａｂｃｄｅｆｇｈｉｊ",
+	cases := []struct {
+		payload string
+		status  int
+	}{
+		{"bm90LWFuLWFjdHVhbC10b2tlbi1idXQtYS1iYXNlNjQtcGF5bG9hZA==", http.StatusOK},
+		{"my token is ｇｌｐａｔ－０１２３４５６７８９ａｂｃｄｅｆｇｈｉｊ", http.StatusForbidden},
 	}
 	for _, payload := range cases {
-		body := `{"model":"m","messages":[{"role":"user","content":"` + payload + `"}]}`
+		body := `{"model":"m","messages":[{"role":"user","content":"` + payload.payload + `"}]}`
 		status, _ := post(t, gw.URL, body)
-		if status != http.StatusOK {
-			t.Errorf("evasion case unexpectedly detected (update the limitation note): %d", status)
+		if status != payload.status {
+			t.Errorf("evasion case status=%d want=%d", status, payload.status)
 		}
 	}
 }

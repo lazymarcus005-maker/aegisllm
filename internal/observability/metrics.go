@@ -92,6 +92,7 @@ type Metrics struct {
 	routeUnavailable    *prometheus.CounterVec
 	nerCalls            *prometheus.CounterVec
 	nerLatency          *prometheus.HistogramVec
+	evasion             *prometheus.CounterVec
 	registry            *prometheus.Registry
 }
 
@@ -199,6 +200,7 @@ func New() *Metrics {
 		routeUnavailable:    prometheus.NewCounterVec(prometheus.CounterOpts{Name: "route_unavailable_total", Help: "Route selection unavailability by bounded class and endpoint family."}, []string{"class", "family"}),
 		nerCalls:            prometheus.NewCounterVec(prometheus.CounterOpts{Name: "pii_ner_calls_total", Help: "Local NER calls by bounded provider/entity/language/confidence and outcome."}, []string{"provider", "entity", "language", "confidence_bucket", "error", "fallback"}),
 		nerLatency:          prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "pii_ner_latency_ms", Help: "Local NER latency by bounded provider and language."}, []string{"provider", "language"}),
+		evasion:             prometheus.NewCounterVec(prometheus.CounterOpts{Name: "evasion_events_total", Help: "Bounded canonicalization/evasion events by type, depth, action, and budget outcome."}, []string{"type", "encoding_depth", "action", "budget_rejected"}),
 		registry:            reg,
 	}
 	reg.MustRegister(m.requestsTotal, m.blockedTotal, m.tokenizedTotal, m.redactedTotal,
@@ -208,7 +210,7 @@ func New() *Metrics {
 		m.concurrencyRejected, m.promptRejected, m.responseTooLarge, m.upstreamTimeout,
 		m.breakerOpen, m.activeRequests, m.activeLaya, m.calibrationInfo, m.semanticRejected,
 		m.schemaMismatch, m.checkpointMismatch, m.missingDecisions, m.fallbackReasons,
-		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring, m.routeSelected, m.routeFailover, m.routeHealth, m.routeRejected, m.routeUnavailable, m.nerCalls, m.nerLatency)
+		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring, m.routeSelected, m.routeFailover, m.routeHealth, m.routeRejected, m.routeUnavailable, m.nerCalls, m.nerLatency, m.evasion)
 	return m
 }
 
@@ -391,6 +393,21 @@ func (m *Metrics) ObserveTokens(n int, action string) {
 	if n > 0 {
 		m.transformations.WithLabelValues(action).Add(float64(n))
 	}
+}
+
+// ObserveEvasion exposes only bounded labels; it never receives canonical or
+// decoded content.
+func (m *Metrics) ObserveEvasion(evasionType string, depth int, action core.Action, budgetRejected bool) {
+	if depth < 0 {
+		depth = 0
+	}
+	if depth > 8 {
+		depth = 8
+	}
+	if evasionType == "" {
+		evasionType = "other"
+	}
+	m.evasion.WithLabelValues(boundedMetadata(evasionType), fmt.Sprintf("%d", depth), string(action), boolLabel(budgetRejected)).Inc()
 }
 
 // ObserveStream records both the policy prediction and the mode-dependent

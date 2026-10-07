@@ -52,6 +52,9 @@ type Event struct {
 	FindingTypes    []string                `json:"finding_types,omitempty"`
 	FindingCount    int                     `json:"finding_count,omitempty"`
 	FindingSummary  []policy.FindingSummary `json:"finding_summary,omitempty"`
+	EvasionTypes    []string                `json:"evasion_types,omitempty"`
+	EncodingDepth   int                     `json:"encoding_depth,omitempty"`
+	BudgetRejected  bool                    `json:"budget_rejected,omitempty"`
 	LatencyMS       map[string]int64        `json:"latency_ms,omitempty"`
 	Laya            *LayaInfo               `json:"laya,omitempty"`
 	PIIFallback     bool                    `json:"pii_fallback,omitempty"`

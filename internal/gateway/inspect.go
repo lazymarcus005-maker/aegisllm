@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -35,7 +36,7 @@ func (p *SecurityPipeline) inspect(env *core.InspectionEnvelope) *inspection {
 func (p *SecurityPipeline) inspectContext(ctx context.Context, env *core.InspectionEnvelope) *inspection {
 	ins := &inspection{env: env, start: time.Now()}
 	scanStart := time.Now()
-	findings := p.registry.RunAll(env)
+	findings := p.registry.RunAllContext(ctx, env, p.evasionConfig())
 	p.recorder.ObserveScanner(float64(time.Since(scanStart).Microseconds()) / 1000.0)
 	entityFindings, entityErr, fallback := p.entityFindings(ctx, env)
 	ins.piiFallback = fallback
@@ -65,6 +66,24 @@ func (p *SecurityPipeline) inspectContext(ctx context.Context, env *core.Inspect
 		ins.dec.Reason = "body-free endpoint was explicitly marked passthrough"
 	}
 	ins.explanation.Decision = ins.dec
+	if recorder, ok := p.recorder.(interface {
+		ObserveEvasion(string, int, core.Action, bool)
+	}); ok {
+		for _, finding := range ins.findings {
+			if finding.Attributes == nil {
+				continue
+			}
+			typ := finding.Attributes["evasion_type"]
+			if typ == "" {
+				continue
+			}
+			depth := 0
+			if chain := finding.Attributes["encoding_chain"]; chain != "" {
+				depth = 1 + strings.Count(chain, ">")
+			}
+			recorder.ObserveEvasion(typ, depth, ins.dec.Action, typ == "budget_exceeded")
+		}
+	}
 	ins.detMS = time.Since(ins.start).Milliseconds()
 	if p.provider != nil && p.planner != nil && ins.dec.Action != core.ActionBlock {
 		p.semanticStage(ctx, ins)
@@ -113,6 +132,23 @@ func (p *SecurityPipeline) auditEvent(ins *inspection) audit.Event {
 		LatencyMS: latency, Laya: ins.laya,
 		PIIFallback: ins.piiFallback, PIIUnavailable: ins.piiUnavailable,
 	}
+	for _, finding := range ins.findings {
+		if finding.Attributes == nil {
+			continue
+		}
+		if typ := finding.Attributes["evasion_type"]; typ != "" && !containsString(event.EvasionTypes, typ) {
+			event.EvasionTypes = append(event.EvasionTypes, typ)
+		}
+		if chain := finding.Attributes["encoding_chain"]; chain != "" {
+			depth := 1 + strings.Count(chain, ">")
+			if depth > event.EncodingDepth {
+				event.EncodingDepth = depth
+			}
+		}
+		if finding.Attributes["evasion_type"] == "budget_exceeded" {
+			event.BudgetRejected = true
+		}
+	}
 	if stream {
 		event.PredictedAction = ins.dec.Action
 		event.AppliedAction = applied
@@ -122,6 +158,15 @@ func (p *SecurityPipeline) auditEvent(ins *inspection) audit.Event {
 		event.EventsInspected = 1
 	}
 	return event
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func inspectedBytes(env *core.InspectionEnvelope) int64 {

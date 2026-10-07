@@ -21,12 +21,13 @@ separate feature-roadmap file).
 - [x] P1.2 Tool/MCP inspection and restricted-tool enforcement: authenticated Streamable HTTP proxy, atomic registry reload, schema/stream bounds, session isolation, server-side credential brokering, sanitized operator surfaces, and fake-MCP integration coverage.
 - [x] P1.3 Sanitized audit, metrics, evaluation datasets, and deterministic regression/promotion gates.
 - [x] P1.3 production PII/NER span engine: exercised Presidio/Aegis adapters, strict registry, UTF-8/UTF-16 spans, bounded private routing, fail-closed policy, fake CI service, and held-out span evaluation.
+- [x] P1.4 Evasion-resistant scanning: bounded NFKC/control/confusable projection, Base64/URL-safe/percent/JSON decoding, structured traversal, cross-message state, reversible spans, fail-closed unsafe transforms, policy controls, sanitized metrics/audit, and corpus/latency coverage.
 
 ## P2 — expanded coverage
 
 - [x] P2.1 Streaming inspection and enforcement (delivered early as P0.3).
 - [ ] P2.2 Credential brokering and deeper MCP/runtime integration.
-- [ ] P2.3 Stateful cross-message detection, richer entity detection, and multi-tenant vault namespaces.
+- [ ] P2.3 Richer entity detection and multi-tenant vault namespaces (bounded cross-message detection moved into P1.4).
 
 P0.1 is marked complete only after the repository acceptance commands and the
 container smoke test pass on this branch.
