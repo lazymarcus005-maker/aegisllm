@@ -18,11 +18,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aegisllm/gateway/internal/audit"
 	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/credentialbroker"
 	"github.com/aegisllm/gateway/internal/securetransport"
 	"github.com/aegisllm/gateway/internal/streaming"
+	"github.com/aegisllm/gateway/internal/trace"
 )
 
 const (
@@ -161,6 +163,9 @@ func (g *mcpGateway) setMetrics(metrics securetransport.Metrics) {
 }
 
 func (g *mcpGateway) handler(w http.ResponseWriter, r *http.Request) {
+	requestCtx, traceCtx := trace.FromRequest(r)
+	r = r.WithContext(requestCtx)
+	_ = traceCtx // correlation is carried by the request context and outbound allowlisted header
 	if _, ok := auth.PrincipalFromContext(r.Context()); !ok {
 		writeMCPError(w, nil, http.StatusUnauthorized, -32001, "verified MCP principal required")
 		return
@@ -515,6 +520,10 @@ func (g *mcpGateway) doUpstream(ctx context.Context, cfg MCPServerConfig, inboun
 }
 
 func (g *mcpGateway) doUpstreamMethod(ctx context.Context, cfg MCPServerConfig, inbound *http.Request, body []byte, credential bool, method string) (*http.Response, error) {
+	tc, _ := trace.From(ctx)
+	if err := g.server.recordAudit(ctx, audit.Event{RequestID: newRequestID(), Timestamp: time.Now().UTC(), TraceID: tc.TraceID, SpanID: tc.SpanID, TraceFlags: tc.Flags, Direction: core.DirectionToolCall, Component: "mcp", Mode: g.server.cfg.SecurityMode, Action: core.ActionAllow, Code: "MCP_UPSTREAM_ATTEMPT", ToolProvider: safeSemanticMetadata(cfg.ID)}); err != nil {
+		return nil, err
+	}
 	transport, err := g.transport(cfg)
 	if err != nil {
 		return nil, err
@@ -531,6 +540,9 @@ func (g *mcpGateway) doUpstreamMethod(ctx context.Context, cfg MCPServerConfig, 
 	}
 	if method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if tc, ok := trace.From(requestCtx); ok {
+		trace.Inject(req, trace.Child(tc))
 	}
 	accept := inbound.Header.Get("Accept")
 	if accept == "" {

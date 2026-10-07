@@ -41,7 +41,7 @@ func (o distributionObserver) RecordDistribution(event, reason, keyID string) {
 		o.metrics.RecordDistribution(event, reason, keyID)
 	}
 	if o.sink != nil {
-		o.sink.Record(audit.Event{RequestID: "policy-distribution", Timestamp: time.Now().UTC(), Mode: "distribution", Action: core.ActionAllow, Code: boundedDistributionValue(event), Reason: boundedDistributionValue(reason), DistributionEvent: boundedDistributionValue(event), DistributionKeyID: boundedDistributionValue(keyID)})
+		o.sink.Record(audit.Event{RequestID: "policy-distribution", Timestamp: time.Now().UTC(), Component: "policy-distribution", Mode: "distribution", Action: core.ActionAllow, Code: boundedDistributionValue(event), Reason: boundedDistributionValue(reason), DistributionEvent: boundedDistributionValue(event), DistributionKeyID: boundedDistributionValue(keyID)})
 	}
 }
 func boundedDistributionValue(value string) string {
@@ -210,7 +210,44 @@ func main() {
 		srv.AddMaterialReadiness("telemetry_hmac_key", telemetryFile.Status)
 	}
 	registry := detectors.ProductionRegistry(telemetryKey, nil)
-	sink := audit.NewWriterSink(os.Stdout)
+	var auditHMAC []byte
+	var auditKeyFile *securetransport.File[string]
+	_, auditKeyPathExists := os.Stat(cfg.AuditHMACKeyFile)
+	if cfg.AuditHMACKey != "" || cfg.DeploymentProfile == gateway.ProfileProduction || auditKeyPathExists == nil {
+		var auditKey string
+		auditKey, auditKeyFile, err = loadConfiguredSecret(cfg.AuditHMACKey, cfg.AuditHMACKeyFile, metrics)
+		if err != nil {
+			logger.Error("audit HMAC key unavailable")
+			os.Exit(1)
+		}
+		auditHMAC = []byte(auditKey)
+		if auditKeyFile != nil {
+			defer auditKeyFile.Close()
+			srv.AddMaterialReadiness("audit_hmac_key", auditKeyFile.Status)
+		}
+	}
+	wal, err := audit.OpenWAL(audit.WALConfig{Dir: cfg.AuditDir, SegmentBytes: cfg.AuditSegmentBytes, MaxBytes: cfg.AuditMaxBytes, Retention: cfg.AuditRetention, Fsync: audit.Durability(cfg.AuditFsync), HMACKey: auditHMAC, EncryptionKeyring: cfg.AuditEncryptionKeyringFile, Sanitize: audit.SanitizeOptions{PrincipalHMACKey: auditHMAC, HashPrincipals: cfg.DeploymentProfile == gateway.ProfileProduction}})
+	if err != nil {
+		logger.Error("audit WAL unavailable")
+		os.Exit(1)
+	}
+	var mirror audit.Sink
+	if cfg.DeploymentProfile != gateway.ProfileProduction {
+		mirror = audit.NewWriterSink(os.Stdout)
+	}
+	durableSink := audit.NewDurableSink(wal, mirror)
+	durableSink.SetFailClosed(cfg.AuditFailureMode == "fail_closed")
+	var exporter *audit.Exporter
+	if cfg.AuditSIEMURL != "" {
+		exporter, err = audit.NewExporter(wal, audit.ExporterConfig{URL: cfg.AuditSIEMURL, AuthFile: cfg.AuditSIEMAuthFile, CAFile: cfg.AuditSIEMCAFile, ClientCertFile: cfg.AuditSIEMCertFile, ClientKeyFile: cfg.AuditSIEMKeyFile, ServerName: cfg.AuditSIEMServerName, DLQDir: cfg.AuditSIEMDLQDir, Timeout: cfg.AuditSIEMTimeout, BatchSize: cfg.AuditSIEMBatchSize, MaxRetries: cfg.AuditSIEMMaxRetries})
+		if err != nil {
+			logger.Error("audit exporter unavailable")
+			os.Exit(1)
+		}
+		exporter.Start(context.Background())
+	}
+	var sink audit.Sink = durableSink
+	srv.SetAudit(wal, exporter, durableSink)
 	if distribution != nil {
 		distribution.SetObserver(distributionObserver{metrics: metrics, sink: sink})
 	}

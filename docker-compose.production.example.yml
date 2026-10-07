@@ -40,6 +40,18 @@ services:
       TOKEN_VAULT_REDIS_CA_FILE: "/run/secrets/aegis-redis-ca.pem"
       TOKEN_VAULT_REDIS_SERVER_NAME: "redis.example.invalid"
       TELEMETRY_HMAC_KEY_FILE: "/run/secrets/aegis-telemetry-hmac-key"
+      AUDIT_WAL_DIR: "/var/lib/aegisllm/audit"
+      AUDIT_SEGMENT_BYTES: "67108864"
+      AUDIT_MAX_BYTES: "4294967296"
+      AUDIT_RETENTION: "720h"
+      AUDIT_FSYNC: "sync"
+      AUDIT_FAILURE_MODE: "fail_closed"
+      AUDIT_HMAC_KEY_FILE: "/run/secrets/aegis-audit-hmac-key"
+      AUDIT_ENCRYPTION_KEYRING_FILE: "/run/secrets/aegis-audit-keyring.json"
+      AUDIT_SIEM_URL: "${AUDIT_SIEM_URL:-https://siem.example.invalid/ingest}"
+      AUDIT_SIEM_AUTH_FILE: "/run/secrets/aegis-siem-token"
+      AUDIT_SIEM_CA_FILE: "/run/secrets/aegis-siem-ca.pem"
+      AUDIT_SIEM_SERVER_NAME: "siem.example.invalid"
       MAX_RESPONSE_BYTES: "4194304"
       MAX_PROMPT_CHARS: "65536"
       MAX_STREAM_DURATION: "5m"
@@ -66,6 +78,8 @@ services:
       MAX_CONCURRENT_LAYA: "4"
       LIMITER_MAX_KEYS: "10000"
       LIMITER_KEY_IDLE_TIMEOUT: "10m"
+    volumes:
+      - audit-wal:/var/lib/aegisllm/audit
     # Redis and the upstream are intentionally external. Never point this
     # production profile at the repository's mock-upstream service.
 
@@ -84,3 +98,6 @@ services:
 networks:
   laya-private:
     internal: true
+
+volumes:
+  audit-wal:

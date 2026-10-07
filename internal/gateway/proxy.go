@@ -14,6 +14,7 @@ import (
 
 	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/securetransport"
+	"github.com/aegisllm/gateway/internal/trace"
 )
 
 var ErrUpstreamBreakerOpen = decision.ErrCircuitOpen
@@ -132,6 +133,9 @@ func (p *Proxy) forward(r *http.Request, body []byte, pathPrefix string) (*http.
 		if v := r.Header.Get(h); v != "" {
 			req.Header.Set(h, v)
 		}
+	}
+	if tc, ok := trace.From(r.Context()); ok {
+		trace.Inject(req, trace.Child(tc))
 	}
 	switch p.cfg.UpstreamAuthMode {
 	case "bearer":

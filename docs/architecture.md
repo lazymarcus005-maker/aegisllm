@@ -246,6 +246,19 @@ custom agent protocol
 
 ### 6.2 Request Normalizer
 
+### 6.3 Durable audit, trace, and SIEM boundary
+
+Audit is a separate metadata-only boundary after each security decision. A
+typed event encoder feeds a crash-recoverable local WAL with CRC, chained
+SHA-256/HMAC, optional AES-GCM keyring encryption, atomic checkpoints, bounded
+segments, retention, and quota enforcement. An asynchronous HTTPS exporter
+replays the WAL until an accepted response, preserving at-least-once delivery
+with stable event IDs and a dead-letter quarantine. Development may mirror the
+same sanitized event to stdout. W3C `traceparent` is validated at ingress,
+new trace/span IDs are generated when absent, and only an allowlisted
+`traceparent` header is propagated to upstream, Laya, NER, MCP, and SIEM; no
+identity or authorization headers are propagated.
+
 Converts provider-specific data into:
 
 ```text

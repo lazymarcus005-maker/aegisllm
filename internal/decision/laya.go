@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aegisllm/gateway/internal/securetransport"
+	"github.com/aegisllm/gateway/internal/trace"
 )
 
 // NoopProvider returns empty evidence without calling anything; used to
@@ -192,6 +193,9 @@ func (l *LayaProvider) Evaluate(ctx context.Context, dreq DecisionRequest, quest
 		return DecisionEvidence{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if tc, ok := trace.From(ctx); ok {
+		trace.Inject(req, trace.Child(tc))
+	}
 	resp, err := l.client.Do(req)
 	if err != nil {
 		return DecisionEvidence{}, fmt.Errorf("laya call failed: %w", err)

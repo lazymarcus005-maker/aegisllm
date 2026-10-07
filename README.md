@@ -141,6 +141,19 @@ immediately before the outbound tool request and is never logged or returned.
 Operators can inspect only bounded metadata through
 `GET /api/mcp/servers`, `/api/mcp/audit`, and `/api/mcp/metrics`.
 
+### Durable audit (P1.6)
+
+The gateway writes content-free `aegisllm.audit/v1` events to an append-only
+CRC/HMAC/SHA-256 chained WAL before audit-required decisions are acknowledged.
+Development mirrors sanitized events to stdout; production can export bounded
+HTTPS JSON batches with TLS/mTLS, file-backed credentials, retries,
+idempotency keys, restart-safe checkpoints, and dead-letter quarantine.
+Delivery is at-least-once, not exactly-once. Prompts, responses, tool data,
+secrets, tokens, decoded content, and stack traces are not representable in
+the event schema. Operator-only `/api/audit/status` and `/api/audit/verify`
+expose metadata only. See [docs/audit.md](docs/audit.md) for operations and
+`cmd/audittool` for verify/inspect/repair.
+
 The local compose stack includes `fake-mcp` and
 [`examples/mcp-registry.yaml`](examples/mcp-registry.yaml). Its HTTP URL is
 accepted only for development; production registry validation requires HTTPS,

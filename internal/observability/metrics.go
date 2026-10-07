@@ -94,6 +94,16 @@ type Metrics struct {
 	nerLatency          *prometheus.HistogramVec
 	evasion             *prometheus.CounterVec
 	distribution        *prometheus.CounterVec
+	auditEnqueued       prometheus.Counter
+	auditDurable        prometheus.Counter
+	auditExported       prometheus.Counter
+	auditRetried        prometheus.Counter
+	auditDeadLetter     prometheus.Counter
+	auditCorruption     prometheus.Counter
+	auditDropped        prometheus.Counter
+	auditQueueBytes     prometheus.Gauge
+	auditOldestAge      prometheus.Gauge
+	auditExporterState  *prometheus.GaugeVec
 	registry            *prometheus.Registry
 }
 
@@ -203,6 +213,16 @@ func New() *Metrics {
 		nerLatency:          prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "pii_ner_latency_ms", Help: "Local NER latency by bounded provider and language."}, []string{"provider", "language"}),
 		evasion:             prometheus.NewCounterVec(prometheus.CounterOpts{Name: "evasion_events_total", Help: "Bounded canonicalization/evasion events by type, depth, action, and budget outcome."}, []string{"type", "encoding_depth", "action", "budget_rejected"}),
 		distribution:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "policy_distribution_events_total", Help: "Signed policy distribution events by bounded event, reason, and key ID."}, []string{"event", "reason", "key_id"}),
+		auditEnqueued:       prometheus.NewCounter(prometheus.CounterOpts{Name: "audit_enqueue_total", Help: "Audit events accepted by the audit API."}),
+		auditDurable:        prometheus.NewCounter(prometheus.CounterOpts{Name: "audit_durable_total", Help: "Audit events durably appended to the WAL."}),
+		auditExported:       prometheus.NewCounter(prometheus.CounterOpts{Name: "audit_export_total", Help: "Audit events accepted by the SIEM."}),
+		auditRetried:        prometheus.NewCounter(prometheus.CounterOpts{Name: "audit_retry_total", Help: "Audit export retries."}),
+		auditDeadLetter:     prometheus.NewCounter(prometheus.CounterOpts{Name: "audit_dead_letter_total", Help: "Audit batches quarantined after export failure."}),
+		auditCorruption:     prometheus.NewCounter(prometheus.CounterOpts{Name: "audit_corruption_total", Help: "Audit WAL integrity failures."}),
+		auditDropped:        prometheus.NewCounter(prometheus.CounterOpts{Name: "audit_dropped_total", Help: "Audit events dropped; expected to remain zero in production."}),
+		auditQueueBytes:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "audit_queue_bytes", Help: "Durable audit WAL bytes."}),
+		auditOldestAge:      prometheus.NewGauge(prometheus.GaugeOpts{Name: "audit_oldest_age_seconds", Help: "Age of oldest durable audit event."}),
+		auditExporterState:  prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "audit_exporter_state", Help: "Current audit exporter state."}, []string{"state"}),
 		registry:            reg,
 	}
 	reg.MustRegister(m.requestsTotal, m.blockedTotal, m.tokenizedTotal, m.redactedTotal,
@@ -212,8 +232,28 @@ func New() *Metrics {
 		m.concurrencyRejected, m.promptRejected, m.responseTooLarge, m.upstreamTimeout,
 		m.breakerOpen, m.activeRequests, m.activeLaya, m.calibrationInfo, m.semanticRejected,
 		m.schemaMismatch, m.checkpointMismatch, m.missingDecisions, m.fallbackReasons, m.distribution,
-		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring, m.routeSelected, m.routeFailover, m.routeHealth, m.routeRejected, m.routeUnavailable, m.nerCalls, m.nerLatency, m.evasion)
+		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring, m.routeSelected, m.routeFailover, m.routeHealth, m.routeRejected, m.routeUnavailable, m.nerCalls, m.nerLatency, m.evasion,
+		m.auditEnqueued, m.auditDurable, m.auditExported, m.auditRetried, m.auditDeadLetter, m.auditCorruption, m.auditDropped, m.auditQueueBytes, m.auditOldestAge, m.auditExporterState)
 	return m
+}
+
+func (m *Metrics) ObserveAuditEnqueue() { m.auditEnqueued.Inc() }
+func (m *Metrics) ObserveAuditDurable(bytes int64) {
+	m.auditDurable.Inc()
+	m.auditQueueBytes.Set(float64(bytes))
+}
+func (m *Metrics) ObserveAuditExported(n int)   { m.auditExported.Add(float64(n)) }
+func (m *Metrics) ObserveAuditRetry()           { m.auditRetried.Inc() }
+func (m *Metrics) ObserveAuditDeadLetter(n int) { m.auditDeadLetter.Add(float64(n)) }
+func (m *Metrics) ObserveAuditCorruption()      { m.auditCorruption.Inc() }
+func (m *Metrics) ObserveAuditDropped()         { m.auditDropped.Inc() }
+func (m *Metrics) ObserveAuditQueue(bytes, oldestSeconds int64) {
+	m.auditQueueBytes.Set(float64(bytes))
+	m.auditOldestAge.Set(float64(oldestSeconds))
+}
+func (m *Metrics) ObserveAuditExporterState(state string) {
+	m.auditExporterState.Reset()
+	m.auditExporterState.WithLabelValues(boundedMetadata(state)).Set(1)
 }
 
 // RecordDistribution implements the signed policy manager observer without

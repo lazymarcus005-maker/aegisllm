@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -40,6 +41,20 @@ type SecurityPipeline struct {
 	candidate       atomic.Pointer[RuntimeSnapshot]
 	canaryEligible  func(*core.InspectionEnvelope) bool
 	canaryObserve   func(bool)
+}
+
+func (p *SecurityPipeline) recordAudit(ctx context.Context, event audit.Event) error {
+	if p.audit == nil {
+		return nil
+	}
+	if durable, ok := p.audit.(interface {
+		RecordDurable(context.Context, audit.Event) (audit.Event, error)
+	}); ok {
+		_, err := durable.RecordDurable(ctx, event)
+		return err
+	}
+	p.audit.Record(event)
+	return nil
 }
 
 // RuntimeSnapshot groups every policy-bound artifact used by one request.

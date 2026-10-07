@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/aegisllm/gateway/internal/securetransport"
+	"github.com/aegisllm/gateway/internal/trace"
 )
 
 const (
@@ -251,6 +252,9 @@ func (p *remoteSpanProvider) call(ctx context.Context, text, language string) ([
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Aegis-Correlation-ID", p.correlationID())
+	if tc, ok := trace.From(callCtx); ok {
+		trace.Inject(req, trace.Child(tc))
+	}
 	if p.auth != nil {
 		secret, getErr := p.auth.Get()
 		if getErr != nil {

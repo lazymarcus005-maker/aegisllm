@@ -142,6 +142,25 @@ type Config struct {
 	TokenVaultRedisServerName      string
 	TelemetryHMACKey               string
 	TelemetryHMACKeyFile           string
+	AuditDir                       string
+	AuditSegmentBytes              int64
+	AuditMaxBytes                  int64
+	AuditRetention                 time.Duration
+	AuditFsync                     string
+	AuditHMACKey                   string
+	AuditHMACKeyFile               string
+	AuditEncryptionKeyringFile     string
+	AuditFailureMode               string
+	AuditSIEMURL                   string
+	AuditSIEMAuthFile              string
+	AuditSIEMCAFile                string
+	AuditSIEMCertFile              string
+	AuditSIEMKeyFile               string
+	AuditSIEMServerName            string
+	AuditSIEMTimeout               time.Duration
+	AuditSIEMBatchSize             int
+	AuditSIEMMaxRetries            int
+	AuditSIEMDLQDir                string
 	AuthMode                       string // off | jwt | mtls
 	JWTPublicKeyFile               string
 	JWTHMACSecret                  string
@@ -273,6 +292,25 @@ func configFrom(get func(string) string) Config {
 		TokenVaultRedisServerName:      get("TOKEN_VAULT_REDIS_SERVER_NAME"),
 		TelemetryHMACKey:               get("TELEMETRY_HMAC_KEY"),
 		TelemetryHMACKeyFile:           get("TELEMETRY_HMAC_KEY_FILE"),
+		AuditDir:                       getenvDefault(get, "AUDIT_WAL_DIR", "/tmp/aegisllm-audit"),
+		AuditSegmentBytes:              getenvInt64(get, "AUDIT_SEGMENT_BYTES", 64<<20),
+		AuditMaxBytes:                  getenvInt64(get, "AUDIT_MAX_BYTES", 4<<30),
+		AuditRetention:                 getenvDuration(get, "AUDIT_RETENTION", 30*24*time.Hour),
+		AuditFsync:                     getenvDefault(get, "AUDIT_FSYNC", "sync"),
+		AuditHMACKey:                   get("AUDIT_HMAC_KEY"),
+		AuditHMACKeyFile:               getenvDefault(get, "AUDIT_HMAC_KEY_FILE", "/run/secrets/aegis-audit-hmac-key"),
+		AuditEncryptionKeyringFile:     get("AUDIT_ENCRYPTION_KEYRING_FILE"),
+		AuditFailureMode:               getenvDefault(get, "AUDIT_FAILURE_MODE", "fail_closed"),
+		AuditSIEMURL:                   get("AUDIT_SIEM_URL"),
+		AuditSIEMAuthFile:              get("AUDIT_SIEM_AUTH_FILE"),
+		AuditSIEMCAFile:                get("AUDIT_SIEM_CA_FILE"),
+		AuditSIEMCertFile:              get("AUDIT_SIEM_CERT_FILE"),
+		AuditSIEMKeyFile:               get("AUDIT_SIEM_KEY_FILE"),
+		AuditSIEMServerName:            get("AUDIT_SIEM_SERVER_NAME"),
+		AuditSIEMTimeout:               getenvDuration(get, "AUDIT_SIEM_TIMEOUT", 10*time.Second),
+		AuditSIEMBatchSize:             getenvInt(get, "AUDIT_SIEM_BATCH_SIZE", 100),
+		AuditSIEMMaxRetries:            getenvInt(get, "AUDIT_SIEM_MAX_RETRIES", 8),
+		AuditSIEMDLQDir:                get("AUDIT_SIEM_DLQ_DIR"),
 		AuthMode:                       getenvDefault(get, "AUTH_MODE", auth.ModeOff),
 		JWTPublicKeyFile:               get("JWT_PUBLIC_KEY_FILE"),
 		JWTHMACSecret:                  get("JWT_HMAC_SECRET"),
@@ -312,6 +350,28 @@ func (c Config) profile() DeploymentProfile {
 // Production validation intentionally discards parser details so malformed
 // config cannot echo secret-bearing or raw file content into logs.
 func ValidateConfig(cfg Config) error {
+	auditDefaults := configFrom(func(string) string { return "" })
+	if cfg.AuditDir == "" {
+		cfg.AuditDir = auditDefaults.AuditDir
+	}
+	if cfg.AuditSegmentBytes == 0 {
+		cfg.AuditSegmentBytes = auditDefaults.AuditSegmentBytes
+	}
+	if cfg.AuditMaxBytes == 0 {
+		cfg.AuditMaxBytes = auditDefaults.AuditMaxBytes
+	}
+	if cfg.AuditRetention == 0 {
+		cfg.AuditRetention = auditDefaults.AuditRetention
+	}
+	if cfg.AuditFsync == "" {
+		cfg.AuditFsync = auditDefaults.AuditFsync
+	}
+	if cfg.AuditFailureMode == "" {
+		cfg.AuditFailureMode = auditDefaults.AuditFailureMode
+	}
+	if cfg.AuditHMACKeyFile == "" {
+		cfg.AuditHMACKeyFile = auditDefaults.AuditHMACKeyFile
+	}
 	// Older programmatic callers may omit the streaming fields; use the safe
 	// defaults for those fields without masking existing zero-value validation
 	// failures such as MAX_RESPONSE_BYTES=0.
@@ -334,6 +394,24 @@ func ValidateConfig(cfg Config) error {
 	profile, err := ParseDeploymentProfile(string(cfg.profile()))
 	if err != nil {
 		return err
+	}
+	if cfg.AuditDir == "" || cfg.AuditSegmentBytes <= 0 || cfg.AuditMaxBytes < cfg.AuditSegmentBytes {
+		return errors.New("audit WAL capacity configuration is invalid")
+	}
+	if cfg.AuditFsync != string("write") && cfg.AuditFsync != string("sync") {
+		return errors.New("AUDIT_FSYNC must be write or sync")
+	}
+	if cfg.AuditFailureMode != "fail_closed" && cfg.AuditFailureMode != "degrade" {
+		return errors.New("AUDIT_FAILURE_MODE must be fail_closed or degrade")
+	}
+	if profile == ProfileProduction && strings.TrimSpace(cfg.AuditHMACKey) != "" {
+		return errors.New("production rejects inline AUDIT_HMAC_KEY; use AUDIT_HMAC_KEY_FILE")
+	}
+	if cfg.AuditSIEMURL != "" {
+		u, ok := parseDependencyURL(cfg.AuditSIEMURL)
+		if !ok || !strings.EqualFold(u.Scheme, "https") {
+			return errors.New("AUDIT_SIEM_URL must use verified TLS")
+		}
 	}
 	if !validSecurityMode(cfg.SecurityMode) {
 		return errors.New("SECURITY_MODE must be one of: off, shadow, enforce")

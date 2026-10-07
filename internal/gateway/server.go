@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/aegisllm/gateway/internal/audit"
 	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/dashboard"
@@ -24,6 +25,7 @@ import (
 	"github.com/aegisllm/gateway/internal/policydistribution"
 	"github.com/aegisllm/gateway/internal/routing"
 	"github.com/aegisllm/gateway/internal/securetransport"
+	"github.com/aegisllm/gateway/internal/trace"
 	"github.com/aegisllm/gateway/web/leaderboard"
 )
 
@@ -70,6 +72,9 @@ type Server struct {
 	semanticStatus func() SemanticReadiness
 	materials      map[string]func() securetransport.Status
 	piiStatus      func() []pii.ProviderStatus
+	auditWAL       *audit.WAL
+	auditExporter  *audit.Exporter
+	auditSink      audit.Sink
 }
 
 // SemanticReadiness is the sanitized semantic contract exposed by /ready.
@@ -83,6 +88,11 @@ type SemanticReadiness struct {
 	ThresholdPolicyVersion int    `json:"threshold_policy_version,omitempty"`
 	CheckpointID           string `json:"checkpoint_id,omitempty"`
 	CalibrationTimestamp   string `json:"calibration_timestamp,omitempty"`
+}
+
+type AuditStatus struct {
+	audit.WALStatus
+	Exporter audit.ExporterStatus `json:"exporter"`
 }
 
 // NewServer validates configuration and builds the server.
@@ -205,6 +215,14 @@ func (s *Server) Close() {
 	if s.mcp != nil {
 		s.mcp.close()
 	}
+	if s.auditExporter != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ServerShutdownTimeout)
+		_ = s.auditExporter.Close(ctx)
+		cancel()
+	}
+	if s.auditWAL != nil {
+		_ = s.auditWAL.Close()
+	}
 	if s.proxy != nil {
 		s.proxy.Close()
 	}
@@ -214,6 +232,42 @@ func (s *Server) Close() {
 	if closer, ok := s.pipeline.(interface{ Close() }); ok {
 		closer.Close()
 	}
+}
+
+func (s *Server) SetAudit(wal *audit.WAL, exporter *audit.Exporter, sinks ...audit.Sink) {
+	s.auditWAL, s.auditExporter = wal, exporter
+	if len(sinks) > 0 {
+		s.auditSink = sinks[0]
+	}
+}
+
+func (s *Server) recordAudit(ctx context.Context, event audit.Event) error {
+	if s.auditSink != nil {
+		if durable, ok := s.auditSink.(interface {
+			RecordDurable(context.Context, audit.Event) (audit.Event, error)
+		}); ok {
+			_, err := durable.RecordDurable(ctx, event)
+			return err
+		}
+		s.auditSink.Record(event)
+		return nil
+	}
+	if s.auditWAL != nil {
+		_, err := s.auditWAL.Append(ctx, event)
+		return err
+	}
+	return nil
+}
+
+func (s *Server) AuditStatus() AuditStatus {
+	if s.auditWAL == nil {
+		return AuditStatus{WALStatus: audit.WALStatus{Ready: false, LastError: "audit WAL unavailable"}, Exporter: audit.ExporterStatus{State: "unconfigured"}}
+	}
+	status := AuditStatus{WALStatus: s.auditWAL.Status(), Exporter: audit.ExporterStatus{State: "unconfigured"}}
+	if s.auditExporter != nil {
+		status.Exporter = s.auditExporter.Status()
+	}
+	return status
 }
 
 // SetPolicy attaches the already validated policy for the operator-only
@@ -451,6 +505,13 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 		"dependencies":       dependencies,
 		"secure_material":    materialResponse,
 	}
+	if s.auditWAL != nil {
+		status := s.auditWAL.Status()
+		response["audit"] = status
+		if !status.Ready && s.cfg.profile() == ProfileProduction && firstReason == "" {
+			firstReason = "audit: durable WAL is not ready"
+		}
+	}
 	semantic := SemanticReadiness{Status: "disabled"}
 	if s.semanticStatus != nil {
 		semantic = s.semanticStatus()
@@ -533,6 +594,8 @@ func (s *Server) readyCheck() string {
 }
 
 func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
+	requestCtx, traceCtx := trace.FromRequest(r)
+	r = r.WithContext(requestCtx)
 	normalizer := NormalizerFor(r.URL.Path)
 	if normalizer == nil {
 		http.NotFound(w, r)
@@ -555,6 +618,9 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.enrich(env, r)
+	env.Metadata["trace_id"] = traceCtx.TraceID
+	env.Metadata["span_id"] = traceCtx.SpanID
+	env.Metadata["trace_flags"] = traceCtx.Flags
 	env.Metadata["endpoint_path"] = r.URL.Path
 	if promptChars(env) > s.cfg.MaxPromptChars {
 		s.runtimeMetrics.ObservePromptBudgetRejected()
@@ -565,7 +631,6 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 	if isStream {
 		env.Metadata["stream"] = "true"
 	}
-	requestCtx := r.Context()
 	var streamCancel context.CancelFunc
 	if isStream {
 		requestCtx, streamCancel = context.WithTimeout(requestCtx, s.cfg.MaxStreamDuration)

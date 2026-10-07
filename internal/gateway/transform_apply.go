@@ -42,7 +42,9 @@ func (p *SecurityPipeline) ProcessRequestContext(ctx context.Context, env *core.
 		} else {
 			p.recorder.ObserveTokens(len(plan), "redact")
 		}
-		p.audit.Record(p.auditEvent(ins))
+		if err := p.recordAudit(ctx, p.auditEvent(ins)); err != nil {
+			return RequestDecision{}, err
+		}
 		return RequestDecision{Action: ins.dec.Action, Code: ins.dec.Code, Transformations: plan}, nil
 	case core.ActionRestrictTools:
 		body, err := stripRestrictedTools(raw, p.current().Engine.RestrictedTools())
@@ -51,7 +53,9 @@ func (p *SecurityPipeline) ProcessRequestContext(ctx context.Context, env *core.
 		}
 		transformed = body
 	}
-	p.audit.Record(p.auditEvent(ins))
+	if err := p.recordAudit(ctx, p.auditEvent(ins)); err != nil {
+		return RequestDecision{}, err
+	}
 	return RequestDecision{Action: ins.dec.Action, Code: ins.dec.Code, TransformedBody: transformed}, nil
 }
 
@@ -143,8 +147,8 @@ func (p *SecurityPipeline) ProcessStreamText(reqEnv *core.InspectionEnvelope, te
 			out.Text = pii.ApplyToText(text, plan)
 		}
 	}
-	if p.audit != nil {
-		p.audit.Record(p.auditEvent(ins))
+	if err := p.recordAudit(context.Background(), p.auditEvent(ins)); err != nil {
+		return StreamTextOutcome{}, err
 	}
 	if recorder, ok := p.recorder.(interface {
 		ObserveStream(core.Direction, string, core.Action, core.Action, string, int64, int)
@@ -166,9 +170,7 @@ func (p *SecurityPipeline) AuditPassthrough(env *core.InspectionEnvelope) {
 	}
 	env.Metadata["passthrough"] = "true"
 	ins := p.inspect(env)
-	if p.audit != nil {
-		p.audit.Record(p.auditEvent(ins))
-	}
+	_ = p.recordAudit(context.Background(), p.auditEvent(ins))
 }
 
 // AuditRoute adds only bounded route metadata to the already-sanitized audit
@@ -178,7 +180,7 @@ func (p *SecurityPipeline) AuditRoute(env *core.InspectionEnvelope, action core.
 	if p.audit == nil {
 		return
 	}
-	p.audit.Record(audit.Event{RequestID: env.RequestID, Timestamp: time.Now().UTC(), Direction: core.DirectionRequest,
+	p.audit.Record(audit.Event{RequestID: env.RequestID, Timestamp: time.Now().UTC(), Direction: core.DirectionRequest, Component: "gateway",
 		Application: env.Application, Tenant: env.Tenant, User: env.User.Subject, Roles: append([]string(nil), env.User.Roles...),
 		Provider: env.Target.Provider, Mode: p.mode, Action: action, EndpointFamily: env.Metadata["endpoint_family"],
 		RouteID: safeSemanticMetadata(id), RouteClass: safeSemanticMetadata(class), RouteProvider: safeSemanticMetadata(provider),
@@ -231,7 +233,9 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 			outcome.TransformedBody = body
 		}
 	}
-	p.audit.Record(p.auditEvent(ins))
+	if err := p.recordAudit(context.Background(), p.auditEvent(ins)); err != nil {
+		return ResponseOutcome{}, err
+	}
 	return outcome, nil
 }
 

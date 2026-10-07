@@ -3,6 +3,15 @@
 Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
 `architecture.md` §5. Review status: reviewed during the MVP DoD sweep.
 
+P1.6 adds a metadata-only durable audit boundary. The WAL is integrity chained
+and optionally encrypted at rest; an HTTPS exporter is at-least-once and uses
+stable event IDs for receiver deduplication. Corruption fails production
+readiness and is quarantined only by explicit operator repair. Trace context is
+validated and only `traceparent` is propagated. Prompts, credentials,
+authorization headers, tool payloads, token originals, decoded evasion content,
+and stack traces remain out of the event schema, SIEM batch, metrics, and
+operator endpoints.
+
 ## Trust boundaries
 
 - **TB-1 Client → Gateway**: fully untrusted. In protected deployments the

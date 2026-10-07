@@ -129,6 +129,8 @@ func (p *SecurityPipeline) auditEvent(ins *inspection) audit.Event {
 	}
 	event := audit.Event{
 		RequestID: ins.env.RequestID, Timestamp: time.Now().UTC(), Direction: ins.env.Direction,
+		TraceID: ins.env.Metadata["trace_id"], SpanID: ins.env.Metadata["span_id"], TraceFlags: ins.env.Metadata["trace_flags"],
+		Component:   "gateway",
 		Application: ins.env.Application, Tenant: ins.env.Tenant, User: ins.env.User.Subject,
 		Roles: append([]string(nil), ins.env.User.Roles...), Provider: ins.env.Target.Provider,
 		PolicyID: ins.dec.PolicyID, PolicyVersion: ins.dec.PolicyVersion, Mode: p.mode,
@@ -136,7 +138,7 @@ func (p *SecurityPipeline) auditEvent(ins *inspection) audit.Event {
 		Code:   ins.dec.Code, MatchedRule: ins.dec.MatchedRule,
 		PrecedenceStage: string(ins.dec.PrecedenceStage), Reason: ins.dec.Reason,
 		FindingTypes: audit.FindingTypes(ins.findings), FindingCount: len(ins.findings), FindingSummary: ins.explanation.Findings,
-		LatencyMS: latency, Laya: ins.laya,
+		LatencyMS: latency, Latencies: audit.Latencies{DeterministicMS: ins.detMS, LayaMS: ins.layaMS, TotalSecurityMS: time.Since(ins.start).Milliseconds()}, Laya: ins.laya,
 		PIIFallback: ins.piiFallback, PIIUnavailable: ins.piiUnavailable,
 	}
 	for _, finding := range ins.findings {

@@ -9,6 +9,19 @@ docker compose up --build      # gateway :8080, mock upstream :9090, redis :6379
 Native: see README quick start. All configuration is environment-based
 (`.env.example` documents every variable).
 
+## Durable audit and SIEM
+
+P1.6 uses a local framed WAL as the audit durability boundary. Configure
+`AUDIT_WAL_DIR`, segment/quota/retention limits, `AUDIT_FSYNC`, and production
+file-backed HMAC/encryption keys. Set `AUDIT_SIEM_URL` only to an HTTPS webhook;
+the exporter supports mTLS, bounded responses, retries, `Retry-After`, stable
+event IDs, restart-safe checkpoints, and a mode-0600 dead-letter directory.
+The gateway exposes only metadata at operator-role `/api/audit/status` and
+`/api/audit/verify`. It is explicitly at-least-once and never exactly-once.
+Use [audit.md](audit.md) for backup, restore, capacity, rotation, repair, and
+incident procedures. Start the integration receiver with
+`docker compose --profile audit-siem up --build fake-siem`.
+
 ## Deployment profiles and secure production
 
 `DEPLOYMENT_PROFILE` is `development` by default. Development keeps the
@@ -184,15 +197,16 @@ and certificates inside the 30-day expiry horizon.
 
 ## Audit events
 
-One JSON object per line on stdout: request_id, direction, application,
-policy version, mode, action, finding types (never raw content), latencies,
-and sanitized Laya evidence (checkpoint, question schema, confidences).
-Latency is split honestly: `latency_ms.deterministic` excludes the semantic
-provider, `latency_ms.laya` is present only when the provider actually ran,
-and `latency_ms.total_security` covers the whole boundary crossing
-(architecture §15).
-Ship stdout to the log platform of choice; keep the raw-content evaluation
-path (if ever enabled) separately governed (PRIV-004).
+The versioned event contains event/request IDs, UTC time, W3C trace/span
+correlation, bounded verified principals, policy/routing/tool IDs, counts,
+stable reason IDs, sanitized Laya evidence, fixed-shape latencies, and frame
+integrity metadata. It contains no raw content, secrets, authorization
+headers, token originals, decoded payloads, or stack traces. Latency is split
+honestly: `latency_ms.deterministic` excludes the semantic provider,
+`latency_ms.laya` is present only when it ran, and
+`latency_ms.total_security` covers the boundary crossing. The WAL is the
+durable source; stdout is only a development mirror and SIEM delivery is
+at-least-once.
 
 ## Policy & thresholds
 

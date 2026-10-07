@@ -76,6 +76,14 @@ services:
     volumes:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
+  fake-siem:
+    profiles: ["audit-siem"]
+    build:
+      context: .
+      dockerfile: Dockerfile.fake-siem
+    expose:
+      - "9200"
+
 # Semantic decision engine — run the official laya-serve locally (FR-007).
 # Load the multilingual checkpoint for Thai/English routing and never expose
 # it publicly. Uncomment and set LAYA_URL on the gateway to enable.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -248,10 +249,8 @@ func layaAuditInfo(ev *decision.DecisionEvidence, schema *decision.QuestionSchem
 		if math.IsNaN(d.Confidence) || math.IsInf(d.Confidence, 0) || d.Confidence < 0 || d.Confidence > 1 {
 			continue
 		}
-		if info.Decisions == nil {
-			info.Decisions = map[string]audit.LayaDecision{}
-		}
-		info.Decisions[id] = audit.LayaDecision{Value: d.Value, Confidence: d.Confidence}
+		info.Decisions = append(info.Decisions, audit.LayaDecision{ID: id, Value: d.Value, Confidence: d.Confidence})
 	}
+	sort.Slice(info.Decisions, func(i, j int) bool { return info.Decisions[i].ID < info.Decisions[j].ID })
 	return info
 }

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"github.com/aegisllm/gateway/internal/limiter"
 	"github.com/aegisllm/gateway/internal/policydistribution"
 	"github.com/aegisllm/gateway/internal/routing"
+	"github.com/aegisllm/gateway/internal/trace"
 	"github.com/aegisllm/gateway/web/leaderboard"
 )
 
@@ -34,6 +36,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/policies/rollback", s.protect(http.HandlerFunc(s.handlePolicyRollback), auth.RoleOperator))
 	mux.Handle("GET /api/routes", s.protect(http.HandlerFunc(s.handleRoutes), "aegis.operator"))
 	mux.Handle("GET /api/pii/providers", s.protect(http.HandlerFunc(s.handlePIIProviders), "aegis.operator"))
+	mux.Handle("GET /api/audit/status", s.protect(http.HandlerFunc(s.handleAuditStatus), auth.RoleOperator))
+	mux.Handle("POST /api/audit/verify", s.protect(http.HandlerFunc(s.handleAuditVerify), auth.RoleOperator))
 	if s.mcp != nil {
 		mux.Handle("POST /mcp/{server}", s.protectLimited(http.HandlerFunc(s.mcp.handler), auth.RoleToolInvoke, auth.RoleOperator))
 		mux.Handle("GET /mcp/{server}", s.protect(http.HandlerFunc(s.mcp.handler), auth.RoleToolInvoke, auth.RoleOperator))
@@ -48,6 +52,24 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /metrics", s.protect(s.metrics, "aegis.operator"))
 	}
 	return mux
+}
+
+func (s *Server) handleAuditStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.AuditStatus())
+}
+
+func (s *Server) handleAuditVerify(w http.ResponseWriter, r *http.Request) {
+	if s.auditWAL == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "audit WAL unavailable"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := s.auditWAL.Verify(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "audit integrity verification failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "verified", "records": s.auditWAL.Status().Records})
 }
 
 func (s *Server) handlePolicyStatus(w http.ResponseWriter, _ *http.Request) {
@@ -190,7 +212,9 @@ func remoteAddress(remote string) string {
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	env := &core.InspectionEnvelope{RequestID: newRequestID(), Direction: core.DirectionRequest, Target: core.Target{Provider: s.cfg.DefaultTargetProvider}, Metadata: map[string]string{"endpoint_family": "openai", "endpoint_path": r.URL.Path}}
+	requestCtx, traceCtx := trace.FromRequest(r)
+	r = r.WithContext(requestCtx)
+	env := &core.InspectionEnvelope{RequestID: newRequestID(), Direction: core.DirectionRequest, Target: core.Target{Provider: s.cfg.DefaultTargetProvider}, Metadata: map[string]string{"endpoint_family": "openai", "endpoint_path": r.URL.Path, "trace_id": traceCtx.TraceID, "span_id": traceCtx.SpanID, "trace_flags": traceCtx.Flags}}
 	s.enrich(env, r)
 	if auditor, ok := s.pipeline.(interface {
 		AuditPassthrough(*core.InspectionEnvelope)
