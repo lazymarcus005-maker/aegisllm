@@ -48,12 +48,11 @@ func TestGoldenRequests(t *testing.T) {
 
 	cases := []goldenCase{
 		{
-			name:       "UC-001 secret hard-masked before upstream",
+			name:       "UC-001 high-risk secret blocked before upstream",
 			mode:       gateway.ModeEnforce,
 			request:    `{"model":"m","messages":[{"role":"user","content":"Use this GitLab token: glpat-0123456789abcdefghij"}]}`,
-			wantStatus: http.StatusOK, wantAudit: `"action":"REDACT","code":"SECRET_DETECTED"`,
-			upstreamWants: "[REDACTED:GITLAB_PAT]",
-			notClient:     "glpat-0123456789abcdefghij",
+			wantStatus: http.StatusForbidden, wantAudit: `"action":"BLOCK","code":"SECRET_DETECTED"`,
+			notClient: "glpat-0123456789abcdefghij",
 		},
 		{
 			name:       "UC-002 Thai PII tokenized for cloud",
@@ -77,13 +76,12 @@ func TestGoldenRequests(t *testing.T) {
 			wantStatus: http.StatusOK, wantAudit: `"mode":"shadow"`,
 		},
 		{
-			name:       "AS-005 model-emitted secret hard-masked before client",
+			name:       "AS-005 model-emitted high-risk secret blocked before client",
 			mode:       gateway.ModeEnforce,
 			request:    `{"model":"m","messages":[{"role":"user","content":"hello"}]}`,
 			upstream:   `{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"key: glpat-0123456789abcdefghij"},"finish_reason":"stop"}]}`,
-			wantStatus: http.StatusOK, wantAudit: `"direction":"RESPONSE"`,
-			wantClient: "[REDACTED:GITLAB_PAT]",
-			notClient:  "glpat-0123456789abcdefghij",
+			wantStatus: http.StatusForbidden, wantAudit: `"direction":"RESPONSE"`,
+			notClient: "glpat-0123456789abcdefghij",
 		},
 		{
 			name: "UC-004 prompt injection audited with Laya evidence (shadow)",

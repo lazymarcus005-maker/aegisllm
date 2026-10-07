@@ -47,6 +47,15 @@ var actionSeverity = map[core.Action]int{
 	core.ActionAllow:           1,
 }
 
+var highRiskSecretSubtypes = map[string]bool{
+	"PEM_PRIVATE_KEY":       true,
+	"AWS_SECRET_ACCESS_KEY": true,
+	"GITLAB_PAT":            true,
+	"GITHUB_TOKEN":          true,
+	"OPENAI_KEY":            true, // legacy policy alias
+	"OPENAI_API_KEY":        true,
+}
+
 // Engine evaluates findings, evidence, and context against one policy
 // document. It performs no I/O and no model calls (handoff T-011).
 type Engine struct {
@@ -137,12 +146,18 @@ func (e *Engine) bestSecret(findings []core.SecurityFinding) (Decision, bool) {
 		if f.Category != core.CategorySecret {
 			continue
 		}
-		rule, ok := e.policy.Secrets[f.Subtype]
-		if !ok {
-			continue
+		action := core.ActionRedact
+		if rule, ok := e.policy.Secrets[f.Subtype]; ok && rule.Action != "" {
+			action = rule.Action
+			if action == core.ActionAllow {
+				action = core.ActionRedact
+			}
 		}
-		if !found || better(f.Subtype, rule.Action, bestRule, bestAction) {
-			bestRule, bestAction, found = "secrets."+f.Subtype, rule.Action, true
+		if f.Confidence >= 0.9 || highRiskSecretSubtypes[f.Subtype] {
+			action = core.ActionBlock
+		}
+		if !found || better(f.Subtype, action, bestRule, bestAction) {
+			bestRule, bestAction, found = "secrets."+f.Subtype, action, true
 		}
 	}
 	if !found {
@@ -185,17 +200,31 @@ func (e *Engine) bestRole(env *core.InspectionEnvelope) (Decision, bool) {
 // baseline applies only when PII findings exist, and a per-subtype PII rule
 // for that provider refines (wins over) the baseline.
 func (e *Engine) piiTransformation(env *core.InspectionEnvelope, findings []core.SecurityFinding) (Decision, bool) {
-	hasPII := false
+	piiCount := 0
 	for _, f := range findings {
 		if f.Category == core.CategoryPII {
-			hasPII = true
-			break
+			piiCount++
 		}
 	}
-	if !hasPII {
+	if piiCount == 0 {
 		return Decision{}, false
 	}
 	provider := env.Target.Provider
+
+	// MULTIPLE_PII is an optional policy pseudo-subtype. It keeps the policy
+	// schema additive while allowing a tenant to escalate a dense PII payload
+	// at the same precedence level as ordinary PII transformations.
+	if piiCount >= 3 {
+		if rule, ok := e.policy.PII["MULTIPLE_PII"]; ok {
+			if ar, ok := rule.Providers[provider]; ok && ar.Action != "" {
+				return Decision{
+					Action:      ar.Action,
+					MatchedRule: "pii.MULTIPLE_PII." + provider,
+					Reason:      "multiple PII findings matched for provider " + provider,
+				}, true
+			}
+		}
+	}
 
 	// 6. Per-subtype PII transformation policy.
 	var bestRule string

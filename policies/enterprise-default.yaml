@@ -31,6 +31,18 @@ secrets:
     action: redact
   AWS_ACCESS_KEY:
     action: redact
+  AWS_SECRET_ACCESS_KEY:
+    action: redact
+  OPENAI_API_KEY:
+    action: redact
+  ANTHROPIC_API_KEY:
+    action: redact
+  SLACK_TOKEN:
+    action: redact
+  GOOGLE_API_KEY:
+    action: redact
+  GENERIC_API_KEY:
+    action: redact
   CONNECTION_STRING:
     action: redact
 
@@ -54,6 +66,12 @@ pii:
     providers:
       cloud:
         action: tokenize
+  MULTIPLE_PII:
+    providers:
+      cloud:
+        action: tokenize
+      local:
+        action: review
 
 # Semantic risk policy (precedence level 7; tickets 08-11 consume).
 semantic:
