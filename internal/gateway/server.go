@@ -14,6 +14,7 @@ import (
 
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/dashboard"
+	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/web/leaderboard"
 )
 
@@ -22,6 +23,7 @@ type RequestDecision struct {
 	Action          core.Action
 	Code            string // error code for policy rejections (spec §9)
 	TransformedBody []byte // non-nil when the pipeline rewrote the body
+	Transformations []pii.Transformation
 }
 
 // Pipeline runs normalized content through detection and policy on both the
@@ -95,20 +97,6 @@ func (s *Server) AddReadinessCheck(name string, fn func() string) {
 }
 
 // Handler returns the routed HTTP handler.
-func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
-	mux.HandleFunc("GET /health", s.handleHealth)
-	mux.HandleFunc("GET /ready", s.handleReady)
-	mux.HandleFunc("GET /api/protection-stats", s.handleProtectionStats)
-	mux.HandleFunc("GET /dashboard", s.handleDashboard)
-	mux.Handle("GET /dashboard/", http.StripPrefix("/dashboard/", http.FileServer(http.FS(leaderboard.Files))))
-	if s.metrics != nil {
-		mux.Handle("GET /metrics", s.metrics)
-	}
-	return mux
-}
-
 func (s *Server) handleProtectionStats(w http.ResponseWriter, _ *http.Request) {
 	if s.dashboard == nil {
 		writeJSON(w, http.StatusOK, dashboard.Snapshot(nil))
@@ -170,7 +158,12 @@ func (s *Server) readyCheck() string {
 	return ""
 }
 
-func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
+	normalizer := NormalizerFor(r.URL.Path)
+	if normalizer == nil {
+		http.NotFound(w, r)
+		return
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
@@ -182,12 +175,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	env, err := ParseChatCompletions(body)
+	env, err := normalizer.ParseRequest(body)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "", err.Error(), "")
 		return
 	}
 	s.enrich(env, r)
+	env.Metadata["endpoint_path"] = r.URL.Path
+	isStream := env.Metadata["stream"] == "true" || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream")
+	if isStream {
+		env.Metadata["skipped_stream"] = "true"
+	}
 
 	forwardBody := body
 	if s.pipeline != nil {
@@ -197,7 +195,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusInternalServerError, "gateway_error", "", "Security pipeline failure.", env.RequestID)
 			return
 		}
-		forwardBody = s.applyDecision(w, env, dec, forwardBody)
+		if !isStream {
+			forwardBody = s.applyDecision(w, env, normalizer, dec, forwardBody)
+		}
 		if forwardBody == nil {
 			return // response already written
 		}
@@ -214,9 +214,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Outbound protection (ticket 07): non-streaming JSON responses are
 	// scanned and policy-filtered before reaching the client. Streaming
 	// follows the deferred plan in architecture §13.
-	isStream := env.Metadata["stream"] == "true"
+	_, embeddingsResponse := normalizer.(openAIEmbeddingsNormalizer)
 	if s.pipeline == nil || s.cfg.SecurityMode == ModeOff || isStream ||
-		resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+		embeddingsResponse || resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
 		copyResponseHeaders(w, resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
@@ -230,7 +230,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, perr := s.processOutbound(w, env, bodyBytes)
+	out, perr := s.processOutbound(w, env, normalizer, bodyBytes)
 	if perr != nil {
 		return // response already written
 	}
@@ -241,7 +241,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 // processOutbound applies the response outcome for the current mode; a
 // non-nil error means the response has already been written.
-func (s *Server) processOutbound(w http.ResponseWriter, env *core.InspectionEnvelope, body []byte) ([]byte, error) {
+func (s *Server) processOutbound(w http.ResponseWriter, env *core.InspectionEnvelope, normalizer Normalizer, body []byte) ([]byte, error) {
 	outcome, err := s.pipeline.ProcessResponse(env, body)
 	if err != nil {
 		s.logger.Error("outbound pipeline failed", "request_id", env.RequestID, "error", err)
@@ -265,13 +265,22 @@ func (s *Server) processOutbound(w http.ResponseWriter, env *core.InspectionEnve
 		if outcome.TransformedBody != nil {
 			return outcome.TransformedBody, nil
 		}
+		if len(outcome.Transformations) > 0 {
+			transformed, err := normalizer.RewriteResponse(body, outcome.Transformations)
+			if err != nil {
+				s.logger.Error("response transformation failed", "request_id", env.RequestID, "error", err)
+				writeOpenAIError(w, http.StatusInternalServerError, "gateway_error", "", "Security transformation failure.", env.RequestID)
+				return nil, err
+			}
+			return transformed, nil
+		}
 		return body, nil
 	}
 }
 
 // applyDecision translates a pipeline decision into forwarding behavior for
 // the current mode. A nil return means the response has already been written.
-func (s *Server) applyDecision(w http.ResponseWriter, env *core.InspectionEnvelope, dec RequestDecision, raw []byte) []byte {
+func (s *Server) applyDecision(w http.ResponseWriter, env *core.InspectionEnvelope, normalizer Normalizer, dec RequestDecision, raw []byte) []byte {
 	if s.cfg.SecurityMode != ModeEnforce {
 		// off: no security behavior; shadow: predicted actions are audited by
 		// the pipeline but traffic follows the incumbent path (FR-018).
@@ -286,6 +295,15 @@ func (s *Server) applyDecision(w http.ResponseWriter, env *core.InspectionEnvelo
 		if dec.TransformedBody != nil {
 			return dec.TransformedBody
 		}
+		if len(dec.Transformations) > 0 {
+			body, err := normalizer.RewriteRequest(raw, dec.Transformations)
+			if err != nil {
+				s.logger.Error("request transformation failed", "request_id", env.RequestID, "error", err)
+				writeOpenAIError(w, http.StatusInternalServerError, "gateway_error", "", "Security transformation failure.", env.RequestID)
+				return nil
+			}
+			return body
+		}
 		return raw
 	case core.ActionBlock, core.ActionReview:
 		// REVIEW maps to a safe fallback: reject (FR-011).
@@ -296,12 +314,21 @@ func (s *Server) applyDecision(w http.ResponseWriter, env *core.InspectionEnvelo
 		writeOpenAIError(w, http.StatusForbidden, "security_policy_violation", code, "Request blocked by security policy.", env.RequestID)
 		return nil
 	case core.ActionRedact, core.ActionTokenize:
-		if dec.TransformedBody == nil {
+		if dec.TransformedBody != nil {
+			return dec.TransformedBody
+		}
+		if len(dec.Transformations) == 0 {
 			s.logger.Error("transform decision without transformed body", "request_id", env.RequestID, "action", string(dec.Action))
 			writeOpenAIError(w, http.StatusInternalServerError, "gateway_error", "", "Security transformation failure.", env.RequestID)
 			return nil
 		}
-		return dec.TransformedBody
+		body, err := normalizer.RewriteRequest(raw, dec.Transformations)
+		if err != nil {
+			s.logger.Error("request transformation failed", "request_id", env.RequestID, "error", err)
+			writeOpenAIError(w, http.StatusInternalServerError, "gateway_error", "", "Security transformation failure.", env.RequestID)
+			return nil
+		}
+		return body
 	default:
 		s.logger.Error("unknown policy action", "request_id", env.RequestID, "action", string(dec.Action))
 		writeOpenAIError(w, http.StatusInternalServerError, "gateway_error", "", "Unknown policy action.", env.RequestID)

@@ -38,6 +38,15 @@ func (p *SecurityPipeline) inspect(env *core.InspectionEnvelope) *inspection {
 		}
 	}
 	ins.dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: ins.findings})
+	if env.Metadata["passthrough"] == "true" || env.Metadata["skipped_stream"] == "true" {
+		ins.dec.Action = core.ActionAllow
+		ins.dec.Code = ""
+		ins.dec.MatchedRule = "passthrough"
+		if env.Metadata["skipped_stream"] == "true" {
+			ins.dec.Code = "SKIPPED_STREAM"
+			ins.dec.MatchedRule = "skipped_stream"
+		}
+	}
 	ins.detMS = time.Since(ins.start).Milliseconds()
 	if p.provider != nil && p.planner != nil && ins.dec.Action != core.ActionBlock {
 		p.semanticStage(ins)

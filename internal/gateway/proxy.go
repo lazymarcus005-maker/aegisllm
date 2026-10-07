@@ -45,7 +45,14 @@ func NewProxy(cfg Config) (*Proxy, error) {
 // Forward sends the raw request body to the upstream gateway at the same path.
 func (p *Proxy) Forward(r *http.Request, body []byte) (*http.Response, error) {
 	target := *p.baseURL
-	target.Path = joinPath(p.baseURL.Path, r.URL.Path)
+	path := r.URL.Path
+	if prefix := strings.TrimSuffix(p.cfg.UpstreamChatPathPrefix, "/"); prefix != "" && (path == prefix || strings.HasPrefix(path, prefix+"/")) {
+		path = strings.TrimPrefix(path, prefix)
+		if path == "" {
+			path = "/"
+		}
+	}
+	target.Path = joinPath(p.baseURL.Path, path)
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))
 	if err != nil {
