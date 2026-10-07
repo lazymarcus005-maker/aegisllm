@@ -6,6 +6,7 @@ package routing
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -34,15 +35,59 @@ const (
 // Capabilities are deliberately a fixed vocabulary. This keeps route
 // selection and metrics bounded even when a caller sends an arbitrary path.
 type Capabilities struct {
-	Chat       bool `yaml:"chat"`
-	Responses  bool `yaml:"responses"`
-	Messages   bool `yaml:"messages"`
-	Embeddings bool `yaml:"embeddings"`
-	Streaming  bool `yaml:"streaming"`
-	Tools      bool `yaml:"tools"`
+	Chat        bool                    `yaml:"chat"`
+	Responses   bool                    `yaml:"responses"`
+	Messages    bool                    `yaml:"messages"`
+	Embeddings  bool                    `yaml:"embeddings"`
+	Streaming   bool                    `yaml:"streaming"`
+	Tools       bool                    `yaml:"tools"`
+	Conformance *ConformanceDeclaration `yaml:"conformance,omitempty"`
+}
+
+// ConformanceDeclaration binds advanced behavior to an operator-reviewed
+// report artifact. It contains no credentials or report contents.
+type ConformanceDeclaration struct {
+	SchemaVersion string `yaml:"schema_version"`
+	ReportSHA256  string `yaml:"report_sha256"`
+	Profile       string `yaml:"profile,omitempty"`
+	Streaming     bool   `yaml:"streaming,omitempty"`
+	Tools         bool   `yaml:"tools,omitempty"`
+	Responses     bool   `yaml:"responses,omitempty"`
+	Messages      bool   `yaml:"messages,omitempty"`
+	Chat          bool   `yaml:"chat,omitempty"`
 }
 
 func (c Capabilities) Supports(family, capability string, stream, tools bool) bool {
+	return c.supports(family, capability, stream, tools, false)
+}
+
+func (c Capabilities) SupportsWithConformance(family, capability string, stream, tools, gate bool) bool {
+	return c.supports(family, capability, stream, tools, gate)
+}
+
+func (c Capabilities) supports(family, capability string, stream, tools, gate bool) bool {
+	if gate {
+		if c.Conformance == nil || c.Conformance.SchemaVersion == "" || !validSHA256(c.Conformance.ReportSHA256) {
+			return false
+		}
+		if stream && !c.Conformance.Streaming || tools && !c.Conformance.Tools {
+			return false
+		}
+		switch capability {
+		case "chat":
+			if !c.Conformance.Chat {
+				return false
+			}
+		case "responses":
+			if !c.Conformance.Responses {
+				return false
+			}
+		case "messages":
+			if !c.Conformance.Messages {
+				return false
+			}
+		}
+	}
 	if stream && !c.Streaming {
 		return false
 	}
@@ -190,9 +235,24 @@ type Snapshot struct {
 }
 
 type Manager struct {
-	current atomic.Pointer[Snapshot]
-	mu      sync.Mutex
-	path    string
+	current         atomic.Pointer[Snapshot]
+	mu              sync.Mutex
+	path            string
+	conformanceGate bool
+}
+
+func (m *Manager) SetConformanceGate(enabled bool) {
+	if m != nil {
+		m.conformanceGate = enabled
+	}
+}
+
+func validSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 func LoadFile(file string) (*Registry, error) {
@@ -292,6 +352,11 @@ func Validate(reg *Registry) error {
 		}
 		if u.Capabilities == (Capabilities{}) {
 			return fmt.Errorf("upstream %s requires capabilities", safeID(u.ID))
+		}
+		if declaration := u.Capabilities.Conformance; declaration != nil {
+			if declaration.SchemaVersion != "aegisllm.conformance/v1" || !validSHA256(declaration.ReportSHA256) || strings.TrimSpace(declaration.Profile) == "" {
+				return fmt.Errorf("upstream %s has invalid conformance declaration", safeID(u.ID))
+			}
 		}
 	}
 	for i, chain := range reg.FallbackChains {
@@ -411,7 +476,7 @@ func (m *Manager) Candidates(in Input) ([]Selection, error) {
 			capabilityRejected = true
 			continue
 		}
-		if !u.Capabilities.Supports(in.Family, in.Capability, in.Streaming, in.Tools) {
+		if !u.Capabilities.SupportsWithConformance(in.Family, in.Capability, in.Streaming, in.Tools, m.conformanceGate) {
 			capabilityRejected = true
 			continue
 		}

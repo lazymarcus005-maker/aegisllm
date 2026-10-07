@@ -1,0 +1,10 @@
+{
+  "kind": "json",
+  "object": "chat.completion",
+  "model": "<normalized-model>",
+  "text_bytes": 14,
+  "choices": 1,
+  "finish": "stop",
+  "usage": true,
+  "done": false
+}

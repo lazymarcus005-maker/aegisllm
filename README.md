@@ -113,6 +113,7 @@ All configuration is environment-based; see [.env.example](.env.example).
 | `TOKEN_VAULT_REDIS_CA_FILE` / `TOKEN_VAULT_REDIS_CERT_FILE` / `TOKEN_VAULT_REDIS_KEY_FILE` | — | Redis-specific trust and optional mTLS material |
 | `TELEMETRY_HMAC_KEY_FILE` | empty in development | Reloadable mounted secret; production requires the file |
 | `DEFAULT_TARGET_PROVIDER` | `cloud` | Provider class when `X-Target-Provider` absent |
+| `CONFORMANCE_CAPABILITY_GATE` | `false` | Require a verified report declaration before advanced route features |
 
 Evasion scanning is declared in the selected policy under `evasion`. The
 reviewed profiles enable bounded NFKC/control/confusable projection, standard
@@ -203,6 +204,16 @@ events; BLOCK/REVIEW closes with a sanitized terminal error, while
 REDACT/TOKENIZE use the established placeholders and vault behavior. See
 [operations.md](docs/operations.md#streaming) for provider coverage,
 limitations, and production configuration.
+
+## Provider conformance lab (P1.8)
+
+The versioned compatibility contract is documented in
+[docs/conformance.md](docs/conformance.md) and
+[conformance/spec/v1.yaml](conformance/spec/v1.yaml). Use cmd/fakeprovider
+and cmd/conformancetool to exercise public HTTP routes and produce privacy-safe
+JSON/JUnit reports containing hashes and semantic shapes, never traffic bodies
+or credentials. Optional verified capability declarations can be enforced with
+CONFORMANCE_CAPABILITY_GATE=true.
 
 ## Repository layout
 

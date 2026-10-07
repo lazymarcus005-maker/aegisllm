@@ -24,6 +24,7 @@ separate feature-roadmap file).
 - [x] P1.4 Evasion-resistant scanning: bounded NFKC/control/confusable projection, Base64/URL-safe/percent/JSON decoding, structured traversal, cross-message state, reversible spans, fail-closed unsafe transforms, policy controls, sanitized metrics/audit, and corpus/latency coverage.
 - [x] P1.6 Durable audit, privacy-safe versioned events, CRC/HMAC/SHA-256 WAL with recovery/rotation/quota/keyring encryption, at-least-once HTTPS SIEM export with retry/DLQ, W3C trace correlation/allowlisted propagation, operator status/verify endpoints, audittool, fake SIEM profile, and lifecycle runbook.
 - [x] P1.7 Security Operations Dashboard v2: operator-only versioned aggregate APIs, bounded process-local rolling telemetry, responsive embedded operations UI, freshness/reset semantics, sanitized alerts, CSP/security headers, and SLO/data semantics documentation.
+- [x] P1.8 Provider conformance and compatibility lab: versioned OpenAI/Anthropic/generic profiles, deterministic fake-provider matrix, privacy-safe JSON/JUnit reports, compare mode, explicit fixtures, capability declarations/gates, and operator conformance summary.
 
 ## P2 — expanded coverage
 

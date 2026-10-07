@@ -96,6 +96,18 @@ disabled states are distinct so a telemetry gap cannot be mistaken for a
 healthy zero. The remaining limitation is process-local reset; operators must
 not treat the dashboard as the durable audit source.
 
+# P1.8 conformance-lab threats
+
+Conformance traffic is synthetic by contract. The runner accepts credentials
+only through environment/file descriptors, uses TLS/mTLS file material, and
+stores only hashes, byte counts, bounded semantic shapes, and allowlisted
+headers. Fake providers never log bodies. Reports are validated before
+certification and required skips fail the run. Differential mode is intended
+for lab traffic only and must not be pointed at production. A capability
+declaration is a reviewed, SHA-256-bound artifact; a remote report cannot
+automatically enable streaming or tools. Deviations not represented in the
+versioned spec require an explicit profile update and review.
+
 # P1.5 distribution threats
 
 Policy distribution treats the control plane as untrusted transport: Ed25519

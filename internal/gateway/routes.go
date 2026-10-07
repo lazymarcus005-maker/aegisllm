@@ -41,6 +41,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/policies/activate", s.protect(http.HandlerFunc(s.handlePolicyActivate), auth.RoleOperator))
 	mux.Handle("POST /api/policies/rollback", s.protect(http.HandlerFunc(s.handlePolicyRollback), auth.RoleOperator))
 	mux.Handle("GET /api/routes", s.protect(http.HandlerFunc(s.handleRoutes), "aegis.operator"))
+	mux.Handle("GET /api/providers/conformance", s.protect(http.HandlerFunc(s.handleProviderConformance), "aegis.operator"))
 	mux.Handle("GET /api/pii/providers", s.protect(http.HandlerFunc(s.handlePIIProviders), "aegis.operator"))
 	mux.Handle("GET /api/audit/status", s.protect(http.HandlerFunc(s.handleAuditStatus), auth.RoleOperator))
 	mux.Handle("POST /api/audit/verify", s.protect(http.HandlerFunc(s.handleAuditVerify), auth.RoleOperator))
@@ -282,4 +283,24 @@ func (s *Server) handleRoutes(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"version": 1, "routes": s.routed.Status()})
+}
+
+// handleProviderConformance exposes only the reviewed declaration summary;
+// route URLs, credentials, report bodies, and request content are excluded.
+func (s *Server) handleProviderConformance(w http.ResponseWriter, _ *http.Request) {
+	result := map[string]any{"schema_version": "aegisllm.provider-conformance-summary/v1", "gate_enabled": s.cfg.ConformanceCapabilityGate, "providers": []any{}}
+	if s.routed != nil {
+		providers := make([]map[string]any, 0)
+		for _, route := range s.routed.Status() {
+			item := map[string]any{"route_id": route.ID, "provider": route.Provider, "family": route.Family, "enabled": route.Enabled, "healthy": route.Healthy, "capabilities": route.Capabilities}
+			if route.Capabilities.Conformance != nil {
+				item["conformance"] = route.Capabilities.Conformance
+			} else {
+				item["conformance"] = map[string]any{"declared": false}
+			}
+			providers = append(providers, item)
+		}
+		result["providers"] = providers
+	}
+	writeJSON(w, http.StatusOK, result)
 }

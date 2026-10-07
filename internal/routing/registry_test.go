@@ -106,6 +106,31 @@ func TestRegistryRejectsSecretsInBaseURLAndUnknownFields(t *testing.T) {
 	}
 }
 
+func TestConformanceGateRejectsUndeclaredAdvancedCapabilities(t *testing.T) {
+	reg, err := Load([]byte(testRegistry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetConformanceGate(true)
+	if _, err := m.Candidates(Input{RequestedModel: "local/7b", Family: "openai", Capability: "chat", Streaming: true}); err == nil || err.Error() != "ROUTE_CAPABILITY_REJECTED" {
+		t.Fatalf("undeclared capability accepted: %v", err)
+	}
+	declaration := &ConformanceDeclaration{SchemaVersion: "aegisllm.conformance/v1", ReportSHA256: strings.Repeat("a", 64), Profile: "openai-chat", Chat: true, Streaming: true, Tools: true, Responses: true}
+	reg.Upstreams[0].Capabilities.Conformance = declaration
+	m, err = NewManager(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetConformanceGate(true)
+	if _, err := m.Candidates(Input{RequestedModel: "local/7b", Family: "openai", Capability: "chat", Streaming: true, Tools: true}); err != nil {
+		t.Fatalf("verified capability rejected: %v", err)
+	}
+}
+
 func TestCommittedExampleRegistryLoads(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "examples", "upstream-registry.yaml"))
 	if err != nil {

@@ -213,6 +213,17 @@ The security gateway inspects tool intent and content, but actual credentials be
 
 ## 6. Core Components
 
+### 6.0 Provider conformance lab
+
+P1.8 adds an external compatibility lab around the public gateway listener.
+Versioned OpenAI Chat/Responses, Anthropic Messages, and generic alias profiles
+are exercised against a deterministic non-production fake-provider matrix. The
+runner normalizes IDs, timestamps, and SSE chunk boundaries into semantic
+shapes and emits only bounded privacy-safe JSON/JUnit artifacts. Production
+routing can require an explicitly declared, SHA-256-bound report before
+enabling advanced provider features; the declaration is never inferred from a
+remote result.
+
 ### 6.1 Gateway Adapter
 
 Responsibilities:

@@ -1,0 +1,48 @@
+schema_version: aegisllm.conformance/v1
+version: 1
+semantics:
+  - non_stream_json
+  - sse_events_and_done
+  - tool_definitions_calls_results
+  - system_user_assistant_content
+  - unicode_thai_multimessage
+  - usage
+  - finish_and_stop_reason
+  - request_id
+  - model_alias_rewrite
+  - errors_rate_limits_timeouts_cancellation
+  - oversize_and_malformed_input
+profiles:
+  - id: openai-chat
+    family: openai
+    routes: [/v1/chat/completions]
+    streaming: true
+    tools: true
+    required: true
+    description: OpenAI chat/completions-compatible JSON and SSE
+  - id: openai-responses
+    family: openai
+    routes: [/v1/responses]
+    streaming: true
+    tools: true
+    required: true
+    description: OpenAI Responses-compatible JSON and SSE
+  - id: anthropic-messages
+    family: anthropic
+    routes: [/v1/messages, /anthropic/v1/messages]
+    streaming: true
+    tools: true
+    required: true
+    description: Anthropic Messages-compatible JSON and SSE
+  - id: generic-alias
+    family: generic
+    routes: [/v1/chatcompletion, /v1/response]
+    streaming: true
+    tools: true
+    required: true
+    description: Generic alias route with conservative superset semantics
+unsupported_fields:
+  - {profile: openai-chat, field: provider_extensions, behavior: pass-through, reason: unknown JSON members are preserved}
+  - {profile: openai-responses, field: provider_extensions, behavior: pass-through, reason: unknown JSON members are preserved}
+  - {profile: anthropic-messages, field: logprobs, behavior: ignore, reason: no normalized contract exists}
+  - {profile: generic-alias, field: unknown_fields, behavior: pass-through, reason: generic aliases retain provider members}

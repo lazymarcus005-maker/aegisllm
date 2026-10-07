@@ -1,0 +1,55 @@
+name: provider-conformance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      enable_real_probes:
+        description: Run protected real-provider probes
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  fake-provider:
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [openai-chat, openai-responses, anthropic-messages, generic-alias]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Start non-production fake provider
+        run: |
+          go run ./cmd/fakeprovider --port 19090 --profile matrix >/tmp/fakeprovider.log 2>&1 &
+          go run ./cmd/gateway >/tmp/gateway.log 2>&1 &
+          sleep 3
+        env:
+          LISTEN_ADDR: :18080
+          UPSTREAM_BASE_URL: http://127.0.0.1:19090
+          UPSTREAM_AUTH_MODE: none
+          SECURITY_MODE: off
+          AUTH_MODE: off
+          AUDIT_WAL_DIR: /tmp/aegisllm-conformance-audit
+          TOKEN_VAULT_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - name: Run required profile
+        run: |
+          mkdir -p artifacts
+          go run ./cmd/conformancetool run --target http://127.0.0.1:18080 --profiles "${{ matrix.profile }}" --report artifacts/${{ matrix.profile }}.json --junit artifacts/${{ matrix.profile }}.xml
+          go run ./cmd/conformancetool validate-report --report artifacts/${{ matrix.profile }}.json --junit artifacts/${{ matrix.profile }}.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-${{ matrix.profile }}
+          path: artifacts/
+
+  real-provider-probes:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_real_probes == true }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Real-provider probes are opt-in and must be added by a protected environment."

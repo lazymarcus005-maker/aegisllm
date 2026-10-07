@@ -36,6 +36,7 @@ func NewRoutedProxy(cfg Config, manager *routing.Manager) (*RoutedProxy, error) 
 		return nil, errors.New("route manager is required")
 	}
 	p := &RoutedProxy{manager: manager, cfg: cfg, routes: map[string]*Proxy{}, stop: make(chan struct{}), done: make(chan struct{})}
+	manager.SetConformanceGate(cfg.ConformanceCapabilityGate)
 	for _, u := range manager.Snapshot().Registry.Upstreams {
 		if _, err := p.proxyFor(u); err != nil {
 			p.Close()

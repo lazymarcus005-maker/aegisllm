@@ -172,6 +172,7 @@ type Config struct {
 	JWTRolesClaim                  string
 	JWTProviderClaim               string
 	AllowUnauthenticatedShadow     bool
+	ConformanceCapabilityGate      bool
 }
 
 // LoadConfig reads configuration from the process environment.
@@ -322,6 +323,7 @@ func configFrom(get func(string) string) Config {
 		JWTRolesClaim:                  getenvDefault(get, "JWT_ROLES_CLAIM", "roles"),
 		JWTProviderClaim:               getenvDefault(get, "JWT_PROVIDER_CLAIM", "provider"),
 		AllowUnauthenticatedShadow:     strings.EqualFold(get("ALLOW_UNAUTHENTICATED_SHADOW"), "true"),
+		ConformanceCapabilityGate:      getenvBool(get, "CONFORMANCE_CAPABILITY_GATE", false),
 	}
 }
 

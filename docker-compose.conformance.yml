@@ -1,0 +1,24 @@
+services:
+  conformance-gateway:
+    build: .
+    environment:
+      DEPLOYMENT_PROFILE: development
+      LISTEN_ADDR: ":8080"
+      UPSTREAM_BASE_URL: http://conformance-provider:9090
+      UPSTREAM_AUTH_MODE: none
+      SECURITY_MODE: off
+      AUTH_MODE: off
+      AUDIT_WAL_DIR: /tmp/aegisllm-audit
+      TOKEN_VAULT_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      CONFORMANCE_CAPABILITY_GATE: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      - conformance-provider
+  conformance-provider:
+    build:
+      context: .
+      dockerfile: Dockerfile.fake-provider
+    command: ["--port", "9090", "--profile", "matrix"]
+    expose:
+      - "9090"
