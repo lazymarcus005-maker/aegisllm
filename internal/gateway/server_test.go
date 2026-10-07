@@ -314,7 +314,8 @@ func TestOversizedRequestReturns413(t *testing.T) {
 }
 
 func TestHealthAndReady(t *testing.T) {
-	_, gw, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {})
+	srv, gw, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {})
+	srv.AddReadinessCheck("policy_loaded", func() string { return "" })
 
 	resp, _ := http.Get(gw.URL + "/health")
 	body, _ := io.ReadAll(resp.Body)
@@ -328,6 +329,18 @@ func TestHealthAndReady(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 || !strings.Contains(string(body), "ready") {
 		t.Fatalf("ready: %d %s", resp.StatusCode, body)
+	}
+	var ready struct {
+		Status            string            `json:"status"`
+		DeploymentProfile string            `json:"deployment_profile"`
+		SecurityMode      string            `json:"security_mode"`
+		Dependencies      map[string]string `json:"dependencies"`
+	}
+	if err := json.Unmarshal(body, &ready); err != nil {
+		t.Fatal(err)
+	}
+	if ready.Status != "ready" || ready.DeploymentProfile != string(ProfileDevelopment) || ready.Dependencies["upstream"] != "ready" || ready.Dependencies["policy_loaded"] != "ready" {
+		t.Fatalf("readiness evidence missing: %+v", ready)
 	}
 }
 

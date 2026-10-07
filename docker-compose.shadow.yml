@@ -1,0 +1,5 @@
+services:
+  security-gateway:
+    environment:
+      DEPLOYMENT_PROFILE: "shadow"
+      SECURITY_MODE: "shadow"

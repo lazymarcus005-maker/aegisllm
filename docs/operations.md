@@ -9,6 +9,30 @@ docker compose up --build      # gateway :8080, mock upstream :9090, redis :6379
 Native: see README quick start. All configuration is environment-based
 (`.env.example` documents every variable).
 
+## Deployment profiles and secure production
+
+`DEPLOYMENT_PROFILE` is `development` by default. Development keeps the
+convenient `SECURITY_MODE=off` and may use the in-memory vault. The shadow
+profile requires `SECURITY_MODE=shadow` and is available locally with:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.shadow.yml up --build
+```
+
+Production requires `DEPLOYMENT_PROFILE=production` and
+`SECURITY_MODE=enforce`. Startup fails before the listener opens unless all of
+the following are present and valid: a 64-hex-character `TOKEN_VAULT_KEY`, a
+Redis `TOKEN_VAULT_REDIS_URL`, `TELEMETRY_HMAC_KEY`, `UPSTREAM_BASE_URL`, and
+the reviewed policy, question, and threshold files. Known mock-upstream
+hostnames are rejected in production. Inject secret values at deploy time;
+never commit a populated `.env.production` or compose file. Use
+`.env.production.example` and `docker-compose.production.example.yml` as
+placeholder-only references.
+
+The production image contains the gateway binary, embedded dashboard, and
+versioned policy/question/threshold assets. It runs as a non-root user and its
+container healthcheck calls `/health`.
+
 ## Modes (FR-018)
 
 - `SECURITY_MODE=off` — pure proxy, no inspection, no audit.
@@ -21,9 +45,12 @@ Native: see README quick start. All configuration is environment-based
 ## Readiness & health
 
 - `GET /health` — liveness.
-- `GET /ready` — checks upstream reachability, policy loaded, question
-  schema loaded, token store (Redis ping when configured), laya-serve
-  (when `LAYA_URL` configured). Non-200 → not ready.
+- `GET /ready` — returns the compatible `status` field plus
+  `deployment_profile`, `security_mode`, and sanitized dependency states. It
+  checks upstream reachability, policy loaded, question schema loaded, token
+  store (Redis ping when configured), and laya-serve (when `LAYA_URL` is
+  configured). It never returns credentials or inspected content. Non-200 →
+  not ready.
 
 ## Metrics (spec §15)
 

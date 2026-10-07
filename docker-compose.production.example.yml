@@ -1,0 +1,22 @@
+# Production reference only. Replace all *.example.invalid endpoints and
+# inject secrets from a secret manager or CI environment; do not commit them.
+services:
+  security-gateway:
+    image: ghcr.io/example/aegisllm-gateway:replace-with-reviewed-tag
+    ports:
+      - "8080:8080"
+    environment:
+      DEPLOYMENT_PROFILE: "production"
+      SECURITY_MODE: "enforce"
+      LISTEN_ADDR: ":8080"
+      UPSTREAM_BASE_URL: "https://llm-gateway.example.invalid"
+      UPSTREAM_AUTH_MODE: "bearer"
+      UPSTREAM_API_KEY: "${UPSTREAM_API_KEY:?inject UPSTREAM_API_KEY from a secret manager}"
+      POLICY_FILE: "policies/enterprise-default.yaml"
+      QUESTIONS_FILE: "questions/security-v1.yaml"
+      THRESHOLDS_FILE: "policies/thresholds-security-v1.yaml"
+      TOKEN_VAULT_KEY: "${TOKEN_VAULT_KEY:?inject a 64-hex-char key from a secret manager}"
+      TOKEN_VAULT_REDIS_URL: "redis://redis.example.invalid:6379/0"
+      TELEMETRY_HMAC_KEY: "${TELEMETRY_HMAC_KEY:?inject a telemetry HMAC key from a secret manager}"
+    # Redis and the upstream are intentionally external. Never point this
+    # production profile at the repository's mock-upstream service.

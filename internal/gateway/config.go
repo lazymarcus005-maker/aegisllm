@@ -1,8 +1,24 @@
 package gateway
 
 import (
+	"encoding/hex"
+	"errors"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
+
+	"github.com/aegisllm/gateway/internal/decision"
+	"github.com/aegisllm/gateway/internal/policy"
+)
+
+// DeploymentProfile selects the operational safety contract for the gateway.
+type DeploymentProfile string
+
+const (
+	ProfileDevelopment DeploymentProfile = "development"
+	ProfileShadow      DeploymentProfile = "shadow"
+	ProfileProduction  DeploymentProfile = "production"
 )
 
 // Security modes (FR-018).
@@ -15,6 +31,7 @@ const (
 // Config holds all gateway runtime configuration, sourced from the
 // environment (see .env.example).
 type Config struct {
+	DeploymentProfile       DeploymentProfile
 	ListenAddr              string
 	UpstreamBaseURL         string
 	UpstreamAuthMode        string // none | bearer | header
@@ -29,6 +46,12 @@ type Config struct {
 	HeaderUser              string
 	HeaderTargetProvider    string
 	DefaultTargetProvider   string
+	PolicyFile              string
+	QuestionsFile           string
+	ThresholdsFile          string
+	TokenVaultKey           string
+	TokenVaultRedisURL      string
+	TelemetryHMACKey        string
 }
 
 // LoadConfig reads configuration from the process environment.
@@ -37,7 +60,14 @@ func LoadConfig() Config {
 }
 
 func configFrom(get func(string) string) Config {
+	profileValue := getenvDefault(get, "DEPLOYMENT_PROFILE", string(ProfileDevelopment))
+	profile, err := ParseDeploymentProfile(profileValue)
+	if err != nil {
+		// Preserve the invalid value so ValidateConfig can report it at startup.
+		profile = DeploymentProfile(profileValue)
+	}
 	return Config{
+		DeploymentProfile:       profile,
 		ListenAddr:              getenvDefault(get, "LISTEN_ADDR", ":8080"),
 		UpstreamBaseURL:         get("UPSTREAM_BASE_URL"),
 		UpstreamAuthMode:        getenvDefault(get, "UPSTREAM_AUTH_MODE", "none"),
@@ -52,7 +82,143 @@ func configFrom(get func(string) string) Config {
 		HeaderUser:              getenvDefault(get, "HEADER_USER", "X-User-Id"),
 		HeaderTargetProvider:    getenvDefault(get, "HEADER_TARGET_PROVIDER", "X-Target-Provider"),
 		DefaultTargetProvider:   getenvDefault(get, "DEFAULT_TARGET_PROVIDER", "cloud"),
+		PolicyFile:              getenvDefault(get, "POLICY_FILE", "policies/enterprise-default.yaml"),
+		QuestionsFile:           getenvDefault(get, "QUESTIONS_FILE", "questions/security-v1.yaml"),
+		ThresholdsFile:          getenvDefault(get, "THRESHOLDS_FILE", "policies/thresholds-security-v1.yaml"),
+		TokenVaultKey:           get("TOKEN_VAULT_KEY"),
+		TokenVaultRedisURL:      get("TOKEN_VAULT_REDIS_URL"),
+		TelemetryHMACKey:        get("TELEMETRY_HMAC_KEY"),
 	}
+}
+
+// ParseDeploymentProfile parses the public DEPLOYMENT_PROFILE values.
+func ParseDeploymentProfile(value string) (DeploymentProfile, error) {
+	if value == "" {
+		return ProfileDevelopment, nil
+	}
+	profile := DeploymentProfile(strings.ToLower(strings.TrimSpace(value)))
+	switch profile {
+	case ProfileDevelopment, ProfileShadow, ProfileProduction:
+		return profile, nil
+	default:
+		return "", errors.New("DEPLOYMENT_PROFILE must be one of: development, shadow, production")
+	}
+}
+
+func (c Config) profile() DeploymentProfile {
+	if c.DeploymentProfile == "" {
+		return ProfileDevelopment
+	}
+	return c.DeploymentProfile
+}
+
+// ValidateConfig checks the deployment safety contract before server startup.
+// Production validation intentionally discards parser details so malformed
+// config cannot echo secret-bearing or raw file content into logs.
+func ValidateConfig(cfg Config) error {
+	profile, err := ParseDeploymentProfile(string(cfg.profile()))
+	if err != nil {
+		return err
+	}
+	if !validSecurityMode(cfg.SecurityMode) {
+		return errors.New("SECURITY_MODE must be one of: off, shadow, enforce")
+	}
+	if profile == ProfileShadow && cfg.SecurityMode != ModeShadow {
+		return errors.New("shadow deployment requires SECURITY_MODE=shadow")
+	}
+	if profile != ProfileProduction {
+		return nil
+	}
+	if cfg.SecurityMode != ModeEnforce {
+		return errors.New("production requires SECURITY_MODE=enforce")
+	}
+	if len(cfg.TokenVaultKey) != 64 {
+		return errors.New("TOKEN_VAULT_KEY must be 64 hex chars")
+	}
+	if _, err := hex.DecodeString(cfg.TokenVaultKey); err != nil {
+		return errors.New("TOKEN_VAULT_KEY must be 64 hex chars")
+	}
+	if strings.TrimSpace(cfg.TokenVaultRedisURL) == "" {
+		return errors.New("TOKEN_VAULT_REDIS_URL is required")
+	}
+	if !validDependencyURL(cfg.TokenVaultRedisURL) {
+		return errors.New("TOKEN_VAULT_REDIS_URL is invalid")
+	}
+	if strings.TrimSpace(cfg.TelemetryHMACKey) == "" {
+		return errors.New("TELEMETRY_HMAC_KEY is required")
+	}
+	if strings.TrimSpace(cfg.UpstreamBaseURL) == "" {
+		return errors.New("UPSTREAM_BASE_URL is required")
+	}
+	upstream, ok := parseDependencyURL(cfg.UpstreamBaseURL)
+	if !ok {
+		return errors.New("UPSTREAM_BASE_URL is invalid")
+	}
+	if isMockUpstream(upstream.Hostname()) {
+		return errors.New("UPSTREAM_BASE_URL must not reference a mock upstream")
+	}
+	if err := validatePolicyFile(cfg.PolicyFile); err != nil {
+		return err
+	}
+	if err := validateQuestionsFile(cfg.QuestionsFile); err != nil {
+		return err
+	}
+	if err := validateThresholdsFile(cfg.ThresholdsFile); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validSecurityMode(mode string) bool {
+	return mode == ModeOff || mode == ModeShadow || mode == ModeEnforce
+}
+
+func parseDependencyURL(raw string) (*url.URL, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return nil, false
+	}
+	return u, true
+}
+
+func validDependencyURL(raw string) bool {
+	_, ok := parseDependencyURL(raw)
+	return ok
+}
+
+func isMockUpstream(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	return host == "mock-upstream" || host == "mock" || host == "mock-upstream.local"
+}
+
+func validatePolicyFile(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("POLICY_FILE is required")
+	}
+	if _, err := policy.LoadFile(path); err != nil {
+		return errors.New("POLICY_FILE is missing or invalid")
+	}
+	return nil
+}
+
+func validateQuestionsFile(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("QUESTIONS_FILE is required")
+	}
+	if _, err := decision.LoadQuestionsFile(path); err != nil {
+		return errors.New("QUESTIONS_FILE is missing or invalid")
+	}
+	return nil
+}
+
+func validateThresholdsFile(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("THRESHOLDS_FILE is required")
+	}
+	if _, err := policy.LoadSemanticThresholdsFile(path); err != nil {
+		return errors.New("THRESHOLDS_FILE is missing or invalid")
+	}
+	return nil
 }
 
 func getenvDefault(get func(string) string, key, def string) string {

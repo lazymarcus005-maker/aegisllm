@@ -24,7 +24,10 @@ func NewProxy(cfg Config) (*Proxy, error) {
 	}
 	u, err := url.Parse(cfg.UpstreamBaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid UPSTREAM_BASE_URL: %w", err)
+		return nil, fmt.Errorf("invalid UPSTREAM_BASE_URL")
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return nil, fmt.Errorf("invalid UPSTREAM_BASE_URL")
 	}
 	switch cfg.UpstreamAuthMode {
 	case "none":

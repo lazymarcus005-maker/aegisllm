@@ -4,16 +4,18 @@ services:
     ports:
       - "8080:8080"
     environment:
+      DEPLOYMENT_PROFILE: "development"
       LISTEN_ADDR: ":8080"
       UPSTREAM_BASE_URL: "http://mock-upstream:9090"
       UPSTREAM_AUTH_MODE: "none"
-      SECURITY_MODE: "shadow"
+      SECURITY_MODE: "off"
       LOG_LEVEL: "info"
       POLICY_FILE: "policies/enterprise-default.yaml"
       QUESTIONS_FILE: "questions/security-v1.yaml"
       THRESHOLDS_FILE: "policies/thresholds-security-v1.yaml"
       TOKEN_VAULT_REDIS_URL: "redis://redis-token-store:6379/0"
-      # TOKEN_VAULT_KEY: inject a 64-hex-char key via secret manager in production
+      TOKEN_VAULT_KEY: "${TOKEN_VAULT_KEY:-}"
+      TELEMETRY_HMAC_KEY: "${TELEMETRY_HMAC_KEY:-}"
     depends_on:
       - mock-upstream
       - redis-token-store

@@ -26,9 +26,9 @@ import (
 )
 
 // loadVaultKey returns the 32-byte token-vault master key: hex-encoded via
-// TOKEN_VAULT_KEY, or an ephemeral random key in development.
-func loadVaultKey(logger *slog.Logger) ([]byte, error) {
-	if hexKey := os.Getenv("TOKEN_VAULT_KEY"); hexKey != "" {
+// TOKEN_VAULT_KEY, or an ephemeral random key in development and shadow.
+func loadVaultKey(hexKey string, logger *slog.Logger) ([]byte, error) {
+	if hexKey != "" {
 		key, err := hex.DecodeString(hexKey)
 		if err != nil || len(key) != 32 {
 			return nil, errors.New("TOKEN_VAULT_KEY must be 64 hex chars (32 bytes)")
@@ -46,15 +46,15 @@ func loadVaultKey(logger *slog.Logger) ([]byte, error) {
 func main() {
 	logger := newLogger()
 	cfg := gateway.LoadConfig()
+	if err := gateway.ValidateConfig(cfg); err != nil {
+		logger.Error("configuration validation failed", "error", err)
+		os.Exit(1)
+	}
 
 	// Invalid policy fails startup (T-010).
-	policyPath := os.Getenv("POLICY_FILE")
-	if policyPath == "" {
-		policyPath = "policies/enterprise-default.yaml"
-	}
-	pol, err := policy.LoadFile(policyPath)
+	pol, err := policy.LoadFile(cfg.PolicyFile)
 	if err != nil {
-		logger.Error("policy load failed", "path", policyPath, "error", err)
+		logger.Error("policy load failed", "path", cfg.PolicyFile)
 		os.Exit(1)
 	}
 
@@ -65,21 +65,17 @@ func main() {
 	}
 
 	// Versioned question schema (FR-009); invalid schema fails startup.
-	questionsPath := os.Getenv("QUESTIONS_FILE")
-	if questionsPath == "" {
-		questionsPath = "questions/security-v1.yaml"
-	}
-	questionSchema, err := decision.LoadQuestionsFile(questionsPath)
+	questionSchema, err := decision.LoadQuestionsFile(cfg.QuestionsFile)
 	if err != nil {
-		logger.Error("question schema load failed", "path", questionsPath, "error", err)
+		logger.Error("question schema load failed", "path", cfg.QuestionsFile)
 		os.Exit(1)
 	}
 
 	registry := detectors.NewRegistry(nil)
-	for _, d := range detectors.SecretDetectors(os.Getenv("TELEMETRY_HMAC_KEY")) {
+	for _, d := range detectors.SecretDetectors(cfg.TelemetryHMACKey) {
 		registry.Register(d)
 	}
-	for _, d := range detectors.PiiDetectors(os.Getenv("TELEMETRY_HMAC_KEY")) {
+	for _, d := range detectors.PiiDetectors(cfg.TelemetryHMACKey) {
 		registry.Register(d)
 	}
 	sink := audit.NewWriterSink(os.Stdout)
@@ -89,9 +85,9 @@ func main() {
 	pipe.SetSpanProvider(pii.NewCompositeSpanProvider(pii.NewRegexSpanProvider()))
 
 	// Token vault (ticket 06): envelope-encrypted mappings with TTL.
-	masterKey, err := loadVaultKey(logger)
+	masterKey, err := loadVaultKey(cfg.TokenVaultKey, logger)
 	if err != nil {
-		logger.Error("token vault key invalid", "error", err)
+		logger.Error("token vault key invalid")
 		os.Exit(1)
 	}
 	crypto, err := tokenization.NewCrypto(masterKey)
@@ -106,10 +102,10 @@ func main() {
 		}
 	}
 	var vault tokenization.Vault
-	if redisURL := os.Getenv("TOKEN_VAULT_REDIS_URL"); redisURL != "" {
+	if redisURL := cfg.TokenVaultRedisURL; redisURL != "" {
 		opts, err := redis.ParseURL(redisURL)
 		if err != nil {
-			logger.Error("invalid TOKEN_VAULT_REDIS_URL", "error", err)
+			logger.Error("invalid TOKEN_VAULT_REDIS_URL")
 			os.Exit(1)
 		}
 		client := redis.NewClient(opts)
@@ -147,7 +143,7 @@ func main() {
 			}
 			return ""
 		})
-		logger.Info("semantic provider enabled", "url", layaURL, "schema", "security-v1")
+		logger.Info("semantic provider enabled", "schema", "security-v1")
 	} else {
 		pipe.SetDecisionProvider(&decision.NoopProvider{}, questionSchema)
 	}
@@ -157,14 +153,10 @@ func main() {
 	}
 	// Threshold policy (ticket 11): required for semantic enforcement;
 	// invalid threshold policy fails startup.
-	thresholdsPath := os.Getenv("THRESHOLDS_FILE")
-	if thresholdsPath == "" {
-		thresholdsPath = "policies/thresholds-security-v1.yaml"
-	}
-	if _, err := os.Stat(thresholdsPath); err == nil {
-		thresholds, err := policy.LoadSemanticThresholdsFile(thresholdsPath)
+	if _, err := os.Stat(cfg.ThresholdsFile); err == nil {
+		thresholds, err := policy.LoadSemanticThresholdsFile(cfg.ThresholdsFile)
 		if err != nil {
-			logger.Error("threshold policy load failed", "path", thresholdsPath, "error", err)
+			logger.Error("threshold policy load failed", "path", cfg.ThresholdsFile)
 			os.Exit(1)
 		}
 		pipe.SetSemanticThresholds(thresholds)
@@ -176,6 +168,10 @@ func main() {
 
 	srv.SetPipeline(pipe)
 	srv.AddReadinessCheck("policy_loaded", func() string { return "" })
+	srv.AddReadinessCheck("questions_loaded", func() string { return "" })
+	if cfg.TokenVaultRedisURL == "" {
+		srv.AddReadinessCheck("token_store", func() string { return "" })
+	}
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -196,8 +192,8 @@ func main() {
 
 	logger.Info("security gateway listening",
 		"addr", cfg.ListenAddr,
-		"upstream", cfg.UpstreamBaseURL,
-		"mode", cfg.SecurityMode)
+		"deployment_profile", cfg.DeploymentProfile,
+		"security_mode", cfg.SecurityMode)
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server exited", "error", err)
 		os.Exit(1)

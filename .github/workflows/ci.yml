@@ -31,3 +31,27 @@ jobs:
           go run ./cmd/evaltool -provider noop -baseline /tmp/current.json
           go run ./cmd/evaltool -provider noop -baseline /tmp/current.json \
             -compare evals/baselines/security-v1-noop.json -tolerance 0.05
+  container-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build self-contained gateway image and start local dependencies
+        env:
+          TOKEN_VAULT_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          TELEMETRY_HMAC_KEY: ci-synthetic-telemetry-key
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.shadow.yml up -d --build
+      - name: Smoke test health and readiness
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://localhost:8080/health >/dev/null && \
+               curl --fail --silent http://localhost:8080/ready >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f docker-compose.yml -f docker-compose.shadow.yml logs
+          exit 1
+      - name: Stop smoke stack
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.shadow.yml down -v

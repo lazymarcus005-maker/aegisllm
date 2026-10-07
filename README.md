@@ -18,7 +18,7 @@ Read [docs/spec.md](docs/spec.md) (requirements), [docs/architecture.md](docs/ar
 ## Quick start (local)
 
 ```bash
-docker compose up --build
+docker compose up --build                 # development profile, security off
 # gateway on :8080, mock upstream on :9090
 curl -s http://localhost:8080/health
 curl -s http://localhost:8080/ready
@@ -28,6 +28,19 @@ curl -s http://localhost:8080/v1/chat/completions \
   -H 'X-Application-Id: demo' \
   -d '{"model":"mock-model","messages":[{"role":"user","content":"hello"}]}'
 ```
+
+To exercise the shadow deployment contract against the same local mock and
+Redis services:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.shadow.yml up --build
+```
+
+Production uses the reviewed image plus external upstream and Redis services;
+start from [.env.production.example](.env.production.example) and
+[docker-compose.production.example.yml](docker-compose.production.example.yml).
+The production profile rejects missing protection settings before it opens a
+listening socket.
 
 Run natively instead:
 
@@ -43,12 +56,17 @@ All configuration is environment-based; see [.env.example](.env.example).
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `LISTEN_ADDR` | `:8080` | Gateway listen address |
+| `DEPLOYMENT_PROFILE` | `development` | `development`, `shadow`, or `production` |
 | `UPSTREAM_BASE_URL` | — (required) | Upstream LLM Gateway base URL |
 | `UPSTREAM_CHAT_PATH_PREFIX` | — | Optional inbound path prefix to strip before forwarding (for example `/generic`) |
 | `UPSTREAM_AUTH_MODE` | `none` | `none`, `bearer`, or `header` |
 | `UPSTREAM_API_KEY` | — | Key for `bearer` mode (never a client-supplied value) |
 | `MAX_BODY_BYTES` | `1048576` | Request body limit (oversized → 413) |
 | `SECURITY_MODE` | `off` | `off`, `shadow`, `enforce` |
+| `POLICY_FILE` / `QUESTIONS_FILE` / `THRESHOLDS_FILE` | versioned repo assets | Reviewed policy and semantic assets |
+| `TOKEN_VAULT_KEY` | ephemeral in development | Required as 64 hex chars in production |
+| `TOKEN_VAULT_REDIS_URL` | in-memory in development | Required in production |
+| `TELEMETRY_HMAC_KEY` | empty in development | Required in production |
 | `DEFAULT_TARGET_PROVIDER` | `cloud` | Provider class when `X-Target-Provider` absent |
 
 Identity/application/model metadata comes from trusted headers:

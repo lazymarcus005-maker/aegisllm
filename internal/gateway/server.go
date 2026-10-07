@@ -50,17 +50,18 @@ type Server struct {
 
 // NewServer validates configuration and builds the server.
 func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
+	if err := ValidateConfig(cfg); err != nil {
+		return nil, err
+	}
 	proxy, err := NewProxy(cfg)
 	if err != nil {
 		return nil, err
 	}
-	switch cfg.SecurityMode {
-	case ModeOff, ModeShadow, ModeEnforce:
-	default:
-		return nil, errors.New("SECURITY_MODE must be one of: off, shadow, enforce")
-	}
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if cfg.DeploymentProfile == "" {
+		cfg.DeploymentProfile = ProfileDevelopment
 	}
 	return &Server{cfg: cfg, proxy: proxy, logger: logger, readyFns: map[string]func() string{}}, nil
 }
@@ -121,17 +122,35 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	dependencies := map[string]string{"upstream": "ready"}
+	var firstReason string
 	if reason := s.readyCheck(); reason != "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": reason})
-		return
+		dependencies["upstream"] = "not_ready"
+		firstReason = reason
 	}
 	for _, name := range s.readyOrder {
 		if reason := s.readyFns[name](); reason != "" {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": name + ": " + reason})
-			return
+			dependencies[name] = "not_ready"
+			if firstReason == "" {
+				firstReason = name + ": " + reason
+			}
+		} else {
+			dependencies[name] = "ready"
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	response := map[string]any{
+		"status":             "ready",
+		"deployment_profile": string(s.cfg.profile()),
+		"security_mode":      s.cfg.SecurityMode,
+		"dependencies":       dependencies,
+	}
+	if firstReason != "" {
+		response["status"] = "not_ready"
+		response["reason"] = firstReason
+		writeJSON(w, http.StatusServiceUnavailable, response)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) readyCheck() string {
@@ -140,6 +159,9 @@ func (s *Server) readyCheck() string {
 	}
 	u, err := url.Parse(s.cfg.UpstreamBaseURL)
 	if err != nil {
+		return "invalid UPSTREAM_BASE_URL"
+	}
+	if u.Scheme == "" || u.Host == "" {
 		return "invalid UPSTREAM_BASE_URL"
 	}
 	host := u.Host
@@ -152,7 +174,7 @@ func (s *Server) readyCheck() string {
 	}
 	conn, err := net.DialTimeout("tcp", host, time.Second)
 	if err != nil {
-		return "upstream unreachable: " + u.Host
+		return "upstream unreachable"
 	}
 	_ = conn.Close()
 	return ""
