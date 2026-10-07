@@ -13,6 +13,7 @@ import (
 
 	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/decision"
+	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
 	"github.com/aegisllm/gateway/internal/routing"
 )
@@ -104,6 +105,8 @@ type Config struct {
 	LayaTLSCertFile               string
 	LayaTLSKeyFile                string
 	LayaTLSServerName             string
+	PIIRegistryFile               string
+	PIIRequireNER                 bool
 	HeaderApplication             string
 	HeaderTenant                  string
 	HeaderUser                    string
@@ -217,6 +220,8 @@ func configFrom(get func(string) string) Config {
 		LayaTLSCertFile:               get("LAYA_TLS_CERT_FILE"),
 		LayaTLSKeyFile:                get("LAYA_TLS_KEY_FILE"),
 		LayaTLSServerName:             get("LAYA_TLS_SERVER_NAME"),
+		PIIRegistryFile:               get("PII_NER_REGISTRY_FILE"),
+		PIIRequireNER:                 getenvBool(get, "PII_NER_REQUIRED", profile == ProfileProduction),
 		HeaderApplication:             getenvDefault(get, "HEADER_APPLICATION", "X-Application-Id"),
 		HeaderTenant:                  getenvDefault(get, "HEADER_TENANT", "X-Tenant-Id"),
 		HeaderUser:                    getenvDefault(get, "HEADER_USER", "X-User-Id"),
@@ -311,7 +316,20 @@ func ValidateConfig(cfg Config) error {
 		return err
 	}
 	if profile != ProfileProduction {
+		if cfg.PIIRegistryFile != "" {
+			if _, err := pii.LoadRegistryFile(cfg.PIIRegistryFile, string(profile)); err != nil {
+				return errors.New("PII_NER_REGISTRY_FILE is invalid")
+			}
+		}
 		return nil
+	}
+	if cfg.PIIRequireNER && strings.TrimSpace(cfg.PIIRegistryFile) == "" {
+		return errors.New("production protected routes require PII_NER_REGISTRY_FILE")
+	}
+	if cfg.PIIRegistryFile != "" {
+		if _, err := pii.LoadRegistryFile(cfg.PIIRegistryFile, string(profile)); err != nil {
+			return errors.New("PII_NER_REGISTRY_FILE is invalid")
+		}
 	}
 	if err := validateRuntimeConfig(cfg); err != nil {
 		return err

@@ -335,6 +335,12 @@ Example:
 
 ### 6.4 PII Span Detector
 
+Free-form PII uses the replaceable production span engine documented in
+[docs/pii-ner.md](pii-ner.md): deterministic validators run before private
+Presidio-compatible or Aegis NER adapters, provider offsets are normalized to
+UTF-8 bytes, and strict profiles fail closed when required NER is unavailable.
+Semantic Laya output remains evidence only and is never a span source.
+
 Regex alone cannot identify every person name, address, organization context, or free-form personal information.
 
 Use a span-oriented component such as:

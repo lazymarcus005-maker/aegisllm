@@ -97,6 +97,7 @@ All configuration is environment-based; see [.env.example](.env.example).
 | `SECURITY_SEMANTIC_ENFORCE` | `false` | Requires a reachable real Laya provider and a promoted, provenance-bound threshold artifact |
 | `LAYA_URL` / `LAYA_TIMEOUT` | — / `5s` | Operator-provided private Laya endpoint and bounded request timeout |
 | `LAYA_TLS_CA_FILE` / `LAYA_TLS_CERT_FILE` / `LAYA_TLS_KEY_FILE` / `LAYA_TLS_SERVER_NAME` | — | Laya-specific trust and optional mTLS material |
+| `PII_NER_REGISTRY_FILE` / `PII_NER_REQUIRED` | — / production default | Versioned private Presidio/Aegis NER registry and strict outage policy |
 | `AUTH_MODE` | `off` | `off`, `jwt`, or direct `mtls` authenticated ingress |
 | `INBOUND_TLS_CERT_FILE` / `INBOUND_TLS_KEY_FILE` / `INBOUND_TLS_CLIENT_CA_FILE` | — | Reloadable gateway listener certificate and optional client CA |
 | `INBOUND_MTLS_MODE` | `off` | `require` verifies client certificates against the configured client CA |
@@ -144,6 +145,10 @@ an explicitly promoted artifact. Production may remain deterministic-only with
 the flag false; `/ready` then reports `semantic.status=disabled`. The committed
 threshold file and `evals/reports/security-v1-synthetic-non-promoted.yaml` are
 synthetic/noop examples and are not production-ready.
+
+Production free-form PII recognition, provider privacy boundaries, fallback,
+offset contracts, and held-out span evaluation are documented in
+[docs/pii-ner.md](docs/pii-ner.md). `GET /api/pii/providers` is operator-only.
 
 With `AUTH_MODE=off`, development retains the compatibility headers
 `X-Application-Id`, `X-Tenant-Id`, `X-User-Id`, and `X-Target-Provider`. With

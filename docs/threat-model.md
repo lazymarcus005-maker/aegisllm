@@ -24,7 +24,7 @@ Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
 | Secret leakage to LLM | deterministic secret detectors + policy BLOCK before forwarding (AS-001); bounded stateful outbound SSE scan with holdback blocks split model-emitted secrets (AS-005) | encoded/homoglyph evasions and candidates longer than the configured holdback remain limitations |
 | Secret leakage to Laya | planner skips semantics on deterministic secret findings (SEC-002) | none deterministic-path |
 | Secret leakage to logs | findings carry HMAC value hashes only; audit events are whitelisted-field structs; leak tests over audit + logs | operator-added logging must follow the same rule |
-| PII leakage to cloud providers | PII/span detection + policy TOKENIZE/REDACT per provider (AS-002); outbound redaction (UC-008) | heuristic person-name spans are regex-based; NER adapter deferred |
+| PII leakage to cloud providers | PII/span detection + policy TOKENIZE/REDACT per provider (AS-002); private NER only, minimized text, TLS/mTLS, bounded/sanitized adapters | provider model quality and private-service compromise remain deployment risks |
 | PII re-identification abuse | vault: envelope encryption, TTL, namespace isolation, issuance-time application authorization; model-invented placeholders never resolve (T-023) | vault compromise requires the master key (KEK) — external secret management required in production |
 | Prompt injection / jailbreak | Laya semantic evidence + calibrated policy slices; deterministic fast path unaffected | pattern-based deterministic detection only for known phrases; semantic enforcement requires calibration evidence (INV-010) |
 | System-prompt extraction | security-v1 question + semantic policy | same calibration gate |

@@ -90,6 +90,8 @@ type Metrics struct {
 	routeHealth         *prometheus.GaugeVec
 	routeRejected       *prometheus.CounterVec
 	routeUnavailable    *prometheus.CounterVec
+	nerCalls            *prometheus.CounterVec
+	nerLatency          *prometheus.HistogramVec
 	registry            *prometheus.Registry
 }
 
@@ -195,6 +197,8 @@ func New() *Metrics {
 		routeHealth:         prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "route_health", Help: "Current sanitized upstream route health."}, []string{"route_id", "class", "state"}),
 		routeRejected:       prometheus.NewCounterVec(prometheus.CounterOpts{Name: "route_rejected_total", Help: "Route selection rejections by bounded reason and endpoint family."}, []string{"reason", "family"}),
 		routeUnavailable:    prometheus.NewCounterVec(prometheus.CounterOpts{Name: "route_unavailable_total", Help: "Route selection unavailability by bounded class and endpoint family."}, []string{"class", "family"}),
+		nerCalls:            prometheus.NewCounterVec(prometheus.CounterOpts{Name: "pii_ner_calls_total", Help: "Local NER calls by bounded provider/entity/language/confidence and outcome."}, []string{"provider", "entity", "language", "confidence_bucket", "error", "fallback"}),
+		nerLatency:          prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "pii_ner_latency_ms", Help: "Local NER latency by bounded provider and language."}, []string{"provider", "language"}),
 		registry:            reg,
 	}
 	reg.MustRegister(m.requestsTotal, m.blockedTotal, m.tokenizedTotal, m.redactedTotal,
@@ -204,7 +208,7 @@ func New() *Metrics {
 		m.concurrencyRejected, m.promptRejected, m.responseTooLarge, m.upstreamTimeout,
 		m.breakerOpen, m.activeRequests, m.activeLaya, m.calibrationInfo, m.semanticRejected,
 		m.schemaMismatch, m.checkpointMismatch, m.missingDecisions, m.fallbackReasons,
-		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring, m.routeSelected, m.routeFailover, m.routeHealth, m.routeRejected, m.routeUnavailable)
+		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring, m.routeSelected, m.routeFailover, m.routeHealth, m.routeRejected, m.routeUnavailable, m.nerCalls, m.nerLatency)
 	return m
 }
 
@@ -442,6 +446,20 @@ func (m *Metrics) ObserveRouteRejected(reason, family string) {
 
 func (m *Metrics) ObserveRouteUnavailable(class, family string) {
 	m.routeUnavailable.WithLabelValues(boundedMetadata(class), boundedMetadata(family)).Inc()
+}
+
+// ObserveNER records only bounded metadata. It is deliberately not part of
+// Recorder so existing pipeline test recorders remain source-compatible.
+func (m *Metrics) ObserveNER(provider, entity, language, confidenceBucket string, latencyMS float64, failed, fallback bool) {
+	m.nerCalls.WithLabelValues(boundedMetadata(provider), boundedMetadata(entity), boundedMetadata(language), boundedMetadata(confidenceBucket), boolLabel(failed), boolLabel(fallback)).Inc()
+	m.nerLatency.WithLabelValues(boundedMetadata(provider), boundedMetadata(language)).Observe(latencyMS)
+}
+
+func boolLabel(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
 }
 
 func boolFloat(value bool) float64 {

@@ -153,7 +153,32 @@ func main() {
 	// Security mode is not stated here: Server.SetPipeline propagates
 	// cfg.SecurityMode into the pipeline — the server owns the mode.
 	pipe := gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink)
-	pipe.SetSpanProvider(pii.NewCompositeSpanProvider(pii.NewRegexSpanProvider()))
+	spanProviders := []pii.SpanProvider{pii.NewRegexSpanProvider()}
+	if cfg.PIIRegistryFile != "" {
+		nerRegistry, loadErr := pii.LoadRegistryFile(cfg.PIIRegistryFile, string(cfg.DeploymentProfile))
+		if loadErr != nil {
+			logger.Error("PII NER registry unavailable")
+			os.Exit(1)
+		}
+		nerProvider, buildErr := pii.NewProviderRegistry(nerRegistry)
+		if buildErr != nil {
+			logger.Error("PII NER provider configuration invalid")
+			os.Exit(1)
+		}
+		nerProvider.SetMetrics(metrics)
+		spanProviders = append(spanProviders, nerProvider)
+		srv.SetPIIProviderStatus(nerProvider.Status)
+		srv.AddReadinessCheck("pii_ner", func() string {
+			for _, status := range nerProvider.Status() {
+				if !status.Available || status.Breaker == "open" {
+					return "PII NER provider unavailable"
+				}
+			}
+			return ""
+		})
+	}
+	pipe.SetSpanProvider(pii.NewCompositeSpanProvider(spanProviders...))
+	pipe.SetSpanPolicy(cfg.PIIRequireNER)
 	// Token vault (ticket 06): envelope-encrypted mappings with TTL.
 	vaultCipher, closeVaultMaterial, err := loadVaultCipher(cfg, metrics, logger)
 	if err != nil {

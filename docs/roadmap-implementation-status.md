@@ -20,6 +20,7 @@ separate feature-roadmap file).
 - [x] P1.1-semantic Laya shadow integration and failure fallback; semantic enforcement is implemented but intentionally not production-enabled by the committed synthetic artifact.
 - [x] P1.2 Tool/MCP inspection and restricted-tool enforcement: authenticated Streamable HTTP proxy, atomic registry reload, schema/stream bounds, session isolation, server-side credential brokering, sanitized operator surfaces, and fake-MCP integration coverage.
 - [x] P1.3 Sanitized audit, metrics, evaluation datasets, and deterministic regression/promotion gates.
+- [x] P1.3 production PII/NER span engine: exercised Presidio/Aegis adapters, strict registry, UTF-8/UTF-16 spans, bounded private routing, fail-closed policy, fake CI service, and held-out span evaluation.
 
 ## P2 — expanded coverage
 

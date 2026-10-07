@@ -65,6 +65,7 @@ type Server struct {
 	mcp            *mcpGateway
 	semanticStatus func() SemanticReadiness
 	materials      map[string]func() securetransport.Status
+	piiStatus      func() []pii.ProviderStatus
 }
 
 // SemanticReadiness is the sanitized semantic contract exposed by /ready.
@@ -206,11 +207,19 @@ func (s *Server) Close() {
 	if s.routed != nil {
 		s.routed.Close()
 	}
+	if closer, ok := s.pipeline.(interface{ Close() }); ok {
+		closer.Close()
+	}
 }
 
 // SetPolicy attaches the already validated policy for the operator-only
 // effective-policy endpoint. The endpoint exposes only Policy.Summary().
 func (s *Server) SetPolicy(p *policy.Policy) { s.policy = p }
+
+// SetPIIProviderStatus mounts a sanitized operator projection. The callback
+// must return metadata only; provider URLs, credentials, payloads, and text
+// samples are intentionally not representable in ProviderStatus.
+func (s *Server) SetPIIProviderStatus(fn func() []pii.ProviderStatus) { s.piiStatus = fn }
 
 func (s *Server) routeConstraint(action core.Action, provider string) routing.Constraint {
 	var out routing.Constraint
@@ -358,6 +367,14 @@ func (s *Server) handleEffectivePolicy(w http.ResponseWriter, _ *http.Request) {
 		"owner": s.policy.Owner, "effective_date": s.policy.EffectiveDate,
 		"rules": s.policy.Summary(),
 	})
+}
+
+func (s *Server) handlePIIProviders(w http.ResponseWriter, _ *http.Request) {
+	if s.piiStatus == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"version": 1, "providers": []pii.ProviderStatus{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": 1, "providers": s.piiStatus()})
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {

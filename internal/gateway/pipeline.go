@@ -31,6 +31,7 @@ type SecurityPipeline struct {
 	thresholds      *policy.SemanticThresholds
 	semanticEnforce bool
 	recorder        observability.Recorder
+	spanRequired    bool
 }
 
 // NewSecurityPipeline constructs a pipeline in OFF mode with no-op metrics.
@@ -47,6 +48,17 @@ func (p *SecurityPipeline) SetRecorder(r observability.Recorder) { p.recorder = 
 
 // SetSpanProvider attaches span-oriented PII detection.
 func (p *SecurityPipeline) SetSpanProvider(sp pii.SpanProvider) { p.spans = sp }
+
+// SetSpanPolicy controls provider outage behavior. Strict protected routes
+// fail closed; balanced/development routes retain deterministic findings and
+// expose the fallback through sanitized audit and metrics.
+func (p *SecurityPipeline) SetSpanPolicy(required bool) { p.spanRequired = required }
+
+func (p *SecurityPipeline) Close() {
+	if provider, ok := p.spans.(interface{ Close() }); ok {
+		provider.Close()
+	}
+}
 
 // SetTokenStore attaches the encrypted vault used by TOKENIZE.
 func (p *SecurityPipeline) SetTokenStore(vault tokenization.Vault, crypto tokenization.Cipher, ttl time.Duration) {

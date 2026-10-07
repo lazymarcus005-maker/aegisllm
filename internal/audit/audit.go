@@ -54,6 +54,8 @@ type Event struct {
 	FindingSummary  []policy.FindingSummary `json:"finding_summary,omitempty"`
 	LatencyMS       map[string]int64        `json:"latency_ms,omitempty"`
 	Laya            *LayaInfo               `json:"laya,omitempty"`
+	PIIFallback     bool                    `json:"pii_fallback,omitempty"`
+	PIIUnavailable  bool                    `json:"pii_unavailable,omitempty"`
 	PredictedAction core.Action             `json:"predicted_action,omitempty"`
 	AppliedAction   core.Action             `json:"applied_action,omitempty"`
 	Stream          bool                    `json:"stream,omitempty"`

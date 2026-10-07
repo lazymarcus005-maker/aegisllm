@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aegisllm/gateway/internal/audit"
 	"github.com/aegisllm/gateway/internal/core"
@@ -13,14 +14,16 @@ import (
 // inspection is the shared result of one request, response, tool-call, or
 // tool-result boundary inspection.
 type inspection struct {
-	env         *core.InspectionEnvelope
-	findings    []core.SecurityFinding
-	dec         policy.Decision
-	explanation policy.Explanation
-	laya        *audit.LayaInfo
-	layaMS      int64
-	detMS       int64
-	start       time.Time
+	env            *core.InspectionEnvelope
+	findings       []core.SecurityFinding
+	dec            policy.Decision
+	explanation    policy.Explanation
+	laya           *audit.LayaInfo
+	layaMS         int64
+	detMS          int64
+	piiFallback    bool
+	piiUnavailable bool
+	start          time.Time
 }
 
 // inspect is the single four-boundary inspection routine: deterministic scan,
@@ -34,7 +37,10 @@ func (p *SecurityPipeline) inspectContext(ctx context.Context, env *core.Inspect
 	scanStart := time.Now()
 	findings := p.registry.RunAll(env)
 	p.recorder.ObserveScanner(float64(time.Since(scanStart).Microseconds()) / 1000.0)
-	ins.findings = append(append([]core.SecurityFinding{}, findings...), p.entityFindings(env)...)
+	entityFindings, entityErr, fallback := p.entityFindings(ctx, env)
+	ins.piiFallback = fallback
+	ins.piiUnavailable = entityErr != nil
+	ins.findings = append(append([]core.SecurityFinding{}, findings...), entityFindings...)
 	seenTypes := map[string]bool{}
 	for _, f := range ins.findings {
 		key := string(f.Category) + "/" + f.Subtype
@@ -45,6 +51,12 @@ func (p *SecurityPipeline) inspectContext(ctx context.Context, env *core.Inspect
 	}
 	ins.explanation = p.engine.Explain(policy.Context{Envelope: env, Findings: ins.findings})
 	ins.dec = ins.explanation.Decision
+	if entityErr != nil && p.spanRequired {
+		ins.dec = policy.Decision{Action: core.ActionBlock, PolicyID: p.engine.Policy().ID, PolicyVersion: p.engine.Policy().Version,
+			MatchedRule: "pii_ner_required", PrecedenceStage: policy.StageFallback, Code: "PII_NER_UNAVAILABLE",
+			Reason: "required local PII recognizer unavailable"}
+		ins.explanation.Decision = ins.dec
+	}
 	if env.Metadata["passthrough"] == "true" {
 		ins.dec.Action = core.ActionAllow
 		ins.dec.Code = ""
@@ -99,6 +111,7 @@ func (p *SecurityPipeline) auditEvent(ins *inspection) audit.Event {
 		PrecedenceStage: string(ins.dec.PrecedenceStage), Reason: ins.dec.Reason,
 		FindingTypes: audit.FindingTypes(ins.findings), FindingCount: len(ins.findings), FindingSummary: ins.explanation.Findings,
 		LatencyMS: latency, Laya: ins.laya,
+		PIIFallback: ins.piiFallback, PIIUnavailable: ins.piiUnavailable,
 	}
 	if stream {
 		event.PredictedAction = ins.dec.Action
@@ -119,20 +132,38 @@ func inspectedBytes(env *core.InspectionEnvelope) int64 {
 	return n
 }
 
-func (p *SecurityPipeline) entityFindings(env *core.InspectionEnvelope) []core.SecurityFinding {
+func (p *SecurityPipeline) entityFindings(ctx context.Context, env *core.InspectionEnvelope) ([]core.SecurityFinding, error, bool) {
 	if p.spans == nil {
-		return nil
+		return nil, nil, false
 	}
 	var out []core.SecurityFinding
 	for _, lt := range env.TextParts() {
-		for _, es := range p.spans.Spans(lt.Text) {
+		var spans []pii.EntitySpan
+		var err error
+		if provider, ok := p.spans.(pii.ContextSpanProvider); ok {
+			spans, err = provider.SpansContext(ctx, lt.Text)
+		} else {
+			spans = p.spans.Spans(lt.Text)
+		}
+		if err != nil {
+			if p.spanRequired {
+				return out, err, false
+			}
+		}
+		for _, es := range spans {
+			if es.Start < 0 || es.End <= es.Start || es.End > len(lt.Text) || !utf8.ValidString(lt.Text[es.Start:es.End]) {
+				continue
+			}
 			out = append(out, core.SecurityFinding{
 				Category: core.CategoryPII, Subtype: es.Label, Detector: p.spans.Name(), Confidence: es.Confidence,
 				Location: core.Span{MessageIndex: lt.MessageIndex, PartIndex: lt.PartIndex, Start: es.Start, End: es.End},
 			})
 		}
+		if err != nil {
+			return out, nil, true
+		}
 	}
-	return out
+	return out, nil, false
 }
 
 // ToolCall is a model-emitted tool call offered for inspection.

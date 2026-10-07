@@ -1,0 +1,31 @@
+# Development/CI example only. Production requires https, private service
+# addressing, file-backed auth where used, and fail_behavior: strict.
+schema: aegisllm.pii-ner/v1
+version: 1
+providers:
+  - id: fake-ner
+    type: aegis_ner_http
+    url: http://fake-ner:8400
+    languages: [th, en, mixed]
+    entity_mappings:
+      PERSON: PERSON
+      ADDRESS: ADDRESS
+      BANK_ACCOUNT: BANK_ACCOUNT
+      ORGANIZATION: ORGANIZATION
+      TH_TAX_ID: TH_TAX_ID
+      TH_PASSPORT: TH_PASSPORT
+      HEALTH_ID: HEALTH_ID
+      MEDICAL_RECORD: MEDICAL_RECORD
+      DATE_OF_BIRTH: DATE_OF_BIRTH
+    min_confidence:
+      PERSON: 0.50
+      ADDRESS: 0.50
+      BANK_ACCOUNT: 0.90
+    priority: 100
+    timeout: 2s
+    max_chars: 4096
+    chunk_overlap: 128
+    max_concurrent: 4
+    breaker_threshold: 3
+    breaker_open_interval: 15s
+    fail_behavior: deterministic_only
