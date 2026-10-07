@@ -98,6 +98,16 @@ func NewProxy(cfg Config) (*Proxy, error) {
 
 // Forward sends the raw request body to the upstream gateway at the same path.
 func (p *Proxy) Forward(r *http.Request, body []byte) (*http.Response, error) {
+	return p.forward(r, body, "")
+}
+
+// ForwardWithPathPrefix is used by registry routes. The prefix is a
+// configured upstream path and is never taken from an inbound header.
+func (p *Proxy) ForwardWithPathPrefix(r *http.Request, body []byte, pathPrefix string) (*http.Response, error) {
+	return p.forward(r, body, pathPrefix)
+}
+
+func (p *Proxy) forward(r *http.Request, body []byte, pathPrefix string) (*http.Response, error) {
 	if !p.breaker.Allow() {
 		return nil, ErrUpstreamBreakerOpen
 	}
@@ -109,7 +119,7 @@ func (p *Proxy) Forward(r *http.Request, body []byte) (*http.Response, error) {
 			path = "/"
 		}
 	}
-	target.Path = joinPath(p.baseURL.Path, path)
+	target.Path = joinPath(p.baseURL.Path, joinPath(pathPrefix, path))
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))
 	if err != nil {

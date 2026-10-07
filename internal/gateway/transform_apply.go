@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/aegisllm/gateway/internal/audit"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/tokenization"
@@ -168,6 +169,27 @@ func (p *SecurityPipeline) AuditPassthrough(env *core.InspectionEnvelope) {
 	if p.audit != nil {
 		p.audit.Record(p.auditEvent(ins))
 	}
+}
+
+// AuditRoute adds only bounded route metadata to the already-sanitized audit
+// stream. It is intentionally separate from policy inspection because routing
+// is selected after request transformations are decided.
+func (p *SecurityPipeline) AuditRoute(env *core.InspectionEnvelope, action core.Action, id, class, provider, requested, routed string, failover bool) {
+	if p.audit == nil {
+		return
+	}
+	p.audit.Record(audit.Event{RequestID: env.RequestID, Timestamp: time.Now().UTC(), Direction: core.DirectionRequest,
+		Application: env.Application, Tenant: env.Tenant, User: env.User.Subject, Roles: append([]string(nil), env.User.Roles...),
+		Provider: env.Target.Provider, Mode: p.mode, Action: action, EndpointFamily: env.Metadata["endpoint_family"],
+		RouteID: safeSemanticMetadata(id), RouteClass: safeSemanticMetadata(class), RouteProvider: safeSemanticMetadata(provider),
+		RequestedModel: safeSemanticMetadata(requested), RoutedModel: safeSemanticMetadata(routed), RouteReason: routeReason(action), RouteFailover: failover})
+}
+
+func routeReason(action core.Action) string {
+	if action == core.ActionForceLocalModel {
+		return "force_local_policy"
+	}
+	return "configured_route"
 }
 
 // ProcessResponse scans and transforms an upstream response before delivery.

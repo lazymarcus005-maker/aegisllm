@@ -36,7 +36,7 @@ Redis services:
 docker compose -f docker-compose.yml -f docker-compose.shadow.yml up --build
 ```
 
-Production uses the reviewed image plus external upstream and Redis services;
+Production uses the reviewed image plus an external route registry and Redis services;
 start from [.env.production.example](.env.production.example) and
 [docker-compose.production.example.yml](docker-compose.production.example.yml).
 The production profile rejects missing protection settings before it opens a
@@ -49,7 +49,7 @@ Run natively instead:
 
 ```bash
 go run ./cmd/mockupstream          # terminal 1 (listens on :9090)
-UPSTREAM_BASE_URL=http://localhost:9090 go run ./cmd/gateway   # terminal 2
+UPSTREAM_BASE_URL=http://localhost:9090 go run ./cmd/gateway   # terminal 2 (legacy development compatibility)
 ```
 
 The local encrypted-link seam can be exercised without committing any
@@ -64,7 +64,8 @@ All configuration is environment-based; see [.env.example](.env.example).
 | --- | --- | --- |
 | `LISTEN_ADDR` | `:8080` | Gateway listen address |
 | `DEPLOYMENT_PROFILE` | `development` | `development`, `shadow`, or `production` |
-| `UPSTREAM_BASE_URL` | — (required) | Upstream LLM Gateway base URL |
+| `UPSTREAM_REGISTRY_FILE` | — | Strict versioned local/cloud route registry; required in production |
+| `UPSTREAM_BASE_URL` | — | Legacy single-upstream compatibility, development only |
 | `UPSTREAM_CHAT_PATH_PREFIX` | — | Optional inbound path prefix to strip before forwarding (for example `/generic`) |
 | `UPSTREAM_AUTH_MODE` | `none` | `none`, `bearer`, or `header` |
 | `UPSTREAM_API_KEY_FILE` / `UPSTREAM_AUTH_HEADER_VALUE_FILE` | — | Reloadable mounted credential files; production requires the applicable file |
@@ -108,6 +109,11 @@ All configuration is environment-based; see [.env.example](.env.example).
 | `TOKEN_VAULT_REDIS_CA_FILE` / `TOKEN_VAULT_REDIS_CERT_FILE` / `TOKEN_VAULT_REDIS_KEY_FILE` | — | Redis-specific trust and optional mTLS material |
 | `TELEMETRY_HMAC_KEY_FILE` | empty in development | Reloadable mounted secret; production requires the file |
 | `DEFAULT_TARGET_PROVIDER` | `cloud` | Provider class when `X-Target-Provider` absent |
+
+The registry format and rollout/failover rules are documented in
+[docs/routing.md](docs/routing.md); a development mock example is
+[examples/upstream-registry.yaml](examples/upstream-registry.yaml). Production
+route auth uses only `auth.secret_file` and route TLS reuses securetransport.
 
 Semantic enforcement is fail-closed at startup: `SECURITY_SEMANTIC_ENFORCE=true`
 requires `LAYA_URL`, a non-noop provider, matching question-schema and
@@ -193,6 +199,10 @@ P0.5 additionally exposes bounded `semantic_calibration_artifact_info`,
 decision, and reason-labelled semantic fallback metrics. Readiness exposes
 only semantic state and safe artifact identifiers; it never exposes endpoint
 credentials or artifact content.
+P1.1 adds bounded `route_selected_total`, `route_failover_total`, and
+`route_health` metrics. `/api/protection-stats` reports applied local/cloud
+counts, and operator-only `GET /api/routes` reports sanitized capabilities,
+health, breakers, and model mappings.
 Docker Compose includes a Prometheus scraping the gateway; see
 [docs/operations.md](docs/operations.md) for runbook guidance.
 

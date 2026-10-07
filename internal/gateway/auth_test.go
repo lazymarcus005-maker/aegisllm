@@ -121,6 +121,15 @@ func TestJWTRouteRBAC(t *testing.T) {
 	if got := get("/api/protection-stats", operator); got != http.StatusOK {
 		t.Fatalf("operator stats status=%d", got)
 	}
+	if got := get("/api/routes", ""); got != http.StatusUnauthorized {
+		t.Fatalf("missing routes auth status=%d", got)
+	}
+	if got := get("/api/routes", invoke); got != http.StatusForbidden {
+		t.Fatalf("invoke routes status=%d", got)
+	}
+	if got := get("/api/routes", operator); got != http.StatusOK {
+		t.Fatalf("operator routes status=%d", got)
+	}
 	if got := get("/api/effective-policy", ""); got != http.StatusUnauthorized {
 		t.Fatalf("missing effective-policy auth status=%d", got)
 	}

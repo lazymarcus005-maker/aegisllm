@@ -28,7 +28,7 @@ inline secret values. Use mounted `*_FILE` values for credentials, JWT keys,
 telemetry keys, and vault keys; prefer the versioned
 `TOKEN_VAULT_KEYRING_FILE`. Startup fails before the listener opens unless all
 of the following are present and valid: a file-backed vault key, a Redis
-`TOKEN_VAULT_REDIS_URL`, telemetry key file, `UPSTREAM_BASE_URL`, and
+`TOKEN_VAULT_REDIS_URL`, telemetry key file, `UPSTREAM_REGISTRY_FILE`, and
 the reviewed policy and question files. If semantic enforcement is requested,
 the threshold artifact is additionally required to be readable, promoted, and
 strictly provenance-valid. Deterministic-only production may set
@@ -36,7 +36,9 @@ strictly provenance-valid. Deterministic-only production may set
 mock-upstream hostnames are rejected in production. Inject secret files at deploy time;
 never commit a populated `.env.production` or compose file. Use
 `.env.production.example` and `docker-compose.production.example.yml` as
-placeholder-only references.
+placeholder-only references. The registry replaces the single-upstream
+production contract; see [routing.md](routing.md) for health, explicit
+fallback, force-local isolation, reload, and `/api/routes` operations.
 
 The production image contains the gateway binary, embedded dashboard, and
 versioned policy/question/threshold assets. It runs as a non-root user and its

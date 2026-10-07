@@ -20,6 +20,7 @@ import (
 	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/routing"
 	"github.com/aegisllm/gateway/internal/securetransport"
 	"github.com/aegisllm/gateway/web/leaderboard"
 )
@@ -50,6 +51,7 @@ type contextualPipeline interface {
 type Server struct {
 	cfg            Config
 	proxy          *Proxy
+	routed         *RoutedProxy
 	pipeline       Pipeline
 	logger         *slog.Logger
 	readyFns       map[string]func() string
@@ -83,7 +85,21 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	if err := ValidateConfig(cfg); err != nil {
 		return nil, err
 	}
-	proxy, err := NewProxy(cfg)
+	if cfg.profile() == ProfileProduction && strings.TrimSpace(cfg.UpstreamRegistryFile) == "" {
+		return nil, errors.New("production requires UPSTREAM_REGISTRY_FILE")
+	}
+	var proxy *Proxy
+	var routed *RoutedProxy
+	var err error
+	if cfg.UpstreamRegistryFile != "" {
+		manager, loadErr := routing.NewManagerFile(cfg.UpstreamRegistryFile)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		routed, err = NewRoutedProxy(cfg, manager)
+	} else {
+		proxy, err = NewProxy(cfg)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +136,7 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	srv := &Server{cfg: cfg, proxy: proxy, logger: logger, readyFns: map[string]func() string{}, authn: authn,
+	srv := &Server{cfg: cfg, proxy: proxy, routed: routed, logger: logger, readyFns: map[string]func() string{}, authn: authn,
 		materials:      map[string]func() securetransport.Status{},
 		runtimeMetrics: observability.Noop{}, limiter: limiter.New(limiter.Config{
 			RequestsPerSecond: cfg.RequestsPerSecond, Burst: cfg.RateBurst,
@@ -136,8 +152,15 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 		}
 		return SemanticReadiness{Status: status}
 	}
-	for name, fn := range proxy.MaterialStatuses() {
-		srv.AddMaterialReadiness(name, fn)
+	if proxy != nil {
+		for name, fn := range proxy.MaterialStatuses() {
+			srv.AddMaterialReadiness(name, fn)
+		}
+	}
+	if routed != nil {
+		for name, fn := range routed.MaterialStatuses() {
+			srv.AddMaterialReadiness(name, fn)
+		}
 	}
 	if cfg.JWTPublicKeyFile != "" {
 		srv.AddMaterialReadiness("jwt_verification_key", authn.KeyStatus)
@@ -157,6 +180,64 @@ func (s *Server) SetPipeline(p Pipeline) {
 // effective-policy endpoint. The endpoint exposes only Policy.Summary().
 func (s *Server) SetPolicy(p *policy.Policy) { s.policy = p }
 
+func (s *Server) routeConstraint(action core.Action, provider string) routing.Constraint {
+	var out routing.Constraint
+	if s.policy != nil && s.policy.Routing != nil {
+		if action == core.ActionForceLocalModel {
+			c := s.policy.Routing.ForceLocal
+			out = routing.Constraint{Routes: c.Routes, Classes: c.Classes, Providers: c.Providers, FallbackChain: c.FallbackChain}
+		} else {
+			for name, c := range s.policy.Routing.Actions {
+				if strings.EqualFold(name, string(action)) {
+					out = routing.Constraint{Routes: c.Routes, Classes: c.Classes, Providers: c.Providers, FallbackChain: c.FallbackChain}
+					break
+				}
+			}
+			if len(out.Routes) == 0 && len(out.Classes) == 0 && len(out.Providers) == 0 && out.FallbackChain == "" {
+				if c, ok := s.policy.Routing.ProviderBoundaries[provider]; ok {
+					out = routing.Constraint{Routes: c.Routes, Classes: c.Classes, Providers: c.Providers, FallbackChain: c.FallbackChain}
+				}
+			}
+		}
+		if action != core.ActionForceLocalModel {
+			if boundary, ok := s.policy.Routing.ProviderBoundaries[provider]; ok {
+				if len(boundary.Classes) > 0 {
+					out.Classes = boundary.Classes
+				}
+				if len(boundary.Providers) > 0 {
+					out.Providers = boundary.Providers
+				}
+				if len(boundary.Routes) > 0 {
+					out.Routes = boundary.Routes
+				}
+				if boundary.FallbackChain != "" {
+					out.FallbackChain = boundary.FallbackChain
+				}
+			}
+		}
+	}
+	if action == core.ActionForceLocalModel && len(out.Classes) == 0 && len(out.Routes) == 0 && out.FallbackChain == "" {
+		out.Classes = []string{string(routing.ClassLocal)}
+	}
+	return out
+}
+
+func (s *Server) recordRoute(env *core.InspectionEnvelope, action core.Action, selection routing.Selection) {
+	if selection.Route.ID == "" {
+		return
+	}
+	if auditor, ok := s.pipeline.(interface {
+		AuditRoute(*core.InspectionEnvelope, core.Action, string, string, string, string, string, bool)
+	}); ok {
+		auditor.AuditRoute(env, action, selection.Route.ID, string(selection.Route.Class), selection.Route.Provider, selection.RequestedModel, selection.RoutedModel, selection.Failover)
+	}
+	if recorder, ok := s.runtimeMetrics.(interface {
+		ObserveRouteSelected(string, string, string, bool)
+	}); ok {
+		recorder.ObserveRouteSelected(selection.Route.ID, string(selection.Route.Class), env.Metadata["endpoint_family"], selection.Failover)
+	}
+}
+
 func (s *Server) SetSemanticReadiness(fn func() SemanticReadiness) { s.semanticStatus = fn }
 
 // SetMetricsHandler mounts a handler at GET /metrics (spec §15). The
@@ -164,6 +245,17 @@ func (s *Server) SetSemanticReadiness(fn func() SemanticReadiness) { s.semanticS
 // the protection dashboard, keeping dashboard wiring in the server boundary.
 func (s *Server) SetMetricsHandler(h http.Handler) {
 	s.metrics = h
+	if s.routed != nil {
+		if provider, ok := h.(interface {
+			RuntimeMetrics() observability.RuntimeRecorder
+		}); ok {
+			if routeMetrics, ok := provider.RuntimeMetrics().(interface {
+				ObserveRouteHealth(string, string, string, bool)
+			}); ok {
+				s.routed.SetRouteMetrics(routeMetrics)
+			}
+		}
+	}
 	if provider, ok := h.(interface {
 		RuntimeMetrics() observability.RuntimeRecorder
 	}); ok {
@@ -203,6 +295,9 @@ func (s *Server) SetSecureMaterialMetrics(metrics securetransport.Metrics) {
 	}
 	if s.proxy != nil {
 		s.proxy.SetSecureMaterialMetrics(metrics)
+	}
+	if s.routed != nil {
+		s.routed.SetSecureMaterialMetrics(metrics)
 	}
 	if s.authn != nil {
 		s.authn.SetSecureMaterialMetrics(metrics)
@@ -334,8 +429,13 @@ func safeSemanticMetadata(value string) string {
 }
 
 func (s *Server) readyCheck() string {
-	if reason := s.proxy.Readiness(); reason != "" {
-		return reason
+	if s.routed != nil {
+		return s.routed.Readiness()
+	}
+	if s.proxy != nil {
+		if reason := s.proxy.Readiness(); reason != "" {
+			return reason
+		}
 	}
 	if s.cfg.UpstreamBaseURL == "" {
 		return "UPSTREAM_BASE_URL not configured"
@@ -404,6 +504,7 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(requestCtx)
 	}
 	forwardBody := body
+	routeAction := core.ActionAllow
 	if s.pipeline != nil {
 		var dec RequestDecision
 		var perr error
@@ -417,14 +518,42 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusInternalServerError, "gateway_error", "", "Security pipeline failure.", env.RequestID)
 			return
 		}
+		if s.cfg.SecurityMode == ModeEnforce {
+			routeAction = dec.Action
+		}
 		forwardBody = s.applyDecision(w, env, normalizer, dec, forwardBody)
 		if forwardBody == nil {
 			return // response already written
 		}
 	}
 
-	resp, ferr := s.proxy.Forward(r, forwardBody)
+	var resp *http.Response
+	var ferr error
+	var selection routing.Selection
+	if s.routed != nil {
+		constraint := s.routeConstraint(routeAction, env.Target.Provider)
+		resp, selection, ferr = s.routed.Forward(r, forwardBody, routeInput(env, r.URL.Path, routeAction, constraint))
+		if ferr == nil {
+			s.recordRoute(env, routeAction, selection)
+		}
+	} else {
+		resp, ferr = s.proxy.Forward(r, forwardBody)
+	}
 	if ferr != nil {
+		if s.routed != nil && strings.HasPrefix(ferr.Error(), "ROUTE_") {
+			if recorder, ok := s.runtimeMetrics.(interface{ ObserveRouteRejected(string, string) }); ok {
+				recorder.ObserveRouteRejected(ferr.Error(), env.Metadata["endpoint_family"])
+			}
+			if recorder, ok := s.runtimeMetrics.(interface{ ObserveRouteUnavailable(string, string) }); ok {
+				class := "cloud"
+				if routeAction == core.ActionForceLocalModel {
+					class = "local"
+				}
+				recorder.ObserveRouteUnavailable(class, env.Metadata["endpoint_family"])
+			}
+			s.writeRouteError(w, ferr, env.RequestID)
+			return
+		}
 		s.writeUpstreamError(w, ferr, env.RequestID)
 		return
 	}
@@ -495,6 +624,23 @@ func (s *Server) writeUpstreamError(w http.ResponseWriter, err error, requestID 
 		s.runtimeMetrics.ObserveUpstreamTimeout()
 	}
 	writeOpenAIError(w, status, "upstream_error", code, message, requestID)
+}
+
+func (s *Server) writeRouteError(w http.ResponseWriter, err error, requestID string) {
+	code := err.Error()
+	status := http.StatusServiceUnavailable
+	message := "No configured upstream route is available."
+	switch code {
+	case "ROUTE_MODEL_REJECTED":
+		status, message = http.StatusBadRequest, "Requested model is not allowed for the configured route."
+	case "ROUTE_CAPABILITY_REJECTED":
+		status, message = http.StatusBadRequest, "Requested endpoint capability is not available on the configured route."
+	case "ROUTE_PROVIDER_REJECTED":
+		status, message = http.StatusForbidden, "Verified provider boundary rejected the route."
+	case "ROUTE_LOCAL_UNAVAILABLE":
+		status, message = http.StatusServiceUnavailable, "A healthy local model route is unavailable."
+	}
+	writeOpenAIError(w, status, "routing_error", code, message, requestID)
 }
 
 // processOutbound applies the response outcome for the current mode; a
@@ -609,6 +755,9 @@ func (s *Server) enrich(env *core.InspectionEnvelope, r *http.Request) {
 		env.Target.Provider = principal.Provider
 		if env.Target.Provider == "" {
 			env.Target.Provider = s.cfg.DefaultTargetProvider
+		}
+		if principal.Provider != "" {
+			env.Metadata["verified_provider"] = "true"
 		}
 		return
 	}

@@ -58,6 +58,13 @@ type Event struct {
 	AppliedAction   core.Action             `json:"applied_action,omitempty"`
 	Stream          bool                    `json:"stream,omitempty"`
 	EndpointFamily  string                  `json:"endpoint_family,omitempty"`
+	RouteID         string                  `json:"route_id,omitempty"`
+	RouteClass      string                  `json:"route_class,omitempty"`
+	RouteProvider   string                  `json:"route_provider,omitempty"`
+	RequestedModel  string                  `json:"requested_model,omitempty"`
+	RoutedModel     string                  `json:"routed_model,omitempty"`
+	RouteReason     string                  `json:"route_reason,omitempty"`
+	RouteFailover   bool                    `json:"route_failover,omitempty"`
 	BytesInspected  int64                   `json:"bytes_inspected,omitempty"`
 	EventsInspected int                     `json:"events_inspected,omitempty"`
 }

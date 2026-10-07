@@ -12,6 +12,7 @@ import (
 	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/limiter"
+	"github.com/aegisllm/gateway/internal/routing"
 	"github.com/aegisllm/gateway/web/leaderboard"
 )
 
@@ -25,6 +26,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.Handle("GET /api/protection-stats", s.protect(http.HandlerFunc(s.handleProtectionStats), "aegis.operator"))
 	mux.Handle("GET /api/effective-policy", s.protect(http.HandlerFunc(s.handleEffectivePolicy), "aegis.operator"))
+	mux.Handle("GET /api/routes", s.protect(http.HandlerFunc(s.handleRoutes), "aegis.operator"))
 	mux.Handle("GET /dashboard", s.protect(http.HandlerFunc(s.handleDashboard), "aegis.operator"))
 	mux.Handle("GET /dashboard/", s.protect(http.StripPrefix("/dashboard/", http.FileServer(http.FS(leaderboard.Files))), "aegis.operator"))
 	if s.metrics != nil {
@@ -89,8 +91,22 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}); ok {
 		auditor.AuditPassthrough(env)
 	}
-	resp, err := s.proxy.Forward(r, nil)
+	var resp *http.Response
+	var selection routing.Selection
+	var err error
+	if s.routed != nil {
+		resp, selection, err = s.routed.Forward(r, nil, routeInput(env, r.URL.Path, core.ActionAllow, s.routeConstraint(core.ActionAllow, env.Target.Provider)))
+		if err == nil {
+			s.recordRoute(env, core.ActionAllow, selection)
+		}
+	} else {
+		resp, err = s.proxy.Forward(r, nil)
+	}
 	if err != nil {
+		if s.routed != nil && strings.HasPrefix(err.Error(), "ROUTE_") {
+			s.writeRouteError(w, err, env.RequestID)
+			return
+		}
 		s.writeUpstreamError(w, err, env.RequestID)
 		return
 	}
@@ -109,4 +125,12 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	copyResponseHeaders(w, resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, bytes.NewReader(body))
+}
+
+func (s *Server) handleRoutes(w http.ResponseWriter, _ *http.Request) {
+	if s.routed == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"registry": "legacy-development-compatibility", "routes": []any{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": 1, "routes": s.routed.Status()})
 }

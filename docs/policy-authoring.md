@@ -42,6 +42,15 @@ finding_count_escalation:
     category: PII
     min_count: 3
     action: review
+routing:
+  force_local:
+    classes: [local]
+  actions:
+    ALLOW:
+      fallback_chain: cloud-then-local
+  provider_boundaries:
+    cloud:
+      classes: [cloud]
 ```
 
 Actions are `allow`, `block`, `redact`, `tokenize`, `review`,
@@ -61,6 +70,12 @@ The effective result is sanitized to category, subtype, count, confidence
 bucket, matched rule, precedence stage, action, code, and reason. Raw values,
 value hashes, exact detector confidence, request text, and credentials are not
 part of the explanation or audit API.
+
+The optional `routing` section declares provider/class boundaries and explicit
+registry fallback chains. `force_local.classes: [local]` is a hard boundary:
+the router will never use a cloud route when `FORCE_LOCAL_MODEL` is selected.
+Fallback chains are used only when named by policy; route IDs do not need to
+be embedded in policy when a class/provider constraint is sufficient.
 
 ## Reviewed profiles
 
@@ -109,4 +124,3 @@ cat redacted-request.json | go run ./cmd/policytool explain \
 returns policy identity plus a sanitized rule summary. It does not expose the
 loaded YAML, credentials, or request data. The endpoint is useful for runtime
 attestation; the CLI remains suitable for offline review.
-

@@ -198,6 +198,23 @@ type ProviderOverride struct {
 	Subtypes   map[string]ActionRule `yaml:"subtypes,omitempty"`
 }
 
+// RouteConstraint is the policy-authored boundary for model routing. Route
+// IDs are optional; classes/providers are preferred so policy does not become
+// coupled to transport deployment names. A fallback chain is explicit and is
+// never inferred by the routing engine.
+type RouteConstraint struct {
+	Routes        []string `yaml:"routes,omitempty"`
+	Classes       []string `yaml:"classes,omitempty"`
+	Providers     []string `yaml:"providers,omitempty"`
+	FallbackChain string   `yaml:"fallback_chain,omitempty"`
+}
+
+type RoutingPolicy struct {
+	ForceLocal         RouteConstraint            `yaml:"force_local,omitempty"`
+	Actions            map[string]RouteConstraint `yaml:"actions,omitempty"`
+	ProviderBoundaries map[string]RouteConstraint `yaml:"provider_boundaries,omitempty"`
+}
+
 // ConfidenceEscalation turns detector confidence into a declarative action.
 // Subtype and provider are optional matchers.
 type ConfidenceEscalation struct {
@@ -247,6 +264,7 @@ type Policy struct {
 	ConfidenceEscalation   []ConfidenceEscalation           `yaml:"confidence_escalation,omitempty"`
 	FindingCountEscalation []FindingCountEscalation         `yaml:"finding_count_escalation,omitempty"`
 	SafeDefault            ActionRule                       `yaml:"safe_default,omitempty"`
+	Routing                *RoutingPolicy                   `yaml:"routing,omitempty"`
 }
 
 // RestrictedTools lists tool names RESTRICT_TOOLS may strip from requests.
@@ -430,6 +448,27 @@ func (p *Policy) Validate() error {
 			return fmt.Errorf("policy: semantic.%s has no configured risk levels", name)
 		}
 	}
+	if p.Routing != nil {
+		for action, constraint := range p.Routing.Actions {
+			if !isValidAction(core.Action(strings.ToUpper(action))) {
+				return fmt.Errorf("policy: routing.actions.%s uses an invalid action", action)
+			}
+			if err := validateRouteConstraint("routing.actions."+action, constraint); err != nil {
+				return err
+			}
+		}
+		if err := validateRouteConstraint("routing.force_local", p.Routing.ForceLocal); err != nil {
+			return err
+		}
+		for provider, constraint := range p.Routing.ProviderBoundaries {
+			if strings.TrimSpace(provider) == "" {
+				return errors.New("policy: routing.provider_boundaries has an empty provider")
+			}
+			if err := validateRouteConstraint("routing.provider_boundaries."+provider, constraint); err != nil {
+				return err
+			}
+		}
+	}
 	if p.Fallback != nil {
 		f := p.Fallback.LayaUnavailable
 		if f.HighRisk.Action == "" && f.LowRisk == "" {
@@ -455,6 +494,18 @@ func (p *Policy) Validate() error {
 			}
 			seen[key] = true
 		}
+	}
+	return nil
+}
+
+func validateRouteConstraint(name string, c RouteConstraint) error {
+	for _, value := range append(append(append([]string{}, c.Routes...), c.Classes...), c.Providers...) {
+		if strings.TrimSpace(value) == "" || strings.ContainsAny(value, "\r\n") {
+			return fmt.Errorf("policy: %s contains an invalid route constraint", name)
+		}
+	}
+	if c.FallbackChain != "" && strings.ContainsAny(c.FallbackChain, "\r\n") {
+		return fmt.Errorf("policy: %s has an invalid fallback_chain", name)
 	}
 	return nil
 }

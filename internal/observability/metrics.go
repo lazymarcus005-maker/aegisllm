@@ -85,6 +85,11 @@ type Metrics struct {
 	streamEvents        *prometheus.CounterVec
 	reloadFailures      *prometheus.CounterVec
 	certExpiring        *prometheus.CounterVec
+	routeSelected       *prometheus.CounterVec
+	routeFailover       *prometheus.CounterVec
+	routeHealth         *prometheus.GaugeVec
+	routeRejected       *prometheus.CounterVec
+	routeUnavailable    *prometheus.CounterVec
 	registry            *prometheus.Registry
 }
 
@@ -100,6 +105,8 @@ type MetricSnapshot struct {
 	Findings     []FindingSnapshot
 	StreamBytes  uint64
 	StreamEvents uint64
+	LocalApplied uint64
+	CloudApplied uint64
 }
 
 // FindingSnapshot is one findings_total{category,subtype} sample.
@@ -183,6 +190,11 @@ func New() *Metrics {
 		streamEvents:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "stream_events_inspected_total", Help: "Streaming SSE events inspected."}, []string{"direction", "endpoint_family"}),
 		reloadFailures:      prometheus.NewCounterVec(prometheus.CounterOpts{Name: "secure_material_reload_failures_total", Help: "Secure material reload failures by bounded kind."}, []string{"kind"}),
 		certExpiring:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "secure_certificate_expiring_total", Help: "Secure certificates nearing expiry by bounded kind."}, []string{"kind"}),
+		routeSelected:       prometheus.NewCounterVec(prometheus.CounterOpts{Name: "route_selected_total", Help: "Selected upstream routes by bounded route, class, and endpoint family."}, []string{"route_id", "class", "family"}),
+		routeFailover:       prometheus.NewCounterVec(prometheus.CounterOpts{Name: "route_failover_total", Help: "Explicit configured route failovers."}, []string{"route_id", "class", "family"}),
+		routeHealth:         prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "route_health", Help: "Current sanitized upstream route health."}, []string{"route_id", "class", "state"}),
+		routeRejected:       prometheus.NewCounterVec(prometheus.CounterOpts{Name: "route_rejected_total", Help: "Route selection rejections by bounded reason and endpoint family."}, []string{"reason", "family"}),
+		routeUnavailable:    prometheus.NewCounterVec(prometheus.CounterOpts{Name: "route_unavailable_total", Help: "Route selection unavailability by bounded class and endpoint family."}, []string{"class", "family"}),
 		registry:            reg,
 	}
 	reg.MustRegister(m.requestsTotal, m.blockedTotal, m.tokenizedTotal, m.redactedTotal,
@@ -192,7 +204,7 @@ func New() *Metrics {
 		m.concurrencyRejected, m.promptRejected, m.responseTooLarge, m.upstreamTimeout,
 		m.breakerOpen, m.activeRequests, m.activeLaya, m.calibrationInfo, m.semanticRejected,
 		m.schemaMismatch, m.checkpointMismatch, m.missingDecisions, m.fallbackReasons,
-		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring)
+		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring, m.routeSelected, m.routeFailover, m.routeHealth, m.routeRejected, m.routeUnavailable)
 	return m
 }
 
@@ -263,6 +275,15 @@ func (m *Metrics) Snapshot() MetricSnapshot {
 		case "stream_events_inspected_total":
 			for _, metric := range family.GetMetric() {
 				snapshot.StreamEvents += counterValue(metric)
+			}
+		case "route_selected_total":
+			for _, metric := range family.GetMetric() {
+				switch labelValue(metric, "class") {
+				case "local":
+					snapshot.LocalApplied += counterValue(metric)
+				case "cloud":
+					snapshot.CloudApplied += counterValue(metric)
+				}
 			}
 		}
 	}
@@ -401,6 +422,33 @@ func (m *Metrics) ObserveReloadFailure(kind string) {
 
 func (m *Metrics) ObserveCertificateExpiring(kind string) {
 	m.certExpiring.WithLabelValues(boundedMetadata(kind)).Inc()
+}
+
+func (m *Metrics) ObserveRouteSelected(id, class, family string, failover bool) {
+	id, class, family = boundedMetadata(id), boundedMetadata(class), boundedMetadata(family)
+	m.routeSelected.WithLabelValues(id, class, family).Inc()
+	if failover {
+		m.routeFailover.WithLabelValues(id, class, family).Inc()
+	}
+}
+
+func (m *Metrics) ObserveRouteHealth(id, class, state string, healthy bool) {
+	m.routeHealth.WithLabelValues(boundedMetadata(id), boundedMetadata(class), boundedMetadata(state)).Set(boolFloat(healthy))
+}
+
+func (m *Metrics) ObserveRouteRejected(reason, family string) {
+	m.routeRejected.WithLabelValues(boundedMetadata(reason), boundedMetadata(family)).Inc()
+}
+
+func (m *Metrics) ObserveRouteUnavailable(class, family string) {
+	m.routeUnavailable.WithLabelValues(boundedMetadata(class), boundedMetadata(family)).Inc()
+}
+
+func boolFloat(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (m *Metrics) ObserveRateLimited()            { m.rateLimited.Inc() }

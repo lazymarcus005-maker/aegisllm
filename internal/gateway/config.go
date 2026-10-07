@@ -14,6 +14,7 @@ import (
 	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/routing"
 )
 
 // DeploymentProfile selects the operational safety contract for the gateway.
@@ -47,6 +48,7 @@ type Config struct {
 	TLSTerminatedByTrustedEdge    bool
 	PlaintextDependencyDevWaiver  bool
 	UpstreamBaseURL               string
+	UpstreamRegistryFile          string
 	UpstreamAuthMode              string // none | bearer | header
 	UpstreamAPIKey                string
 	UpstreamAPIKeyFile            string
@@ -151,6 +153,7 @@ func configFrom(get func(string) string) Config {
 		TLSTerminatedByTrustedEdge:    getenvBool(get, "TLS_TERMINATED_BY_TRUSTED_EDGE", false),
 		PlaintextDependencyDevWaiver:  getenvBool(get, "PLAINTEXT_DEPENDENCY_DEVELOPMENT_WAIVER", false),
 		UpstreamBaseURL:               get("UPSTREAM_BASE_URL"),
+		UpstreamRegistryFile:          get("UPSTREAM_REGISTRY_FILE"),
 		UpstreamAuthMode:              getenvDefault(get, "UPSTREAM_AUTH_MODE", "none"),
 		UpstreamAPIKey:                get("UPSTREAM_API_KEY"),
 		UpstreamAPIKeyFile:            get("UPSTREAM_API_KEY_FILE"),
@@ -334,27 +337,49 @@ func ValidateConfig(cfg Config) error {
 	if strings.TrimSpace(cfg.TelemetryHMACKeyFile) != "" && strings.TrimSpace(cfg.TelemetryHMACKey) != "" {
 		return errors.New("production rejects inline TELEMETRY_HMAC_KEY when TELEMETRY_HMAC_KEY_FILE is configured")
 	}
-	if strings.TrimSpace(cfg.UpstreamBaseURL) == "" {
-		return errors.New("UPSTREAM_BASE_URL is required")
-	}
-	upstream, ok := parseDependencyURL(cfg.UpstreamBaseURL)
-	if !ok {
-		return errors.New("UPSTREAM_BASE_URL is invalid")
-	}
-	if isMockUpstream(upstream.Hostname()) {
-		return errors.New("UPSTREAM_BASE_URL must not reference a mock upstream")
+	if strings.TrimSpace(cfg.UpstreamRegistryFile) != "" {
+		reg, err := routing.LoadFile(cfg.UpstreamRegistryFile)
+		if err != nil {
+			return errors.New("UPSTREAM_REGISTRY_FILE is invalid")
+		}
+		for _, upstream := range reg.Upstreams {
+			u, parseErr := url.Parse(upstream.BaseURL)
+			if parseErr != nil || !strings.EqualFold(u.Scheme, "https") || isMockUpstream(u.Hostname()) {
+				return errors.New("production registry routes must use verified TLS and non-mock hosts")
+			}
+			if upstream.Auth.Mode != "none" && strings.TrimSpace(upstream.Auth.SecretFile) == "" {
+				return errors.New("production registry routes require file-backed auth")
+			}
+			if (upstream.TLS.CertificateFile == "") != (upstream.TLS.KeyFile == "") {
+				return errors.New("production registry route TLS certificate and key must be paired")
+			}
+		}
+	} else {
+		// ValidateConfig retains the P0 validation contract for programmatic
+		// callers and migration tooling. The production command boundary rejects
+		// this compatibility path before serving traffic (see NewServer).
+		if strings.TrimSpace(cfg.UpstreamBaseURL) == "" {
+			return errors.New("UPSTREAM_BASE_URL is required")
+		}
+		upstream, ok := parseDependencyURL(cfg.UpstreamBaseURL)
+		if !ok {
+			return errors.New("UPSTREAM_BASE_URL is invalid")
+		}
+		if isMockUpstream(upstream.Hostname()) {
+			return errors.New("UPSTREAM_BASE_URL must not reference a mock upstream")
+		}
+		if cfg.UpstreamAuthMode == "bearer" && strings.TrimSpace(cfg.UpstreamAPIKeyFile) == "" {
+			return errors.New("production requires UPSTREAM_API_KEY_FILE for bearer credentials")
+		}
+		if cfg.UpstreamAuthMode == "header" && strings.TrimSpace(cfg.UpstreamAuthHeaderValueFile) == "" {
+			return errors.New("production requires UPSTREAM_AUTH_HEADER_VALUE_FILE for header credentials")
+		}
+		if strings.TrimSpace(cfg.UpstreamAPIKey) != "" || strings.TrimSpace(cfg.UpstreamAuthHeaderValue) != "" {
+			return errors.New("production rejects inline upstream credentials; use *_FILE")
+		}
 	}
 	if err := validateProductionTransport(cfg); err != nil {
 		return err
-	}
-	if cfg.UpstreamAuthMode == "bearer" && strings.TrimSpace(cfg.UpstreamAPIKeyFile) == "" {
-		return errors.New("production requires UPSTREAM_API_KEY_FILE for bearer credentials")
-	}
-	if cfg.UpstreamAuthMode == "header" && strings.TrimSpace(cfg.UpstreamAuthHeaderValueFile) == "" {
-		return errors.New("production requires UPSTREAM_AUTH_HEADER_VALUE_FILE for header credentials")
-	}
-	if strings.TrimSpace(cfg.UpstreamAPIKey) != "" || strings.TrimSpace(cfg.UpstreamAuthHeaderValue) != "" {
-		return errors.New("production rejects inline upstream credentials; use *_FILE")
 	}
 	if err := validatePolicyFile(cfg.PolicyFile); err != nil {
 		return err
@@ -444,12 +469,17 @@ func validateProductionTransport(cfg Config) error {
 	if cfg.TLSMinVersion < tls.VersionTLS12 {
 		return errors.New("TLS_MIN_VERSION must be 1.2 or newer")
 	}
-	for name, value := range map[string]string{
-		"UPSTREAM_BASE_URL":     cfg.UpstreamBaseURL,
-		"TOKEN_VAULT_REDIS_URL": cfg.TokenVaultRedisURL,
-	} {
+	dependencyURLs := map[string]string{"TOKEN_VAULT_REDIS_URL": cfg.TokenVaultRedisURL}
+	if cfg.UpstreamRegistryFile == "" {
+		dependencyURLs["UPSTREAM_BASE_URL"] = cfg.UpstreamBaseURL
+	}
+	for name, value := range dependencyURLs {
 		u, ok := parseDependencyURL(value)
-		if !ok || !strings.EqualFold(u.Scheme, "https") && name == "UPSTREAM_BASE_URL" || !strings.EqualFold(u.Scheme, "rediss") && name == "TOKEN_VAULT_REDIS_URL" {
+		wanted := "rediss"
+		if name == "UPSTREAM_BASE_URL" {
+			wanted = "https"
+		}
+		if !ok || !strings.EqualFold(u.Scheme, wanted) {
 			return errors.New(name + " must use verified TLS in production")
 		}
 	}
