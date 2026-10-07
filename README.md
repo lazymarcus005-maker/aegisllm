@@ -62,6 +62,20 @@ All configuration is environment-based; see [.env.example](.env.example).
 | `UPSTREAM_AUTH_MODE` | `none` | `none`, `bearer`, or `header` |
 | `UPSTREAM_API_KEY` | — | Key for `bearer` mode (never a client-supplied value) |
 | `MAX_BODY_BYTES` | `1048576` | Request body limit (oversized → 413) |
+| `MAX_RESPONSE_BYTES` | `4194304` | Maximum buffered upstream response (oversized → sanitized 502) |
+| `MAX_PROMPT_CHARS` | `65536` | Normalized prompt character budget (oversized → 413) |
+| `MAX_STREAM_DURATION` | `5m` | Maximum stream lifetime |
+| `UPSTREAM_DIAL_TIMEOUT` / `UPSTREAM_TLS_HANDSHAKE_TIMEOUT` | `5s` | Upstream connection bounds |
+| `UPSTREAM_RESPONSE_HEADER_TIMEOUT` | `30s` | Maximum wait for upstream headers |
+| `UPSTREAM_REQUEST_TIMEOUT` | `2m` | Overall upstream request bound |
+| `UPSTREAM_IDLE_CONN_TIMEOUT` / `UPSTREAM_MAX_IDLE_CONNS` | `90s` / `100` | Upstream pool bounds |
+| `UPSTREAM_BREAKER_FAILURE_THRESHOLD` / `UPSTREAM_BREAKER_OPEN_INTERVAL` | `3` / `30s` | Process-local upstream circuit breaker |
+| `SERVER_READ_HEADER_TIMEOUT` / `SERVER_READ_TIMEOUT` / `SERVER_IDLE_TIMEOUT` | `10s` / `30s` / `2m` | Inbound server bounds |
+| `SERVER_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown bound |
+| `REQUESTS_PER_SECOND` / `RATE_BURST` | `10` / `20` | Per-identity token bucket |
+| `MAX_CONCURRENT_REQUESTS` | `16` | Per-identity concurrency cap |
+| `MAX_CONCURRENT_LAYA` | `4` | Global in-process Laya evaluation cap |
+| `LIMITER_MAX_KEYS` / `LIMITER_KEY_IDLE_TIMEOUT` | `10000` / `10m` | Bounded limiter key lifecycle |
 | `SECURITY_MODE` | `off` | `off`, `shadow`, `enforce` |
 | `AUTH_MODE` | `off` | `off` for development compatibility or `jwt` for authenticated ingress |
 | `JWT_PUBLIC_KEY_FILE` | — | PEM RSA (RS256) or P-256 EC (ES256) public key for JWT mode |
@@ -82,6 +96,11 @@ user, roles, and provider metadata come only from verified JWT claims. JWT
 defaults are `tenant_id`, `azp`, `sub`, `roles`, and `provider` respectively.
 LLM POST routes and `/v1/models` require `aegis.invoke` or `aegis.operator`;
 the dashboard, protection stats, and metrics require `aegis.operator`.
+
+Rate and concurrency controls are process-local and keyed by verified
+tenant/application in JWT mode. Development uses application plus remote
+address as a compatibility fallback. Multiple gateway instances require an
+external/distributed limiter for global enforcement; that is deferred.
 
 ## Repository layout
 
@@ -114,7 +133,11 @@ docs/                 spec, architecture, handoff, threat model, ADRs
 `security_requests_total{action,mode}`, `findings_total{category,subtype}`,
 `laya_calls_total` / `laya_errors_total` / `laya_latency_ms`,
 `scanner_latency_ms`, `gateway_security_latency_ms`,
-`shadow_disagreements_total`, `fallback_total`, `transformations_total`.
+`shadow_disagreements_total`, `fallback_total`, `transformations_total`,
+`rate_limited_total`, `concurrency_rejected_total`,
+`prompt_budget_rejected_total`, `response_too_large_total`,
+`upstream_timeout_total`, `breaker_open_total`, `active_requests`, and
+`active_laya_evaluations`. Runtime metrics have no tenant/application labels.
 Docker Compose includes a Prometheus scraping the gateway; see
 [docs/operations.md](docs/operations.md) for runbook guidance.
 
@@ -157,3 +180,5 @@ Anthropic-compatible messages/complete endpoints, plus generic aliases such as
 the same normalized security pipeline. `GET /v1/models` is a body-free
 passthrough with audit/metrics coverage. Streaming requests are inspected for
 audit evidence but forwarded verbatim and are never blocked or rewritten.
+They remain subject to admission, prompt/response budgets, upstream timeouts,
+and `MAX_STREAM_DURATION`; streamed content inspection is deferred to P0.3.

@@ -33,6 +33,29 @@ The production image contains the gateway binary, embedded dashboard, and
 versioned policy/question/threshold assets. It runs as a non-root user and its
 container healthcheck calls `/health`.
 
+### Runtime resilience and abuse controls
+
+Admission runs after authentication. JWT deployments are limited by verified
+tenant/application; development uses application plus remote address. The
+token bucket (`REQUESTS_PER_SECOND`, `RATE_BURST`) and per-identity
+concurrency semaphore (`MAX_CONCURRENT_REQUESTS`) return sanitized
+OpenAI-compatible `429` responses with `Retry-After`. Limiter keys are capped
+and evicted using `LIMITER_MAX_KEYS` and `LIMITER_KEY_IDLE_TIMEOUT`.
+These limits are process-local; multi-instance global enforcement requires an
+external/distributed limiter and is deferred.
+
+`MAX_PROMPT_CHARS` is measured over normalized text parts before scanners or
+upstream forwarding and returns `413`. Non-stream responses are bounded by
+`MAX_RESPONSE_BYTES` before any bytes are written. Streams remain pass-through,
+but their context is cancelled at `MAX_STREAM_DURATION` and their body is
+capped. Streamed content inspection is not part of this milestone.
+
+Upstream connections use explicit dial, TLS, response-header, overall request,
+idle-connection, and pool bounds. Transport failures are sanitized as `502`,
+timeouts as `504`, and an open upstream breaker as `503`; POST requests are
+never retried. `GET /v1/models` is also no-retry. `/ready` reports the
+upstream dependency as not ready while its breaker is open.
+
 ### Authenticated ingress and RBAC
 
 JWT mode accepts bearer tokens signed with RS256 (RSA PEM) or ES256 (P-256 EC
@@ -75,6 +98,13 @@ or JWTs.
 `findings_total{category,subtype}`, `laya_calls_total`, `laya_errors_total`,
 `laya_latency_ms`, `scanner_latency_ms`, `gateway_security_latency_ms`,
 `shadow_disagreements_total`, `fallback_total`, `transformations_total{action}`.
+
+Runtime protection metrics also include `rate_limited_total`,
+`concurrency_rejected_total`, `prompt_budget_rejected_total`,
+`response_too_large_total`, `upstream_timeout_total`, `breaker_open_total`,
+`active_requests`, and `active_laya_evaluations`. They have no tenant or
+application labels. Alert on sustained limiter rejection, response-budget
+rejections, upstream timeouts, or an open breaker.
 
 Alerts worth wiring: `fallback_total` spikes (Laya instability),
 `laya_errors_total` rate, p95 `gateway_security_latency_ms` > 25 ms,

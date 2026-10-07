@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +16,8 @@ import (
 	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/dashboard"
+	"github.com/aegisllm/gateway/internal/limiter"
+	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/web/leaderboard"
 )
@@ -37,21 +40,28 @@ type Pipeline interface {
 	SetSecurityMode(mode string)
 }
 
+type contextualPipeline interface {
+	ProcessRequestContext(context.Context, *core.InspectionEnvelope, []byte) (RequestDecision, error)
+}
+
 // Server is the OpenAI-compatible security gateway HTTP server (FR-001).
 type Server struct {
-	cfg        Config
-	proxy      *Proxy
-	pipeline   Pipeline
-	logger     *slog.Logger
-	readyFns   map[string]func() string
-	readyOrder []string
-	metrics    http.Handler
-	dashboard  *dashboard.Dashboard
-	authn      *auth.Authenticator
+	cfg            Config
+	proxy          *Proxy
+	pipeline       Pipeline
+	logger         *slog.Logger
+	readyFns       map[string]func() string
+	readyOrder     []string
+	metrics        http.Handler
+	runtimeMetrics observability.RuntimeRecorder
+	limiter        *limiter.Limiter
+	dashboard      *dashboard.Dashboard
+	authn          *auth.Authenticator
 }
 
 // NewServer validates configuration and builds the server.
 func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
+	cfg = cfg.withRuntimeDefaults()
 	if err := ValidateConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -92,7 +102,12 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, proxy: proxy, logger: logger, readyFns: map[string]func() string{}, authn: authn}, nil
+	return &Server{cfg: cfg, proxy: proxy, logger: logger, readyFns: map[string]func() string{}, authn: authn,
+		runtimeMetrics: observability.Noop{}, limiter: limiter.New(limiter.Config{
+			RequestsPerSecond: cfg.RequestsPerSecond, Burst: cfg.RateBurst,
+			MaxConcurrent: cfg.MaxConcurrentRequests, MaxKeys: cfg.LimiterMaxKeys,
+			KeyIdleTimeout: cfg.LimiterKeyIdleTimeout,
+		})}, nil
 }
 
 // SetPipeline attaches the security pipeline and propagates the security
@@ -108,6 +123,11 @@ func (s *Server) SetPipeline(p Pipeline) {
 // the protection dashboard, keeping dashboard wiring in the server boundary.
 func (s *Server) SetMetricsHandler(h http.Handler) {
 	s.metrics = h
+	if provider, ok := h.(interface {
+		RuntimeMetrics() observability.RuntimeRecorder
+	}); ok {
+		s.runtimeMetrics = provider.RuntimeMetrics()
+	}
 	if provider, ok := h.(dashboard.MetricsProvider); ok {
 		s.dashboard = dashboard.New(provider.ProtectionMetrics())
 	}
@@ -183,6 +203,9 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) readyCheck() string {
+	if reason := s.proxy.Readiness(); reason != "" {
+		return reason
+	}
 	if s.cfg.UpstreamBaseURL == "" {
 		return "UPSTREAM_BASE_URL not configured"
 	}
@@ -228,19 +251,37 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 
 	env, err := normalizer.ParseRequest(body)
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "", err.Error(), "")
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "", "Invalid request body.", "")
 		return
 	}
 	s.enrich(env, r)
 	env.Metadata["endpoint_path"] = r.URL.Path
+	if promptChars(env) > s.cfg.MaxPromptChars {
+		s.runtimeMetrics.ObservePromptBudgetRejected()
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "PROMPT_TOO_LARGE", "Prompt exceeds the configured character limit.", env.RequestID)
+		return
+	}
 	isStream := env.Metadata["stream"] == "true" || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream")
+	requestCtx := r.Context()
+	var streamCancel context.CancelFunc
+	if isStream {
+		requestCtx, streamCancel = context.WithTimeout(requestCtx, s.cfg.MaxStreamDuration)
+		defer streamCancel()
+		r = r.WithContext(requestCtx)
+	}
 	if isStream {
 		env.Metadata["skipped_stream"] = "true"
 	}
 
 	forwardBody := body
 	if s.pipeline != nil {
-		dec, perr := s.pipeline.ProcessRequest(env, body)
+		var dec RequestDecision
+		var perr error
+		if contextual, ok := s.pipeline.(contextualPipeline); ok {
+			dec, perr = contextual.ProcessRequestContext(requestCtx, env, body)
+		} else {
+			dec, perr = s.pipeline.ProcessRequest(env, body)
+		}
 		if perr != nil {
 			s.logger.Error("security pipeline failed", "request_id", env.RequestID, "error", perr)
 			writeOpenAIError(w, http.StatusInternalServerError, "gateway_error", "", "Security pipeline failure.", env.RequestID)
@@ -256,8 +297,7 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 
 	resp, ferr := s.proxy.Forward(r, forwardBody)
 	if ferr != nil {
-		s.logger.Error("upstream request failed", "request_id", env.RequestID, "error", ferr)
-		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "", "Upstream gateway request failed.", env.RequestID)
+		s.writeUpstreamError(w, ferr, env.RequestID)
 		return
 	}
 	defer resp.Body.Close()
@@ -266,18 +306,27 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 	// scanned and policy-filtered before reaching the client. Streaming
 	// follows the deferred plan in architecture §13.
 	_, embeddingsResponse := normalizer.(openAIEmbeddingsNormalizer)
-	if s.pipeline == nil || s.cfg.SecurityMode == ModeOff || isStream ||
-		embeddingsResponse || resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
-		copyResponseHeaders(w, resp.Header)
-		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+	if isStream {
+		s.copyStreamResponse(w, resp, env.RequestID)
 		return
 	}
 
-	bodyBytes, rerr := io.ReadAll(io.LimitReader(resp.Body, s.cfg.MaxBodyBytes))
+	bodyBytes, tooLarge, rerr := readBounded(resp.Body, s.cfg.MaxResponseBytes)
 	if rerr != nil {
-		s.logger.Error("upstream response read failed", "request_id", env.RequestID, "error", rerr)
-		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "", "Upstream response read failed.", env.RequestID)
+		s.proxy.RecordFailure()
+		s.writeUpstreamError(w, rerr, env.RequestID)
+		return
+	}
+	if tooLarge {
+		s.runtimeMetrics.ObserveResponseTooLarge()
+		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "UPSTREAM_RESPONSE_TOO_LARGE", "Upstream response exceeds the configured limit.", env.RequestID)
+		return
+	}
+	if s.pipeline == nil || s.cfg.SecurityMode == ModeOff ||
+		embeddingsResponse || resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+		copyResponseHeaders(w, resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, bytes.NewReader(bodyBytes))
 		return
 	}
 
@@ -288,6 +337,53 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 	copyResponseHeaders(w, resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, bytes.NewReader(out))
+}
+
+func promptChars(env *core.InspectionEnvelope) int {
+	n := 0
+	for _, part := range env.TextParts() {
+		n += len([]rune(part.Text))
+	}
+	return n
+}
+
+func readBounded(body io.Reader, max int64) ([]byte, bool, error) {
+	if max <= 0 {
+		max = 1
+	}
+	data, err := io.ReadAll(io.LimitReader(body, max+1))
+	return data, int64(len(data)) > max, err
+}
+
+func (s *Server) copyStreamResponse(w http.ResponseWriter, resp *http.Response, requestID string) {
+	defer resp.Body.Close()
+	copyResponseHeaders(w, resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	_, copyErr := io.Copy(w, io.LimitReader(resp.Body, s.cfg.MaxResponseBytes))
+	if copyErr != nil && upstreamTimeout(copyErr) {
+		s.proxy.RecordFailure()
+		s.runtimeMetrics.ObserveUpstreamTimeout()
+	}
+	var extra [1]byte
+	if n, _ := resp.Body.Read(extra[:]); n > 0 {
+		s.runtimeMetrics.ObserveResponseTooLarge()
+		s.logger.Warn("upstream stream exceeded response limit", "request_id", requestID)
+	}
+}
+
+func (s *Server) writeUpstreamError(w http.ResponseWriter, err error, requestID string) {
+	status := http.StatusBadGateway
+	code := "UPSTREAM_REQUEST_FAILED"
+	message := "Upstream gateway request failed."
+	switch {
+	case errors.Is(err, ErrUpstreamBreakerOpen):
+		status, code, message = http.StatusServiceUnavailable, "UPSTREAM_BREAKER_OPEN", "Upstream dependency is temporarily unavailable."
+		s.runtimeMetrics.ObserveBreakerOpen()
+	case upstreamTimeout(err):
+		status, code, message = http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT", "Upstream gateway request timed out."
+		s.runtimeMetrics.ObserveUpstreamTimeout()
+	}
+	writeOpenAIError(w, status, "upstream_error", code, message, requestID)
 }
 
 // processOutbound applies the response outcome for the current mode; a

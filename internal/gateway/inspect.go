@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"time"
 
 	"github.com/aegisllm/gateway/internal/audit"
@@ -24,6 +25,10 @@ type inspection struct {
 // inspect is the single four-boundary inspection routine: deterministic scan,
 // span detection, policy evaluation, optional semantics, and metrics.
 func (p *SecurityPipeline) inspect(env *core.InspectionEnvelope) *inspection {
+	return p.inspectContext(context.Background(), env)
+}
+
+func (p *SecurityPipeline) inspectContext(ctx context.Context, env *core.InspectionEnvelope) *inspection {
 	ins := &inspection{env: env, start: time.Now()}
 	scanStart := time.Now()
 	findings := p.registry.RunAll(env)
@@ -49,7 +54,7 @@ func (p *SecurityPipeline) inspect(env *core.InspectionEnvelope) *inspection {
 	}
 	ins.detMS = time.Since(ins.start).Milliseconds()
 	if p.provider != nil && p.planner != nil && ins.dec.Action != core.ActionBlock {
-		p.semanticStage(ins)
+		p.semanticStage(ctx, ins)
 	}
 	p.recorder.ObserveSecurityLatency(float64(ins.detMS))
 	if env.Direction == core.DirectionRequest {

@@ -39,6 +39,8 @@ Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
 | Configuration poisoning | KnownFields-strict YAML loaders; policy/threshold/question files are versioned code | supply chain of those files — protect the repo |
 | Supply-chain dependency risk | small dependency surface: yaml.v3, go-redis, miniredis (test), prometheus client | pin versions in go.sum; review updates |
 | Oversized request / DoS | MaxBytesReader → 413 before inspection; read-header timeout; Laya circuit breaker | volumetric DDoS protection belongs to the edge |
+| Tenant/application abuse and cost amplification | verified-identity token bucket and concurrency semaphore, normalized prompt budget, bounded response/stream lifetime, global Laya semaphore, bounded key cleanup | process-local limits do not enforce a global budget across instances; distributed limiter is deferred |
+| Upstream stall or connection exhaustion | dial/TLS/header/request/idle timeouts, bounded pool, response byte cap, no automatic POST retry, circuit breaker and sanitized readiness | provider-side overload and volumetric attacks still need edge controls |
 | Unicode/encoding evasions | documented limitations (base64, homoglyphs, cross-message splits) pinned in tests | future stateful/rolling-window scanning |
 | Cross-tenant token collision | token namespace is per-request ID; vault keys carry namespace + token label | multi-tenant session namespaces are a V1.1 item |
 | Model context carries tool credentials | out of scope for the gateway (TB-5) — credential broker is Phase 2 | deployment must route tool creds outside model context |
@@ -53,3 +55,6 @@ Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
   unknown action).
 - Audit sink failure → console sink; production deployments should buffer
   minimal sanitized events and alert.
+- Stream response content is intentionally not inspected in this milestone;
+  only lifetime, transport, and byte bounds apply. Streaming inspection is a
+  separate P0.3 effort.

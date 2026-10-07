@@ -8,7 +8,8 @@ separate feature-roadmap file).
 
 - [x] P0.1 Secure production deployment profile: typed development/shadow/production profiles, fail-fast production validation, self-contained non-root image, readiness evidence, and CI container smoke gate.
 - [x] P0.2 Authenticated ingress, verified identity claims, and operator RBAC.
-- [ ] P0.3 PII transformation, encrypted vault, and outbound protection hardening.
+- [ ] P0.3 PII transformation, encrypted vault, outbound protection hardening, and streaming content inspection.
+- [x] P0.4 Runtime resilience, rate limits, cost controls, bounded upstream transport, and stream lifetime protection.
 
 ## P1 — semantic and operational maturity
 
@@ -28,6 +29,11 @@ container smoke test pass on this branch.
 P0.2 is marked complete after strict RS256/ES256 JWT validation, RBAC, proxy
 credential isolation, full Go verification, Docker image build, and an
 authenticated RS256 container smoke test pass on this branch.
+
+Runtime resilience is marked complete after focused limiter, breaker, timeout,
+response-budget, Laya-cancellation, stream-duration, full-suite, benchmark,
+Docker, authenticated-smoke, and secret-scan verification pass on this branch.
+Streaming content inspection remains deferred.
 
 Verification note: the first full-suite run observed the existing deterministic
 scan p95 target above 10 ms under host load; the isolated

@@ -2,11 +2,20 @@ package gateway
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
+
+	"github.com/aegisllm/gateway/internal/decision"
 )
+
+var ErrUpstreamBreakerOpen = decision.ErrCircuitOpen
 
 // Proxy forwards policy-approved requests to the upstream LLM Gateway (FR-002).
 // Upstream credentials come exclusively from configuration — inbound client
@@ -15,10 +24,12 @@ type Proxy struct {
 	baseURL *url.URL
 	client  *http.Client
 	cfg     Config
+	breaker *decision.CircuitBreaker
 }
 
 // NewProxy validates configuration and builds the upstream proxy.
 func NewProxy(cfg Config) (*Proxy, error) {
+	cfg = cfg.withRuntimeDefaults()
 	if cfg.UpstreamBaseURL == "" {
 		return nil, fmt.Errorf("UPSTREAM_BASE_URL is required")
 	}
@@ -42,11 +53,27 @@ func NewProxy(cfg Config) (*Proxy, error) {
 	default:
 		return nil, fmt.Errorf("unsupported UPSTREAM_AUTH_MODE: %s", cfg.UpstreamAuthMode)
 	}
-	return &Proxy{baseURL: u, client: &http.Client{}, cfg: cfg}, nil
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: cfg.UpstreamDialTimeout, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   cfg.UpstreamTLSHandshakeTimeout,
+		ResponseHeaderTimeout: cfg.UpstreamResponseHeaderTimeout,
+		IdleConnTimeout:       cfg.UpstreamIdleConnTimeout,
+		MaxIdleConns:          cfg.UpstreamMaxIdleConns,
+		MaxIdleConnsPerHost:   cfg.UpstreamMaxIdleConns,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+	}
+	return &Proxy{
+		baseURL: u, client: &http.Client{Transport: transport, Timeout: cfg.UpstreamRequestTimeout}, cfg: cfg,
+		breaker: decision.NewCircuitBreaker(cfg.UpstreamBreakerThreshold, cfg.UpstreamBreakerOpenInterval),
+	}, nil
 }
 
 // Forward sends the raw request body to the upstream gateway at the same path.
 func (p *Proxy) Forward(r *http.Request, body []byte) (*http.Response, error) {
+	if !p.breaker.Allow() {
+		return nil, ErrUpstreamBreakerOpen
+	}
 	target := *p.baseURL
 	path := r.URL.Path
 	if prefix := strings.TrimSuffix(p.cfg.UpstreamChatPathPrefix, "/"); prefix != "" && (path == prefix || strings.HasPrefix(path, prefix+"/")) {
@@ -75,7 +102,42 @@ func (p *Proxy) Forward(r *http.Request, body []byte) (*http.Response, error) {
 	case "header":
 		req.Header.Set(p.cfg.UpstreamAuthHeaderName, p.cfg.UpstreamAuthHeaderValue)
 	}
-	return p.client.Do(req)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		p.breaker.Record(false)
+		return nil, err
+	}
+	// A 5xx is a dependency failure for breaker purposes, but the response is
+	// returned so the server can apply its normal bounded-body handling.
+	p.breaker.Record(resp.StatusCode < http.StatusInternalServerError)
+	return resp, nil
+}
+
+func (p *Proxy) Readiness() string {
+	if p == nil || p.breaker == nil {
+		return ""
+	}
+	if p.breaker.State() == "open" {
+		return "breaker open"
+	}
+	return ""
+}
+
+func (p *Proxy) RecordFailure() {
+	if p != nil && p.breaker != nil {
+		p.breaker.Record(false)
+	}
+}
+
+func upstreamTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func joinPath(base, path string) string {

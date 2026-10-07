@@ -86,10 +86,10 @@ func semanticSubject(env *core.InspectionEnvelope) (string, core.Role) {
 
 // semanticStage consults the provider only when deterministic policy did not
 // already produce a definitive block.
-func (p *SecurityPipeline) semanticStage(ins *inspection) {
+func (p *SecurityPipeline) semanticStage(ctx context.Context, ins *inspection) {
 	env := ins.env
 	layaStart := time.Now()
-	evidence, signals, plan, err := p.evaluateSemantic(env, ins.findings)
+	evidence, signals, plan, err := p.evaluateSemantic(ctx, env, ins.findings)
 	ins.layaMS = time.Since(layaStart).Milliseconds()
 	if err != nil || evidence != nil {
 		ins.laya = &audit.LayaInfo{}
@@ -119,7 +119,7 @@ func (p *SecurityPipeline) semanticStage(ins *inspection) {
 	}
 }
 
-func (p *SecurityPipeline) evaluateSemantic(env *core.InspectionEnvelope, findings []core.SecurityFinding) (*decision.DecisionEvidence, []policy.SemanticSignal, decision.Plan, error) {
+func (p *SecurityPipeline) evaluateSemantic(ctx context.Context, env *core.InspectionEnvelope, findings []core.SecurityFinding) (*decision.DecisionEvidence, []policy.SemanticSignal, decision.Plan, error) {
 	plan := p.planner.Plan(env.Direction, env.Application, env.Target, findings)
 	if !plan.Ask {
 		return nil, nil, plan, nil
@@ -132,7 +132,7 @@ func (p *SecurityPipeline) evaluateSemantic(env *core.InspectionEnvelope, findin
 		RequestID: env.RequestID, Direction: strings.ToLower(string(env.Direction)),
 		Role: string(role), Content: content, Application: env.Application,
 	}
-	evidence, err := p.provider.Evaluate(context.Background(), req, plan.QuestionIDs)
+	evidence, err := p.provider.Evaluate(ctx, req, plan.QuestionIDs)
 	if err != nil {
 		return nil, nil, plan, err
 	}

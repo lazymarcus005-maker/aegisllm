@@ -26,6 +26,20 @@ type Recorder interface {
 	ObserveFalsePositiveSample()
 }
 
+// RuntimeRecorder contains content-free counters and gauges for admission and
+// dependency protection. Labels are deliberately omitted to avoid tenant or
+// application cardinality.
+type RuntimeRecorder interface {
+	ObserveRateLimited()
+	ObserveConcurrencyRejected()
+	ObservePromptBudgetRejected()
+	ObserveResponseTooLarge()
+	ObserveUpstreamTimeout()
+	ObserveBreakerOpen()
+	IncActiveRequests()
+	DecActiveRequests()
+}
+
 // Metrics is the Prometheus implementation of Recorder (spec §15). The
 // action-specific counters (blocked/tokenized/redacted/review) are redundant
 // with requests_total{action,mode} but the spec names them explicitly, so
@@ -46,6 +60,14 @@ type Metrics struct {
 	falsePositiveSample prometheus.Counter
 	fallbackTotal       prometheus.Counter
 	transformations     *prometheus.CounterVec
+	rateLimited         prometheus.Counter
+	concurrencyRejected prometheus.Counter
+	promptRejected      prometheus.Counter
+	responseTooLarge    prometheus.Counter
+	upstreamTimeout     prometheus.Counter
+	breakerOpen         prometheus.Counter
+	activeRequests      prometheus.Gauge
+	activeLaya          prometheus.Gauge
 	registry            *prometheus.Registry
 }
 
@@ -123,12 +145,22 @@ func New() *Metrics {
 		transformations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "transformations_total", Help: "Content transformations applied.",
 		}, []string{"action"}),
-		registry: reg,
+		rateLimited:         prometheus.NewCounter(prometheus.CounterOpts{Name: "rate_limited_total", Help: "Requests rejected by the per-identity rate limiter."}),
+		concurrencyRejected: prometheus.NewCounter(prometheus.CounterOpts{Name: "concurrency_rejected_total", Help: "Requests rejected by the per-identity concurrency limiter."}),
+		promptRejected:      prometheus.NewCounter(prometheus.CounterOpts{Name: "prompt_budget_rejected_total", Help: "Requests rejected by the normalized prompt character budget."}),
+		responseTooLarge:    prometheus.NewCounter(prometheus.CounterOpts{Name: "response_too_large_total", Help: "Upstream responses rejected for exceeding the configured byte budget."}),
+		upstreamTimeout:     prometheus.NewCounter(prometheus.CounterOpts{Name: "upstream_timeout_total", Help: "Upstream requests that timed out."}),
+		breakerOpen:         prometheus.NewCounter(prometheus.CounterOpts{Name: "breaker_open_total", Help: "Requests rejected because the upstream circuit breaker is open."}),
+		activeRequests:      prometheus.NewGauge(prometheus.GaugeOpts{Name: "active_requests", Help: "Current admitted gateway requests."}),
+		activeLaya:          prometheus.NewGauge(prometheus.GaugeOpts{Name: "active_laya_evaluations", Help: "Current in-flight Laya evaluations."}),
+		registry:            reg,
 	}
 	reg.MustRegister(m.requestsTotal, m.blockedTotal, m.tokenizedTotal, m.redactedTotal,
 		m.reviewTotal, m.findingsTotal, m.layaCallsTotal, m.layaErrorsTotal,
 		m.layaLatency, m.scannerLatency, m.securityLatency, m.shadowDisagreements,
-		m.falsePositiveSample, m.fallbackTotal, m.transformations)
+		m.falsePositiveSample, m.fallbackTotal, m.transformations, m.rateLimited,
+		m.concurrencyRejected, m.promptRejected, m.responseTooLarge, m.upstreamTimeout,
+		m.breakerOpen, m.activeRequests, m.activeLaya)
 	return m
 }
 
@@ -149,6 +181,10 @@ func (h metricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ProtectionMetrics exposes the owning recorder to the gateway wiring without
 // exposing the private Prometheus registry.
 func (h metricsHandler) ProtectionMetrics() *Metrics { return h.metrics }
+
+// RuntimeMetrics exposes the content-free runtime recorder to the gateway
+// admission layer without exposing the Prometheus registry.
+func (h metricsHandler) RuntimeMetrics() RuntimeRecorder { return h.metrics }
 
 // Snapshot gathers the private registry and returns only the counters needed
 // by the protection dashboard. Registry gathering is safe while counters are
@@ -263,6 +299,16 @@ func (m *Metrics) ObserveTokens(n int, action string) {
 	}
 }
 
+func (m *Metrics) ObserveRateLimited()            { m.rateLimited.Inc() }
+func (m *Metrics) ObserveConcurrencyRejected()    { m.concurrencyRejected.Inc() }
+func (m *Metrics) ObservePromptBudgetRejected()   { m.promptRejected.Inc() }
+func (m *Metrics) ObserveResponseTooLarge()       { m.responseTooLarge.Inc() }
+func (m *Metrics) ObserveUpstreamTimeout()        { m.upstreamTimeout.Inc() }
+func (m *Metrics) ObserveBreakerOpen()            { m.breakerOpen.Inc() }
+func (m *Metrics) IncActiveRequests()             { m.activeRequests.Inc() }
+func (m *Metrics) DecActiveRequests()             { m.activeRequests.Dec() }
+func (m *Metrics) SetActiveLayaEvaluations(n int) { m.activeLaya.Set(float64(n)) }
+
 // Noop is a Recorder that discards everything (tests, metrics disabled).
 type Noop struct{}
 
@@ -275,3 +321,11 @@ func (Noop) ObserveShadowDisagreement(core.Action) {}
 func (Noop) ObserveFallback()                      {}
 func (Noop) ObserveTokens(int, string)             {}
 func (Noop) ObserveFalsePositiveSample()           {}
+func (Noop) ObserveRateLimited()                   {}
+func (Noop) ObserveConcurrencyRejected()           {}
+func (Noop) ObservePromptBudgetRejected()          {}
+func (Noop) ObserveResponseTooLarge()              {}
+func (Noop) ObserveUpstreamTimeout()               {}
+func (Noop) ObserveBreakerOpen()                   {}
+func (Noop) IncActiveRequests()                    {}
+func (Noop) DecActiveRequests()                    {}

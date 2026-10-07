@@ -83,6 +83,7 @@ func main() {
 	// cfg.SecurityMode into the pipeline — the server owns the mode.
 	pipe := gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink)
 	pipe.SetSpanProvider(pii.NewCompositeSpanProvider(pii.NewRegexSpanProvider()))
+	metrics := observability.New()
 
 	// Token vault (ticket 06): envelope-encrypted mappings with TTL.
 	masterKey, err := loadVaultKey(cfg.TokenVaultKey, logger)
@@ -134,7 +135,8 @@ func main() {
 		laya := decision.NewLayaProvider(layaURL, os.Getenv("LAYA_EVALUATE_PATH"), timeout)
 		breaker := decision.NewCircuitBreaker(3, 30*time.Second)
 		provider := decision.NewResilientProvider(laya, breaker)
-		pipe.SetDecisionProvider(provider, questionSchema)
+		limited := decision.NewLimitedProvider(provider, cfg.MaxConcurrentLaya, metrics.SetActiveLayaEvaluations)
+		pipe.SetDecisionProvider(limited, questionSchema)
 		srv.AddReadinessCheck("laya", func() string {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -162,7 +164,6 @@ func main() {
 		pipe.SetSemanticThresholds(thresholds)
 	}
 
-	metrics := observability.New()
 	pipe.SetRecorder(metrics)
 	srv.SetMetricsHandler(metrics.Handler())
 
@@ -176,7 +177,9 @@ func main() {
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: cfg.ServerReadHeaderTimeout,
+		ReadTimeout:       cfg.ServerReadTimeout,
+		IdleTimeout:       cfg.ServerIdleTimeout,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -185,7 +188,7 @@ func main() {
 	go func() {
 		<-ctx.Done()
 		logger.Info("shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ServerShutdownTimeout)
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()

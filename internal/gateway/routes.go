@@ -1,10 +1,17 @@
 package gateway
 
 import (
+	"bytes"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
+	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/core"
+	"github.com/aegisllm/gateway/internal/limiter"
 	"github.com/aegisllm/gateway/web/leaderboard"
 )
 
@@ -12,8 +19,8 @@ import (
 // one handler so every supported wire format crosses the same security gate.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("POST /", s.protect(http.HandlerFunc(s.handleLLMRequest), "aegis.invoke", "aegis.operator"))
-	mux.Handle("GET /v1/models", s.protect(http.HandlerFunc(s.handleModels), "aegis.invoke", "aegis.operator"))
+	mux.Handle("POST /", s.protectLimited(http.HandlerFunc(s.handleLLMRequest), "aegis.invoke", "aegis.operator"))
+	mux.Handle("GET /v1/models", s.protectLimited(http.HandlerFunc(s.handleModels), "aegis.invoke", "aegis.operator"))
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.Handle("GET /api/protection-stats", s.protect(http.HandlerFunc(s.handleProtectionStats), "aegis.operator"))
@@ -29,6 +36,50 @@ func (s *Server) protect(next http.Handler, roles ...string) http.Handler {
 	return s.authn.Middleware(next, roles...)
 }
 
+func (s *Server) protectLimited(next http.Handler, roles ...string) http.Handler {
+	return s.authn.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := s.admissionKey(r)
+		release, result := s.limiter.Allow(key)
+		if result.Reason != nil {
+			retry := int(result.RetryAfter / time.Second)
+			if retry < 1 {
+				retry = 1
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+			switch result.Reason {
+			case limiter.ErrRateLimited:
+				s.runtimeMetrics.ObserveRateLimited()
+			default:
+				s.runtimeMetrics.ObserveConcurrencyRejected()
+			}
+			writeOpenAIError(w, http.StatusTooManyRequests, "rate_limit_error", "REQUEST_LIMITED", "Request limit exceeded.", "")
+			return
+		}
+		s.runtimeMetrics.IncActiveRequests()
+		defer s.runtimeMetrics.DecActiveRequests()
+		defer release()
+		next.ServeHTTP(w, r)
+	}), roles...)
+}
+
+func (s *Server) admissionKey(r *http.Request) string {
+	if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
+		return "verified:" + strconv.Itoa(len(principal.Tenant)) + ":" + principal.Tenant + ":" + strconv.Itoa(len(principal.Application)) + ":" + principal.Application
+	}
+	application := strings.TrimSpace(r.Header.Get(s.cfg.HeaderApplication))
+	if application == "" {
+		application = "unknown"
+	}
+	return "development:" + application + ":" + remoteAddress(r.RemoteAddr)
+}
+
+func remoteAddress(remote string) string {
+	if host, _, err := net.SplitHostPort(remote); err == nil {
+		return host
+	}
+	return remote
+}
+
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	env := &core.InspectionEnvelope{RequestID: newRequestID(), Direction: core.DirectionRequest, Target: core.Target{Provider: s.cfg.DefaultTargetProvider}, Metadata: map[string]string{"endpoint_family": "openai", "endpoint_path": r.URL.Path}}
 	s.enrich(env, r)
@@ -39,11 +90,22 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := s.proxy.Forward(r, nil)
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "", "Upstream gateway request failed.", env.RequestID)
+		s.writeUpstreamError(w, err, env.RequestID)
 		return
 	}
 	defer resp.Body.Close()
+	body, tooLarge, err := readBounded(resp.Body, s.cfg.MaxResponseBytes)
+	if err != nil {
+		s.proxy.RecordFailure()
+		s.writeUpstreamError(w, err, env.RequestID)
+		return
+	}
+	if tooLarge {
+		s.runtimeMetrics.ObserveResponseTooLarge()
+		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "UPSTREAM_RESPONSE_TOO_LARGE", "Upstream response exceeds the configured limit.", env.RequestID)
+		return
+	}
 	copyResponseHeaders(w, resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	_, _ = io.Copy(w, bytes.NewReader(body))
 }

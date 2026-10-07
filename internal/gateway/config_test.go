@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestConfigDefaults(t *testing.T) {
@@ -33,6 +34,12 @@ func TestConfigDefaults(t *testing.T) {
 	if cfg.UpstreamChatPathPrefix != "" {
 		t.Fatalf("path prefix default: %q", cfg.UpstreamChatPathPrefix)
 	}
+	if cfg.MaxResponseBytes != 4<<20 || cfg.MaxPromptChars != 64*1024 || cfg.MaxStreamDuration != 5*time.Minute {
+		t.Fatalf("content limits defaults: response=%d prompt=%d stream=%s", cfg.MaxResponseBytes, cfg.MaxPromptChars, cfg.MaxStreamDuration)
+	}
+	if cfg.RequestsPerSecond != 10 || cfg.RateBurst != 20 || cfg.MaxConcurrentRequests != 16 || cfg.MaxConcurrentLaya != 4 {
+		t.Fatalf("limiter defaults: rps=%v burst=%d requests=%d laya=%d", cfg.RequestsPerSecond, cfg.RateBurst, cfg.MaxConcurrentRequests, cfg.MaxConcurrentLaya)
+	}
 }
 
 func TestConfigOverrides(t *testing.T) {
@@ -56,6 +63,14 @@ func TestConfigOverrides(t *testing.T) {
 	}
 	if cfg.UpstreamChatPathPrefix != "/generic" {
 		t.Fatalf("path prefix override: %s", cfg.UpstreamChatPathPrefix)
+	}
+}
+
+func TestProductionValidationRejectsUnsafeRuntimeLimit(t *testing.T) {
+	cfg := productionConfig(t)
+	cfg.MaxResponseBytes = 0
+	if err := ValidateConfig(cfg); err == nil || !strings.Contains(err.Error(), "MAX_BODY_BYTES") {
+		t.Fatalf("unsafe runtime limit error = %v", err)
 	}
 }
 
@@ -96,20 +111,42 @@ func productionConfig(t *testing.T) Config {
 	t.Helper()
 	root := filepath.Join("..", "..")
 	return Config{
-		DeploymentProfile:  ProfileProduction,
-		SecurityMode:       ModeEnforce,
-		AuthMode:           "jwt",
-		JWTPublicKeyFile:   "/run/secrets/aegis-jwt-public.pem",
-		JWTIssuer:          "https://issuer.example.invalid",
-		JWTAudience:        "aegisllm",
-		UpstreamBaseURL:    "https://llm-gateway.example.invalid",
-		UpstreamAuthMode:   "none",
-		PolicyFile:         filepath.Join(root, "policies", "enterprise-default.yaml"),
-		QuestionsFile:      filepath.Join(root, "questions", "security-v1.yaml"),
-		ThresholdsFile:     filepath.Join(root, "policies", "thresholds-security-v1.yaml"),
-		TokenVaultKey:      strings.Repeat("a", 64),
-		TokenVaultRedisURL: "redis://redis.example.invalid:6379/0",
-		TelemetryHMACKey:   "synthetic-telemetry-key",
+		DeploymentProfile:             ProfileProduction,
+		SecurityMode:                  ModeEnforce,
+		AuthMode:                      "jwt",
+		JWTPublicKeyFile:              "/run/secrets/aegis-jwt-public.pem",
+		JWTIssuer:                     "https://issuer.example.invalid",
+		JWTAudience:                   "aegisllm",
+		UpstreamBaseURL:               "https://llm-gateway.example.invalid",
+		UpstreamAuthMode:              "none",
+		UpstreamDialTimeout:           5 * time.Second,
+		UpstreamTLSHandshakeTimeout:   5 * time.Second,
+		UpstreamResponseHeaderTimeout: 30 * time.Second,
+		UpstreamRequestTimeout:        2 * time.Minute,
+		UpstreamIdleConnTimeout:       90 * time.Second,
+		UpstreamMaxIdleConns:          100,
+		MaxBodyBytes:                  1 << 20,
+		MaxResponseBytes:              4 << 20,
+		MaxPromptChars:                64 * 1024,
+		MaxStreamDuration:             5 * time.Minute,
+		RequestsPerSecond:             10,
+		RateBurst:                     20,
+		MaxConcurrentRequests:         16,
+		MaxConcurrentLaya:             4,
+		LimiterMaxKeys:                10000,
+		LimiterKeyIdleTimeout:         10 * time.Minute,
+		UpstreamBreakerThreshold:      3,
+		UpstreamBreakerOpenInterval:   30 * time.Second,
+		ServerReadHeaderTimeout:       10 * time.Second,
+		ServerReadTimeout:             30 * time.Second,
+		ServerIdleTimeout:             2 * time.Minute,
+		ServerShutdownTimeout:         10 * time.Second,
+		PolicyFile:                    filepath.Join(root, "policies", "enterprise-default.yaml"),
+		QuestionsFile:                 filepath.Join(root, "questions", "security-v1.yaml"),
+		ThresholdsFile:                filepath.Join(root, "policies", "thresholds-security-v1.yaml"),
+		TokenVaultKey:                 strings.Repeat("a", 64),
+		TokenVaultRedisURL:            "redis://redis.example.invalid:6379/0",
+		TelemetryHMACKey:              "synthetic-telemetry-key",
 	}
 }
 

@@ -13,10 +13,16 @@ import (
 // ProcessRequest applies the policy result to the request body. The server
 // remains responsible for enforce-vs-shadow transport behavior.
 func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []byte) (RequestDecision, error) {
+	return p.ProcessRequestContext(context.Background(), env, raw)
+}
+
+// ProcessRequestContext is the request-aware entry point used by HTTP
+// handlers so semantic evaluation and its bounded queue honor cancellation.
+func (p *SecurityPipeline) ProcessRequestContext(ctx context.Context, env *core.InspectionEnvelope, raw []byte) (RequestDecision, error) {
 	if p.mode == ModeOff {
 		return RequestDecision{Action: core.ActionAllow}, nil
 	}
-	ins := p.inspect(env)
+	ins := p.inspectContext(ctx, env)
 	if env.Metadata["skipped_stream"] == "true" {
 		ins.dec.Action = core.ActionAllow
 		ins.dec.Code = "SKIPPED_STREAM"

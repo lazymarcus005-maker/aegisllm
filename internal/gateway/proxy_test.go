@@ -119,3 +119,26 @@ func TestNewProxyValidation(t *testing.T) {
 		})
 	}
 }
+
+func BenchmarkProxyForward(b *testing.B) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	p, err := NewProxy(Config{UpstreamBaseURL: upstream.URL, UpstreamAuthMode: "none"})
+	if err != nil {
+		b.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://gateway.local/v1/chat/completions", nil)
+	body := []byte(`{"model":"m"}`)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		resp, err := p.Forward(req, body)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+}
