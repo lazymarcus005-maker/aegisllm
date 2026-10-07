@@ -23,6 +23,7 @@ separate feature-roadmap file).
 - [x] P1.3 production PII/NER span engine: exercised Presidio/Aegis adapters, strict registry, UTF-8/UTF-16 spans, bounded private routing, fail-closed policy, fake CI service, and held-out span evaluation.
 - [x] P1.4 Evasion-resistant scanning: bounded NFKC/control/confusable projection, Base64/URL-safe/percent/JSON decoding, structured traversal, cross-message state, reversible spans, fail-closed unsafe transforms, policy controls, sanitized metrics/audit, and corpus/latency coverage.
 - [x] P1.6 Durable audit, privacy-safe versioned events, CRC/HMAC/SHA-256 WAL with recovery/rotation/quota/keyring encryption, at-least-once HTTPS SIEM export with retry/DLQ, W3C trace correlation/allowlisted propagation, operator status/verify endpoints, audittool, fake SIEM profile, and lifecycle runbook.
+- [x] P1.7 Security Operations Dashboard v2: operator-only versioned aggregate APIs, bounded process-local rolling telemetry, responsive embedded operations UI, freshness/reset semantics, sanitized alerts, CSP/security headers, and SLO/data semantics documentation.
 
 ## P2 — expanded coverage
 

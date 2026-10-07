@@ -30,6 +30,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.Handle("GET /api/protection-stats", s.protect(http.HandlerFunc(s.handleProtectionStats), "aegis.operator"))
+	if s.dashboardV2 != nil {
+		mux.Handle("GET /api/dashboard/v2/overview", s.protect(http.HandlerFunc(s.dashboardV2.HandleOverview), auth.RoleOperator))
+		mux.Handle("GET /api/dashboard/v2/timeseries", s.protect(http.HandlerFunc(s.dashboardV2.HandleTimeseries), auth.RoleOperator))
+		mux.Handle("GET /api/dashboard/v2/breakdown", s.protect(http.HandlerFunc(s.dashboardV2.HandleBreakdown), auth.RoleOperator))
+		mux.Handle("GET /api/dashboard/v2/alerts", s.protect(http.HandlerFunc(s.dashboardV2.HandleAlerts), auth.RoleOperator))
+	}
 	mux.Handle("GET /api/effective-policy", s.protect(http.HandlerFunc(s.handleEffectivePolicy), "aegis.operator"))
 	mux.Handle("GET /api/policies/status", s.protect(http.HandlerFunc(s.handlePolicyStatus), auth.RoleOperator))
 	mux.Handle("POST /api/policies/activate", s.protect(http.HandlerFunc(s.handlePolicyActivate), auth.RoleOperator))
@@ -51,7 +57,7 @@ func (s *Server) Handler() http.Handler {
 	if s.metrics != nil {
 		mux.Handle("GET /metrics", s.protect(s.metrics, "aegis.operator"))
 	}
-	return mux
+	return securityHeaders(mux)
 }
 
 func (s *Server) handleAuditStatus(w http.ResponseWriter, _ *http.Request) {
@@ -191,6 +197,19 @@ func (s *Server) protectLimited(next http.Handler, roles ...string) http.Handler
 		defer release()
 		next.ServeHTTP(w, r)
 	}), roles...)
+}
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'none'; font-src 'self'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) admissionKey(r *http.Request) string {

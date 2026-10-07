@@ -445,7 +445,12 @@ func main() {
 		pipe.SetCanaryAssignment(func(env *core.InspectionEnvelope) bool {
 			return distribution.IsCanary(cfg.GatewayInstanceID, env.Tenant, env.Application)
 		})
-		pipe.SetCanaryObserver(func(disagreement bool) { distribution.ObserveCanary(cfg.GatewayInstanceID, disagreement) })
+		pipe.SetCanaryObserver(func(disagreement bool) {
+			distribution.ObserveCanary(cfg.GatewayInstanceID, disagreement)
+			if disagreement {
+				metrics.ObserveCanaryDisagreement()
+			}
+		})
 		distribution.SetApply(func(snapshot *policydistribution.Snapshot) error {
 			if err := pipe.ActivateRuntimeSnapshot(policy.NewEngine(snapshot.Policy), snapshot.Questions, snapshot.Thresholds); err != nil {
 				return err

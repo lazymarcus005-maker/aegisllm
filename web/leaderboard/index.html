@@ -1,56 +1,63 @@
 <!doctype html>
-<html lang="th">
+<html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="light dark">
-    <title>AegisLLM Protection Leaderboard</title>
+    <meta name="color-scheme" content="dark light">
+    <title>AegisLLM Security Operations</title>
     <link rel="stylesheet" href="/dashboard/style.css">
   </head>
   <body>
-    <canvas id="ambient-canvas" aria-hidden="true"></canvas>
-    <main class="shell">
-      <header class="hero">
-        <div class="brand-row">
-          <div class="shield-mark" aria-hidden="true">🛡️</div>
-          <div>
-            <p class="eyebrow">AEGISLLM SECURITY GATEWAY</p>
-            <h1>Protection Leaderboard</h1>
-            <p class="subtitle">จำนวนครั้งที่ป้องกัน sensitive sends to LLM</p>
-          </div>
+    <main class="app-shell">
+      <header class="topbar" aria-label="Global protection status">
+        <a class="brand" href="/dashboard" aria-label="AegisLLM Security Operations home">
+          <span class="brand-mark" aria-hidden="true">A</span>
+          <span><strong>AegisLLM</strong><small>Security Operations</small></span>
+        </a>
+        <div class="global-status" id="global-status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span><strong id="readiness-label">Connecting</strong>
+          <span class="muted" id="freshness-label">Waiting for protected telemetry</span>
         </div>
-        <div class="total-card" id="total-card">
-          <span class="total-label">Prevented sensitive sends / ป้องกันข้อมูลสำเร็จ</span>
-          <strong id="total-counter" aria-live="polite">0</strong>
-          <span class="updated" id="updated-at">กำลังเชื่อมต่อ…</span>
+        <div class="global-meta">
+          <span id="profile-label">Profile —</span><span id="mode-label">Mode —</span>
+          <span id="policy-label">Policy —</span><span id="window-label">Window —</span>
         </div>
       </header>
 
-      <section class="summary-grid" aria-label="Protection summary">
-        <article class="summary-card"><span>Blocked / บล็อก</span><strong id="blocked">0</strong></article>
-        <article class="summary-card"><span>Tokenized / แทนค่า</span><strong id="tokenized">0</strong></article>
-        <article class="summary-card"><span>Redacted / ลบข้อมูล</span><strong id="redacted">0</strong></article>
-        <article class="summary-card"><span>Review / ตรวจสอบ</span><strong id="review">0</strong></article>
-        <article class="summary-card allowed"><span>Allowed / อนุญาต</span><strong id="allowed">0</strong></article>
+      <section class="page-heading" aria-labelledby="page-title">
+        <div><p class="eyebrow">LIVE CONTROL PLANE</p><h1 id="page-title">Protection health</h1><p class="subtitle">Operational signal for sensitive-data enforcement, routing, and control degradation.</p></div>
+        <div class="refresh-box"><span class="muted">Last refresh</span><strong id="last-refresh">—</strong><span class="muted" id="reset-note">Process-local aggregate</span></div>
       </section>
 
-      <section class="leaderboard-card">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">LIVE SIGNALS</p>
-            <h2>What we protected / สิ่งที่ป้องกัน</h2>
-          </div>
-          <span class="live-pill"><i></i> Polling 2s</span>
-        </div>
-        <div id="leaderboard" class="leaderboard" aria-live="polite"></div>
-        <div id="empty-state" class="empty-state" hidden>
-          <span class="empty-icon">🛡️</span>
-          <p>ยังไม่มีการป้องกัน — ระบบพร้อมทำงาน</p>
-          <small>No protections yet — the gateway is ready.</small>
-        </div>
+      <section class="filter-bar" aria-label="Dashboard filters">
+        <label>Time window<select id="window-filter"><option value="15m">15 minutes</option><option value="1h" selected>1 hour</option><option value="6h">6 hours</option><option value="24h">24 hours</option></select></label>
+        <label>Action<select id="action-filter"><option value="">All actions</option><option>ALLOW</option><option>BLOCK</option><option>TOKENIZE</option><option>REDACT</option><option>REVIEW</option><option>RESTRICT_TOOLS</option></select></label>
+        <label>Provider class<select id="provider-filter"><option value="">All provider classes</option><option>LOCAL</option><option>CLOUD</option></select></label>
+        <label>Source stage<select id="stage-filter"><option value="">All source stages</option><option>REQUEST</option><option>DETECTOR</option><option>ROUTING</option><option>RESPONSE</option></select></label>
+        <button class="button" id="refresh-button" type="button">Refresh now</button>
       </section>
 
-      <footer>Metrics are sanitized counters only · ข้อมูลที่แสดงไม่มี raw content</footer>
+      <noscript><section class="no-js panel"><strong>JavaScript is disabled.</strong> Protection status is available at <a href="/ready">/ready</a>. Enable JavaScript for aggregate charts and bounded filters.</section></noscript>
+
+      <section class="kpi-grid" aria-label="Protection KPIs" id="kpis"></section>
+
+      <div class="dashboard-grid">
+        <section class="panel span-2" aria-labelledby="trend-title"><div class="panel-heading"><div><p class="eyebrow">PRIMARY SIGNAL</p><h2 id="trend-title">Action and finding trend</h2></div><span class="definition">Counts per bucket</span></div><div class="chart" id="trend-chart" role="img" aria-label="Action and finding trend chart"></div><div class="legend" aria-label="Trend legend"><span class="key protected-key">Protected</span><span class="key allowed-key">Forwarded</span><span class="key finding-key">Findings</span></div></section>
+        <section class="panel" aria-labelledby="funnel-title"><div class="panel-heading"><div><p class="eyebrow">PRIMARY SIGNAL</p><h2 id="funnel-title">Enforcement funnel</h2></div></div><div class="funnel" id="funnel"></div><p class="definition">Inspected → findings → transformed or blocked → forwarded. Stages are aggregate request events.</p></section>
+      </div>
+
+      <section class="panel" aria-labelledby="alerts-title"><div class="panel-heading"><div><p class="eyebrow">DECISION QUEUE</p><h2 id="alerts-title">Investigate now</h2></div><span class="muted" id="alert-count">No active alerts</span></div><div class="alerts" id="alerts" aria-live="polite"></div></section>
+
+      <div class="dashboard-grid support-grid">
+        <section class="panel" aria-labelledby="routing-title"><div class="panel-heading"><h2 id="routing-title">Routing coverage</h2><span class="definition">Applied route class</span></div><div class="metric-list" id="routing-breakdown"></div></section>
+        <section class="panel" aria-labelledby="coverage-title"><div class="panel-heading"><h2 id="coverage-title">Control coverage</h2><span class="definition">Optional subsystems are explicit</span></div><div class="status-list" id="control-status"></div></section>
+        <section class="panel" aria-labelledby="policy-title"><div class="panel-heading"><h2 id="policy-title">Policy canary</h2><span class="definition">Bounded disagreements</span></div><div class="big-stat" id="canary-stat">0</div><p class="muted">A disagreement is a shadow prediction that would change the incumbent action.</p></section>
+        <section class="panel" aria-labelledby="backlog-title"><div class="panel-heading"><h2 id="backlog-title">Audit / SIEM health</h2><span class="definition">No raw records</span></div><div class="metric-list" id="audit-breakdown"></div></section>
+        <section class="panel" aria-labelledby="limits-title"><div class="panel-heading"><h2 id="limits-title">Admission limits</h2><span class="definition">Requests rejected by guardrails</span></div><div class="metric-list" id="limit-breakdown"></div></section>
+        <section class="panel leaderboard-panel" aria-labelledby="leaderboard-title"><div class="panel-heading"><div><p class="eyebrow">COMPATIBILITY VIEW</p><h2 id="leaderboard-title">Protection Leaderboard</h2></div><span class="definition">Bounded categories / subtypes</span></div><div id="leaderboard" class="leaderboard" aria-live="polite"></div><p class="muted empty" id="leaderboard-empty">No findings in the selected window.</p></section>
+      </div>
+
+      <footer><span>Aggregate telemetry only · process restart resets this view</span><span id="connection-state">Polling same-origin operator API</span></footer>
     </main>
     <script src="/dashboard/app.js" defer></script>
   </body>

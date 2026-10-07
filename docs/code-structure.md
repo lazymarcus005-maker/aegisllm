@@ -34,7 +34,9 @@ internal/evals (offline infrastructure; not a runtime dependency)
   `internal/audit`, `internal/observability`, and `internal/decision` provide
   replaceable infrastructure adapters around domain contracts.
 - `internal/dashboard` and `web/leaderboard` are transport presentation only;
-  they expose aggregate, sanitized metrics and never receive raw content.
+  they expose aggregate, sanitized metrics and never receive raw content. The
+  v2 rolling aggregator is fixed-size and process-local; it is not a durable
+  audit or Prometheus parser.
 
 ## Dependency rules
 

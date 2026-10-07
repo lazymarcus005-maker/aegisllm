@@ -45,6 +45,7 @@ func newTestGateway(t *testing.T, mutate func(*Config), upstream http.HandlerFun
 	if err != nil {
 		t.Fatal(err)
 	}
+	srv.SetMetricsHandler(observability.New().Handler())
 	gw := httptest.NewServer(srv.Handler())
 	t.Cleanup(gw.Close)
 	t.Cleanup(srv.Close)
@@ -418,6 +419,44 @@ func TestProtectionStatsAndDashboardEndpoints(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("dashboard asset status: %d", resp.StatusCode)
+	}
+}
+
+func TestDashboardV2IsVersionedOperatorSurfaceWithSecurityHeaders(t *testing.T) {
+	_, gw, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	resp, err := http.Get(gw.URL + "/api/dashboard/v2/overview?window=1h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("overview response: %d cache=%q", resp.StatusCode, resp.Header.Get("Cache-Control"))
+	}
+	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "script-src 'self'") || strings.Contains(resp.Header.Get("Content-Security-Policy"), "unsafe-") {
+		t.Fatalf("unsafe CSP: %q", resp.Header.Get("Content-Security-Policy"))
+	}
+	var overview struct {
+		Version string `json:"version"`
+		KPIs    []struct {
+			ID         string `json:"id"`
+			Definition string `json:"definition"`
+		} `json:"kpis"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&overview); err != nil {
+		t.Fatal(err)
+	}
+	if overview.Version != dashboard.APIVersion || len(overview.KPIs) != 5 || overview.KPIs[0].Definition == "" {
+		t.Fatalf("unstable dashboard contract: %+v", overview)
+	}
+	bad, err := http.Get(gw.URL + "/api/dashboard/v2/timeseries?window=25h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid window status=%d", bad.StatusCode)
 	}
 }
 

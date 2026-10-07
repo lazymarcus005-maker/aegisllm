@@ -121,6 +121,17 @@ func TestJWTRouteRBAC(t *testing.T) {
 	if got := get("/api/protection-stats", operator); got != http.StatusOK {
 		t.Fatalf("operator stats status=%d", got)
 	}
+	for _, path := range []string{"/api/dashboard/v2/overview", "/api/dashboard/v2/timeseries", "/api/dashboard/v2/breakdown", "/api/dashboard/v2/alerts"} {
+		if got := get(path, ""); got != http.StatusUnauthorized {
+			t.Fatalf("missing dashboard v2 auth path=%s status=%d", path, got)
+		}
+		if got := get(path, invoke); got != http.StatusForbidden {
+			t.Fatalf("invoke dashboard v2 path=%s status=%d", path, got)
+		}
+		if got := get(path, operator); got != http.StatusOK {
+			t.Fatalf("operator dashboard v2 path=%s status=%d", path, got)
+		}
+	}
 	if got := get("/api/routes", ""); got != http.StatusUnauthorized {
 		t.Fatalf("missing routes auth status=%d", got)
 	}

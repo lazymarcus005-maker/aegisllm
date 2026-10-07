@@ -82,6 +82,20 @@ operator endpoints.
   the client receives only a sanitized error; shadow records a prediction but
   forwards the original event. A provider that emits malformed or oversized
   events is rejected in production.
+# P1.7 dashboard threats
+
+The dashboard is an operator-only read surface. RBAC covers the page and every
+v2 API route; the page does not accept state-changing actions, store bearer
+tokens, or put credentials in URLs. Strict CSP, same-origin requests, DOM text
+construction, no-store responses, and clickjacking/MIME/referrer headers reduce
+browser injection and caching risk. The rolling aggregator has fixed buckets,
+allowlisted labels, cardinality caps, bounded windows, and an `OTHER` bucket.
+It does not contain raw prompts, findings, identities, tenant labels, token
+mappings, or durable audit payloads. Stale, disconnected, unavailable, and
+disabled states are distinct so a telemetry gap cannot be mistaken for a
+healthy zero. The remaining limitation is process-local reset; operators must
+not treat the dashboard as the durable audit source.
+
 # P1.5 distribution threats
 
 Policy distribution treats the control plane as untrusted transport: Ed25519

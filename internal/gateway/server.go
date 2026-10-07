@@ -64,6 +64,7 @@ type Server struct {
 	runtimeMetrics observability.RuntimeRecorder
 	limiter        *limiter.Limiter
 	dashboard      *dashboard.Dashboard
+	dashboardV2    *dashboard.V2
 	authn          *auth.Authenticator
 	policy         *policy.Policy
 	policyRef      atomic.Pointer[policy.Policy]
@@ -374,6 +375,13 @@ func (s *Server) SetMetricsHandler(h http.Handler) {
 	}
 	if provider, ok := h.(dashboard.MetricsProvider); ok {
 		s.dashboard = dashboard.New(provider.ProtectionMetrics())
+		s.dashboardV2 = dashboard.NewV2()
+		s.dashboardV2.SetStatusProvider(s.dashboardStatus)
+		if binder, ok := h.(interface {
+			SetDashboardObserver(observability.DashboardObserver)
+		}); ok {
+			binder.SetDashboardObserver(s.dashboardV2.Aggregator())
+		}
 	}
 }
 
@@ -457,6 +465,99 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+func (s *Server) dashboardStatus() dashboard.RuntimeStatus {
+	status := dashboard.RuntimeStatus{
+		DeploymentProfile: string(s.cfg.profile()), SecurityMode: s.cfg.SecurityMode,
+		Readiness:  dashboard.ComponentStatus{Name: "readiness", State: "ready", DetailURL: "/ready"},
+		Components: []dashboard.ComponentStatus{},
+	}
+	if reason := s.readyCheck(); reason != "" {
+		status.Readiness.State = "degraded"
+		status.Readiness.Detail = "upstream is not ready"
+	} else {
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "upstream", State: "healthy", DetailURL: "/ready"})
+	}
+	for _, name := range s.readyOrder {
+		state := "healthy"
+		detail := ""
+		if reason := s.readyFns[name](); reason != "" {
+			state, detail, status.Readiness.State = "degraded", "required readiness check failed", "degraded"
+		}
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: safeSemanticMetadata(name), State: state, Detail: detail, DetailURL: "/ready"})
+	}
+	if s.auditWAL == nil {
+		status.Audit.State = "disabled"
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "audit", State: "disabled", Detail: "durable audit is not configured", DetailURL: "/api/audit/status"})
+	} else if auditStatus := s.AuditStatus(); !auditStatus.Ready {
+		status.Audit.State = "degraded"
+		status.Audit.QueueBytes = auditStatus.QueueBytes
+		status.Audit.OldestAgeSeconds = auditStatus.OldestAgeSeconds
+		status.Audit.ExporterState = auditStatus.Exporter.State
+		status.Readiness.State = "degraded"
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "audit", State: "degraded", Detail: "durable audit is not ready", DetailURL: "/api/audit/status"})
+	} else {
+		status.Audit.State = "healthy"
+		status.Audit.QueueBytes = auditStatus.QueueBytes
+		status.Audit.OldestAgeSeconds = auditStatus.OldestAgeSeconds
+		status.Audit.ExporterState = auditStatus.Exporter.State
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "audit", State: "healthy", DetailURL: "/api/audit/status"})
+	}
+	semantic := SemanticReadiness{Status: "disabled"}
+	if s.semanticStatus != nil {
+		semantic = sanitizeSemanticReadiness(s.semanticStatus())
+	}
+	semanticState := "disabled"
+	if semantic.Status == "ready" || semantic.Status == "shadow" {
+		semanticState = "healthy"
+	} else if semantic.Status == "unready" {
+		semanticState = "degraded"
+		status.Readiness.State = "degraded"
+	}
+	status.Components = append(status.Components, dashboard.ComponentStatus{Name: "semantic", State: semanticState, Detail: semantic.Status})
+	status.Components = append(status.Components, dashboard.ComponentStatus{Name: "streaming", State: "healthy", Detail: "bounded response inspection is available"})
+	if s.piiStatus == nil {
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "ner", State: "disabled", Detail: "no NER provider registry is configured", DetailURL: "/api/pii/providers"})
+	} else {
+		providers := s.piiStatus()
+		state := "healthy"
+		if len(providers) == 0 {
+			state = "disabled"
+		} else {
+			for _, provider := range providers {
+				if !provider.Available {
+					state = "degraded"
+					break
+				}
+			}
+		}
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "ner", State: state, Detail: "sanitized provider availability", DetailURL: "/api/pii/providers"})
+	}
+	if s.mcp == nil {
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "mcp", State: "disabled", Detail: "MCP integration is not configured", DetailURL: "/api/mcp/servers"})
+	} else {
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "mcp", State: "healthy", DetailURL: "/api/mcp/servers"})
+	}
+	if p := s.currentPolicy(); p != nil {
+		status.Policy.ID, status.Policy.Version = p.ID, p.Version
+	}
+	if s.distribution != nil {
+		active := s.distribution.Status().Active
+		status.Policy.Sequence, status.Policy.Hash = active.Sequence, shortHash(active.BundleHash)
+		if status.Policy.ID == "" {
+			status.Policy.ID, status.Policy.Version = active.PolicyID, active.PolicyVersion
+		}
+	}
+	return status
+}
+
+func shortHash(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 12 {
+		return value[:12]
+	}
+	return value
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

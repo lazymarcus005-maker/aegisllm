@@ -91,6 +91,12 @@ logs the token or raw claims. `aegis.invoke` or `aegis.operator` is required
 for LLM POST routes and `/v1/models`; `aegis.operator` is required for
 `/dashboard`, `/api/protection-stats`, and `/metrics`.
 
+P1.7 adds operator-only `/api/dashboard/v2/overview`, `/timeseries`,
+`/breakdown`, and `/alerts`. The browser uses the existing bearer workflow or
+mTLS; production browser deployments should provide a same-origin
+reverse-proxy/session integration rather than placing a JWT in browser storage
+or a URL. The dashboard is read-only and links only to sanitized status views.
+
 `AUTH_MODE=off` is a development-only compatibility mode. The shadow compose
 example sets `ALLOW_UNAUTHENTICATED_SHADOW=true` only because it targets the
 local mock upstream; this waiver leaves caller identity spoofable and must not

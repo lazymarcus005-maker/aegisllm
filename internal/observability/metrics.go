@@ -6,6 +6,7 @@ package observability
 import (
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/prometheus/client_golang/prometheus"
@@ -44,6 +45,20 @@ type RuntimeRecorder interface {
 	ObserveBreakerOpen()
 	IncActiveRequests()
 	DecActiveRequests()
+}
+
+// DashboardObserver receives the bounded, content-free events used by the
+// operator dashboard's rolling window. It is deliberately separate from the
+// Prometheus exposition surface so the dashboard never parses text metrics or
+// durable audit records.
+type DashboardObserver interface {
+	ObserveDashboardRequest(action, mode string)
+	ObserveDashboardFinding(category, subtype string)
+	ObserveDashboardStream(direction, family, predicted, applied, mode string, bytes int64, events int)
+	ObserveDashboardRoute(class, family string, failover bool)
+	ObserveDashboardRuntime(kind string)
+	ObserveDashboardCanaryDisagreement()
+	ObserveDashboardAudit(kind string, value uint64)
 }
 
 // Metrics is the Prometheus implementation of Recorder (spec §15). The
@@ -105,6 +120,30 @@ type Metrics struct {
 	auditOldestAge      prometheus.Gauge
 	auditExporterState  *prometheus.GaugeVec
 	registry            *prometheus.Registry
+	dashboardMu         sync.RWMutex
+	dashboardObserver   DashboardObserver
+}
+
+// SetDashboardObserver installs the in-process rolling aggregate sink. It is
+// normally called once during server construction; replacement is safe for
+// tests and controlled reconfiguration.
+func (m *Metrics) SetDashboardObserver(observer DashboardObserver) {
+	if m == nil {
+		return
+	}
+	m.dashboardMu.Lock()
+	m.dashboardObserver = observer
+	m.dashboardMu.Unlock()
+}
+
+func (m *Metrics) dashboardSink() DashboardObserver {
+	if m == nil {
+		return nil
+	}
+	m.dashboardMu.RLock()
+	observer := m.dashboardObserver
+	m.dashboardMu.RUnlock()
+	return observer
 }
 
 // MetricSnapshot is the dashboard-safe projection of the Prometheus registry.
@@ -237,16 +276,49 @@ func New() *Metrics {
 	return m
 }
 
-func (m *Metrics) ObserveAuditEnqueue() { m.auditEnqueued.Inc() }
+func (m *Metrics) ObserveAuditEnqueue() {
+	m.auditEnqueued.Inc()
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardAudit("enqueued", 1)
+	}
+}
 func (m *Metrics) ObserveAuditDurable(bytes int64) {
 	m.auditDurable.Inc()
 	m.auditQueueBytes.Set(float64(bytes))
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardAudit("durable", 1)
+	}
 }
-func (m *Metrics) ObserveAuditExported(n int)   { m.auditExported.Add(float64(n)) }
-func (m *Metrics) ObserveAuditRetry()           { m.auditRetried.Inc() }
-func (m *Metrics) ObserveAuditDeadLetter(n int) { m.auditDeadLetter.Add(float64(n)) }
-func (m *Metrics) ObserveAuditCorruption()      { m.auditCorruption.Inc() }
-func (m *Metrics) ObserveAuditDropped()         { m.auditDropped.Inc() }
+func (m *Metrics) ObserveAuditExported(n int) {
+	m.auditExported.Add(float64(n))
+	if observer := m.dashboardSink(); observer != nil && n > 0 {
+		observer.ObserveDashboardAudit("exported", uint64(n))
+	}
+}
+func (m *Metrics) ObserveAuditRetry() {
+	m.auditRetried.Inc()
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardAudit("retry", 1)
+	}
+}
+func (m *Metrics) ObserveAuditDeadLetter(n int) {
+	m.auditDeadLetter.Add(float64(n))
+	if observer := m.dashboardSink(); observer != nil && n > 0 {
+		observer.ObserveDashboardAudit("dead_letter", uint64(n))
+	}
+}
+func (m *Metrics) ObserveAuditCorruption() {
+	m.auditCorruption.Inc()
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardAudit("corruption", 1)
+	}
+}
+func (m *Metrics) ObserveAuditDropped() {
+	m.auditDropped.Inc()
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardAudit("dropped", 1)
+	}
+}
 func (m *Metrics) ObserveAuditQueue(bytes, oldestSeconds int64) {
 	m.auditQueueBytes.Set(float64(bytes))
 	m.auditOldestAge.Set(float64(oldestSeconds))
@@ -283,6 +355,12 @@ func (h metricsHandler) ProtectionMetrics() *Metrics { return h.metrics }
 // RuntimeMetrics exposes the content-free runtime recorder to the gateway
 // admission layer without exposing the Prometheus registry.
 func (h metricsHandler) RuntimeMetrics() RuntimeRecorder { return h.metrics }
+
+// SetDashboardObserver wires the operator-only rolling aggregate without
+// exposing the Prometheus registry.
+func (h metricsHandler) SetDashboardObserver(observer DashboardObserver) {
+	h.metrics.SetDashboardObserver(observer)
+}
 
 // Snapshot gathers the private registry and returns only the counters needed
 // by the protection dashboard. Registry gathering is safe while counters are
@@ -367,6 +445,9 @@ func labelValue(metric *dto.Metric, name string) string {
 
 func (m *Metrics) ObserveRequest(action core.Action, mode string) {
 	m.requestsTotal.WithLabelValues(string(action), mode).Inc()
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardRequest(string(action), mode)
+	}
 	switch action {
 	case core.ActionBlock:
 		m.blockedTotal.Inc()
@@ -385,6 +466,9 @@ func (m *Metrics) ObserveFalsePositiveSample() { m.falsePositiveSample.Inc() }
 
 func (m *Metrics) ObserveFindings(category, subtype string) {
 	m.findingsTotal.WithLabelValues(string(category), subtype).Inc()
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardFinding(category, subtype)
+	}
 }
 
 func (m *Metrics) ObserveLaya(ms float64, failed bool) {
@@ -403,6 +487,18 @@ func (m *Metrics) ObserveSecurityLatency(ms float64) { m.securityLatency.Observe
 func (m *Metrics) ObserveShadowDisagreement(predicted core.Action) {
 	if predicted != core.ActionAllow {
 		m.shadowDisagreements.Inc()
+		if observer := m.dashboardSink(); observer != nil {
+			observer.ObserveDashboardCanaryDisagreement()
+		}
+	}
+}
+
+// ObserveCanaryDisagreement records a signed policy candidate disagreement
+// without requiring the policy distribution package to depend on dashboard
+// transport types.
+func (m *Metrics) ObserveCanaryDisagreement() {
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardCanaryDisagreement()
 	}
 }
 
@@ -469,6 +565,9 @@ func (m *Metrics) ObserveStream(direction core.Direction, family string, predict
 	if events > 0 {
 		m.streamEvents.WithLabelValues(string(direction), family).Add(float64(events))
 	}
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardStream(string(direction), family, string(predicted), string(applied), mode, bytes, events)
+	}
 	if mode != "shadow" {
 		switch applied {
 		case core.ActionAllow:
@@ -498,6 +597,9 @@ func (m *Metrics) ObserveRouteSelected(id, class, family string, failover bool) 
 	m.routeSelected.WithLabelValues(id, class, family).Inc()
 	if failover {
 		m.routeFailover.WithLabelValues(id, class, family).Inc()
+	}
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardRoute(class, family, failover)
 	}
 }
 
@@ -534,12 +636,42 @@ func boolFloat(value bool) float64 {
 	return 0
 }
 
-func (m *Metrics) ObserveRateLimited()            { m.rateLimited.Inc() }
-func (m *Metrics) ObserveConcurrencyRejected()    { m.concurrencyRejected.Inc() }
-func (m *Metrics) ObservePromptBudgetRejected()   { m.promptRejected.Inc() }
-func (m *Metrics) ObserveResponseTooLarge()       { m.responseTooLarge.Inc() }
-func (m *Metrics) ObserveUpstreamTimeout()        { m.upstreamTimeout.Inc() }
-func (m *Metrics) ObserveBreakerOpen()            { m.breakerOpen.Inc() }
+func (m *Metrics) ObserveRateLimited() {
+	m.rateLimited.Inc()
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardRuntime("rate_limited")
+	}
+}
+func (m *Metrics) ObserveConcurrencyRejected() {
+	m.concurrencyRejected.Inc()
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardRuntime("concurrency_rejected")
+	}
+}
+func (m *Metrics) ObservePromptBudgetRejected() {
+	m.promptRejected.Inc()
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardRuntime("prompt_budget_rejected")
+	}
+}
+func (m *Metrics) ObserveResponseTooLarge() {
+	m.responseTooLarge.Inc()
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardRuntime("response_too_large")
+	}
+}
+func (m *Metrics) ObserveUpstreamTimeout() {
+	m.upstreamTimeout.Inc()
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardRuntime("upstream_timeout")
+	}
+}
+func (m *Metrics) ObserveBreakerOpen() {
+	m.breakerOpen.Inc()
+	if observer := m.dashboardSink(); observer != nil {
+		observer.ObserveDashboardRuntime("breaker_open")
+	}
+}
 func (m *Metrics) IncActiveRequests()             { m.activeRequests.Inc() }
 func (m *Metrics) DecActiveRequests()             { m.activeRequests.Dec() }
 func (m *Metrics) SetActiveLayaEvaluations(n int) { m.activeLaya.Set(float64(n)) }

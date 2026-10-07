@@ -1107,6 +1107,18 @@ AI Security Platform
 
 ---
 
+## P1.7 Security Operations Dashboard v2
+
+The dashboard is a read-only operator projection. `internal/observability`
+emits bounded content-free events into `internal/dashboard`'s fixed-size
+process-local rolling aggregator; the dashboard never parses Prometheus text or
+reads durable audit records. The gateway joins that aggregate with sanitized
+readiness, policy, routing, audit, semantic, MCP, and secure-material status.
+The versioned API is mounted beneath `/api/dashboard/v2/` behind operator RBAC,
+and the embedded page uses same-origin polling with bounded exponential
+backoff. A process restart is explicit in the response reset object until a
+durable aggregate design is approved.
+
 ## 23. References
 
 - Laya documentation: https://nandhakishorm.github.io/laya/
