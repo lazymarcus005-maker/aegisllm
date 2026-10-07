@@ -68,6 +68,9 @@ type Metrics struct {
 	breakerOpen         prometheus.Counter
 	activeRequests      prometheus.Gauge
 	activeLaya          prometheus.Gauge
+	streamActions       *prometheus.CounterVec
+	streamBytes         *prometheus.CounterVec
+	streamEvents        *prometheus.CounterVec
 	registry            *prometheus.Registry
 }
 
@@ -75,12 +78,14 @@ type Metrics struct {
 // It contains counts and metric labels only; it never contains inspected
 // request content.
 type MetricSnapshot struct {
-	Blocked   uint64
-	Tokenized uint64
-	Redacted  uint64
-	Review    uint64
-	Allowed   uint64
-	Findings  []FindingSnapshot
+	Blocked      uint64
+	Tokenized    uint64
+	Redacted     uint64
+	Review       uint64
+	Allowed      uint64
+	Findings     []FindingSnapshot
+	StreamBytes  uint64
+	StreamEvents uint64
 }
 
 // FindingSnapshot is one findings_total{category,subtype} sample.
@@ -153,6 +158,9 @@ func New() *Metrics {
 		breakerOpen:         prometheus.NewCounter(prometheus.CounterOpts{Name: "breaker_open_total", Help: "Requests rejected because the upstream circuit breaker is open."}),
 		activeRequests:      prometheus.NewGauge(prometheus.GaugeOpts{Name: "active_requests", Help: "Current admitted gateway requests."}),
 		activeLaya:          prometheus.NewGauge(prometheus.GaugeOpts{Name: "active_laya_evaluations", Help: "Current in-flight Laya evaluations."}),
+		streamActions:       prometheus.NewCounterVec(prometheus.CounterOpts{Name: "stream_actions_total", Help: "Streaming predicted and applied actions by bounded direction and endpoint family."}, []string{"direction", "endpoint_family", "predicted_action", "applied_action", "mode"}),
+		streamBytes:         prometheus.NewCounterVec(prometheus.CounterOpts{Name: "stream_bytes_inspected_total", Help: "Streaming response bytes inspected."}, []string{"direction", "endpoint_family"}),
+		streamEvents:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "stream_events_inspected_total", Help: "Streaming SSE events inspected."}, []string{"direction", "endpoint_family"}),
 		registry:            reg,
 	}
 	reg.MustRegister(m.requestsTotal, m.blockedTotal, m.tokenizedTotal, m.redactedTotal,
@@ -160,7 +168,7 @@ func New() *Metrics {
 		m.layaLatency, m.scannerLatency, m.securityLatency, m.shadowDisagreements,
 		m.falsePositiveSample, m.fallbackTotal, m.transformations, m.rateLimited,
 		m.concurrencyRejected, m.promptRejected, m.responseTooLarge, m.upstreamTimeout,
-		m.breakerOpen, m.activeRequests, m.activeLaya)
+		m.breakerOpen, m.activeRequests, m.activeLaya, m.streamActions, m.streamBytes, m.streamEvents)
 	return m
 }
 
@@ -223,6 +231,14 @@ func (m *Metrics) Snapshot() MetricSnapshot {
 					Subtype:  labelValue(metric, "subtype"),
 					Count:    counterValue(metric),
 				})
+			}
+		case "stream_bytes_inspected_total":
+			for _, metric := range family.GetMetric() {
+				snapshot.StreamBytes += counterValue(metric)
+			}
+		case "stream_events_inspected_total":
+			for _, metric := range family.GetMetric() {
+				snapshot.StreamEvents += counterValue(metric)
 			}
 		}
 	}
@@ -299,6 +315,33 @@ func (m *Metrics) ObserveTokens(n int, action string) {
 	}
 }
 
+// ObserveStream records both the policy prediction and the mode-dependent
+// applied action. Endpoint family is selected from a fixed provider matrix;
+// callers must not pass arbitrary request-derived labels.
+func (m *Metrics) ObserveStream(direction core.Direction, family string, predicted, applied core.Action, mode string, bytes int64, events int) {
+	m.streamActions.WithLabelValues(string(direction), family, string(predicted), string(applied), mode).Inc()
+	if bytes > 0 {
+		m.streamBytes.WithLabelValues(string(direction), family).Add(float64(bytes))
+	}
+	if events > 0 {
+		m.streamEvents.WithLabelValues(string(direction), family).Add(float64(events))
+	}
+	if mode != "shadow" {
+		switch applied {
+		case core.ActionAllow:
+			m.requestsTotal.WithLabelValues(string(core.ActionAllow), "stream").Inc()
+		case core.ActionBlock:
+			m.blockedTotal.Inc()
+		case core.ActionTokenize:
+			m.tokenizedTotal.Inc()
+		case core.ActionRedact:
+			m.redactedTotal.Inc()
+		case core.ActionReview:
+			m.reviewTotal.Inc()
+		}
+	}
+}
+
 func (m *Metrics) ObserveRateLimited()            { m.rateLimited.Inc() }
 func (m *Metrics) ObserveConcurrencyRejected()    { m.concurrencyRejected.Inc() }
 func (m *Metrics) ObservePromptBudgetRejected()   { m.promptRejected.Inc() }
@@ -312,20 +355,21 @@ func (m *Metrics) SetActiveLayaEvaluations(n int) { m.activeLaya.Set(float64(n))
 // Noop is a Recorder that discards everything (tests, metrics disabled).
 type Noop struct{}
 
-func (Noop) ObserveRequest(core.Action, string)    {}
-func (Noop) ObserveFindings(string, string)        {}
-func (Noop) ObserveLaya(float64, bool)             {}
-func (Noop) ObserveScanner(float64)                {}
-func (Noop) ObserveSecurityLatency(float64)        {}
-func (Noop) ObserveShadowDisagreement(core.Action) {}
-func (Noop) ObserveFallback()                      {}
-func (Noop) ObserveTokens(int, string)             {}
-func (Noop) ObserveFalsePositiveSample()           {}
-func (Noop) ObserveRateLimited()                   {}
-func (Noop) ObserveConcurrencyRejected()           {}
-func (Noop) ObservePromptBudgetRejected()          {}
-func (Noop) ObserveResponseTooLarge()              {}
-func (Noop) ObserveUpstreamTimeout()               {}
-func (Noop) ObserveBreakerOpen()                   {}
-func (Noop) IncActiveRequests()                    {}
-func (Noop) DecActiveRequests()                    {}
+func (Noop) ObserveRequest(core.Action, string)                                                 {}
+func (Noop) ObserveFindings(string, string)                                                     {}
+func (Noop) ObserveLaya(float64, bool)                                                          {}
+func (Noop) ObserveScanner(float64)                                                             {}
+func (Noop) ObserveSecurityLatency(float64)                                                     {}
+func (Noop) ObserveShadowDisagreement(core.Action)                                              {}
+func (Noop) ObserveFallback()                                                                   {}
+func (Noop) ObserveTokens(int, string)                                                          {}
+func (Noop) ObserveStream(core.Direction, string, core.Action, core.Action, string, int64, int) {}
+func (Noop) ObserveFalsePositiveSample()                                                        {}
+func (Noop) ObserveRateLimited()                                                                {}
+func (Noop) ObserveConcurrencyRejected()                                                        {}
+func (Noop) ObservePromptBudgetRejected()                                                       {}
+func (Noop) ObserveResponseTooLarge()                                                           {}
+func (Noop) ObserveUpstreamTimeout()                                                            {}
+func (Noop) ObserveBreakerOpen()                                                                {}
+func (Noop) IncActiveRequests()                                                                 {}
+func (Noop) DecActiveRequests()                                                                 {}

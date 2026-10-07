@@ -51,6 +51,11 @@ type Config struct {
 	MaxResponseBytes              int64
 	MaxPromptChars                int
 	MaxStreamDuration             time.Duration
+	MaxSSEEventBytes              int64
+	StreamInspectionWindow        int
+	MaxBufferedStreamBytes        int64
+	StreamFlushInterval           time.Duration
+	StreamingFailClosed           bool
 	RequestsPerSecond             float64
 	RateBurst                     int
 	MaxConcurrentRequests         int
@@ -119,6 +124,11 @@ func configFrom(get func(string) string) Config {
 		MaxResponseBytes:              getenvInt64(get, "MAX_RESPONSE_BYTES", 4<<20),
 		MaxPromptChars:                getenvInt(get, "MAX_PROMPT_CHARS", 64*1024),
 		MaxStreamDuration:             getenvDuration(get, "MAX_STREAM_DURATION", 5*time.Minute),
+		MaxSSEEventBytes:              getenvInt64(get, "MAX_SSE_EVENT_BYTES", 64*1024),
+		StreamInspectionWindow:        getenvInt(get, "STREAM_INSPECTION_WINDOW", 4096),
+		MaxBufferedStreamBytes:        getenvInt64(get, "MAX_BUFFERED_STREAM_BYTES", 1<<20),
+		StreamFlushInterval:           getenvDuration(get, "STREAM_FLUSH_INTERVAL", 25*time.Millisecond),
+		StreamingFailClosed:           getenvBool(get, "STREAM_FAIL_CLOSED", true),
 		RequestsPerSecond:             getenvFloat(get, "REQUESTS_PER_SECOND", 10),
 		RateBurst:                     getenvInt(get, "RATE_BURST", 20),
 		MaxConcurrentRequests:         getenvInt(get, "MAX_CONCURRENT_REQUESTS", 16),
@@ -182,6 +192,22 @@ func (c Config) profile() DeploymentProfile {
 // Production validation intentionally discards parser details so malformed
 // config cannot echo secret-bearing or raw file content into logs.
 func ValidateConfig(cfg Config) error {
+	// Older programmatic callers may omit the streaming fields; use the safe
+	// defaults for those fields without masking existing zero-value validation
+	// failures such as MAX_RESPONSE_BYTES=0.
+	streamDefaults := configFrom(func(string) string { return "" })
+	if cfg.MaxSSEEventBytes == 0 {
+		cfg.MaxSSEEventBytes = streamDefaults.MaxSSEEventBytes
+	}
+	if cfg.StreamInspectionWindow == 0 {
+		cfg.StreamInspectionWindow = streamDefaults.StreamInspectionWindow
+	}
+	if cfg.MaxBufferedStreamBytes == 0 {
+		cfg.MaxBufferedStreamBytes = streamDefaults.MaxBufferedStreamBytes
+	}
+	if cfg.StreamFlushInterval == 0 {
+		cfg.StreamFlushInterval = streamDefaults.StreamFlushInterval
+	}
 	profile, err := ParseDeploymentProfile(string(cfg.profile()))
 	if err != nil {
 		return err
@@ -288,6 +314,18 @@ func (c Config) withRuntimeDefaults() Config {
 	if c.MaxStreamDuration <= 0 {
 		c.MaxStreamDuration = defaults.MaxStreamDuration
 	}
+	if c.MaxSSEEventBytes <= 0 {
+		c.MaxSSEEventBytes = defaults.MaxSSEEventBytes
+	}
+	if c.StreamInspectionWindow <= 0 {
+		c.StreamInspectionWindow = defaults.StreamInspectionWindow
+	}
+	if c.MaxBufferedStreamBytes <= 0 {
+		c.MaxBufferedStreamBytes = defaults.MaxBufferedStreamBytes
+	}
+	if c.StreamFlushInterval <= 0 {
+		c.StreamFlushInterval = defaults.StreamFlushInterval
+	}
 	if c.RequestsPerSecond <= 0 {
 		c.RequestsPerSecond = defaults.RequestsPerSecond
 	}
@@ -352,6 +390,18 @@ func validateRuntimeConfig(cfg Config) error {
 	}
 	if cfg.MaxBodyBytes <= 0 || cfg.MaxResponseBytes <= 0 || cfg.MaxPromptChars <= 0 {
 		return errors.New("MAX_BODY_BYTES, MAX_RESPONSE_BYTES, and MAX_PROMPT_CHARS must be positive")
+	}
+	if cfg.MaxSSEEventBytes <= 0 || cfg.StreamInspectionWindow <= 0 || cfg.MaxBufferedStreamBytes <= 0 || cfg.StreamFlushInterval <= 0 {
+		return errors.New("streaming byte, window, buffer, and flush limits must be positive")
+	}
+	if cfg.profile() == ProfileProduction && cfg.StreamInspectionWindow < 4096 {
+		return errors.New("STREAM_INSPECTION_WINDOW must be at least 4096 bytes in production")
+	}
+	if cfg.profile() == ProfileProduction && !cfg.StreamingFailClosed {
+		return errors.New("production requires STREAM_FAIL_CLOSED=true")
+	}
+	if int64(cfg.StreamInspectionWindow) > cfg.MaxBufferedStreamBytes || cfg.MaxSSEEventBytes > cfg.MaxBufferedStreamBytes {
+		return errors.New("streaming window and event limits must fit within MAX_BUFFERED_STREAM_BYTES")
 	}
 	if cfg.UpstreamMaxIdleConns <= 0 || cfg.RateBurst <= 0 || cfg.MaxConcurrentRequests <= 0 || cfg.MaxConcurrentLaya <= 0 || cfg.LimiterMaxKeys <= 0 || cfg.UpstreamBreakerThreshold <= 0 {
 		return errors.New("connection, limiter, Laya, and breaker limits must be positive")
@@ -479,6 +529,13 @@ func getenvFloat(get func(string) string, key string, def float64) float64 {
 		if n, err := strconv.ParseFloat(v, 64); err == nil && n > 0 {
 			return n
 		}
+	}
+	return def
+}
+
+func getenvBool(get func(string) string, key string, def bool) bool {
+	if v := strings.TrimSpace(strings.ToLower(get(key))); v != "" {
+		return v == "1" || v == "true" || v == "yes"
 	}
 	return def
 }

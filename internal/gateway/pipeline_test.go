@@ -598,13 +598,10 @@ func TestShadowOutboundPassesThroughWithPrediction(t *testing.T) {
 	}
 }
 
-// Streaming requests are forwarded without outbound scanning for now, per the
-// staged plan (architecture §13).
-func TestStreamingRequestsBypassOutboundScan(t *testing.T) {
-	respBody := `{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"key: glpat-Abc123Xyz_-456DefGhi"},"finish_reason":"stop"}]}`
+func TestStreamingResponsesAreInspectedAndBlocked(t *testing.T) {
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(respBody))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"key: glpat-Abc123Xyz_-456DefGhi\"}}]}\n\n"))
 	})
 	pipe, sink := newRealPipeline(t)
 	srv.SetPipeline(pipe)
@@ -617,11 +614,11 @@ func TestStreamingRequestsBypassOutboundScan(t *testing.T) {
 	defer resp.Body.Close()
 
 	b, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(b), "glpat-Abc123Xyz") {
-		t.Fatal("streaming must pass through verbatim in this stage")
+	if strings.Contains(string(b), "glpat-Abc123Xyz") {
+		t.Fatal("streaming response leaked secret")
 	}
-	if strings.Contains(sink.String(), `"direction":"RESPONSE"`) {
-		t.Fatal("streaming must not be scanned in this stage")
+	if !strings.Contains(sink.String(), `"direction":"RESPONSE"`) || !strings.Contains(sink.String(), `"stream":true`) {
+		t.Fatalf("streaming response was not audited: %s", sink.String())
 	}
 }
 

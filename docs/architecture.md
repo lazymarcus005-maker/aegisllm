@@ -721,13 +721,16 @@ rolling/sliding buffer
 + cross-chunk detector state
 ```
 
-V1 options:
-
-1. Disable streaming in enforce mode initially.
-2. Support streaming only after stateful scanning is implemented.
-3. Allow streaming in shadow mode for telemetry.
-
-Recommended: implement buffered non-streaming first, then streaming.
+The implemented P0.3 adapter uses a bounded SSE parser, provider-specific
+delta extraction, a 4096-byte production-minimum holdback, and a bounded event
+queue. It re-enters the same detector/policy/transformation pipeline used by
+buffered responses. Requests with `stream:true` never skip request inspection;
+only the response transport is streamed. Shadow mode records predicted and
+applied actions separately. BLOCK/REVIEW closes the upstream body and emits a
+sanitized terminal error, while REDACT/TOKENIZE rewrite only extracted text or
+tool-argument deltas. The guarantee is bounded: detector candidates longer
+than the configured window or streams that exhaust the byte budget fail
+closed, and arbitrary encodings remain outside deterministic coverage.
 
 ---
 

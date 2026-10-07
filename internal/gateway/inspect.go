@@ -45,16 +45,12 @@ func (p *SecurityPipeline) inspectContext(ctx context.Context, env *core.Inspect
 	}
 	ins.explanation = p.engine.Explain(policy.Context{Envelope: env, Findings: ins.findings})
 	ins.dec = ins.explanation.Decision
-	if env.Metadata["passthrough"] == "true" || env.Metadata["skipped_stream"] == "true" {
+	if env.Metadata["passthrough"] == "true" {
 		ins.dec.Action = core.ActionAllow
 		ins.dec.Code = ""
 		ins.dec.MatchedRule = "passthrough"
 		ins.dec.PrecedenceStage = "system_passthrough"
-		ins.dec.Reason = "body-free endpoint or stream inspection was explicitly bypassed"
-		if env.Metadata["skipped_stream"] == "true" {
-			ins.dec.Code = "SKIPPED_STREAM"
-			ins.dec.MatchedRule = "skipped_stream"
-		}
+		ins.dec.Reason = "body-free endpoint was explicitly marked passthrough"
 	}
 	ins.explanation.Decision = ins.dec
 	ins.detMS = time.Since(ins.start).Milliseconds()
@@ -88,16 +84,39 @@ func (p *SecurityPipeline) auditEvent(ins *inspection) audit.Event {
 	if ins.layaMS > 0 {
 		latency["laya"] = ins.layaMS
 	}
-	return audit.Event{
+	stream := ins.env.Metadata["stream"] == "true"
+	applied := ins.dec.Action
+	if p.mode != ModeEnforce {
+		applied = core.ActionAllow
+	}
+	event := audit.Event{
 		RequestID: ins.env.RequestID, Timestamp: time.Now().UTC(), Direction: ins.env.Direction,
 		Application: ins.env.Application, Tenant: ins.env.Tenant, User: ins.env.User.Subject,
 		Roles: append([]string(nil), ins.env.User.Roles...), Provider: ins.env.Target.Provider,
 		PolicyID: ins.dec.PolicyID, PolicyVersion: ins.dec.PolicyVersion, Mode: p.mode,
-		Action: ins.dec.Action, Code: ins.dec.Code, MatchedRule: ins.dec.MatchedRule,
+		Action: ins.dec.Action,
+		Code:   ins.dec.Code, MatchedRule: ins.dec.MatchedRule,
 		PrecedenceStage: string(ins.dec.PrecedenceStage), Reason: ins.dec.Reason,
 		FindingTypes: audit.FindingTypes(ins.findings), FindingCount: len(ins.findings), FindingSummary: ins.explanation.Findings,
 		LatencyMS: latency, Laya: ins.laya,
 	}
+	if stream {
+		event.PredictedAction = ins.dec.Action
+		event.AppliedAction = applied
+		event.Stream = true
+		event.EndpointFamily = ins.env.Metadata["endpoint_family"]
+		event.BytesInspected = inspectedBytes(ins.env)
+		event.EventsInspected = 1
+	}
+	return event
+}
+
+func inspectedBytes(env *core.InspectionEnvelope) int64 {
+	var n int64
+	for _, part := range env.TextParts() {
+		n += int64(len(part.Text))
+	}
+	return n
 }
 
 func (p *SecurityPipeline) entityFindings(env *core.InspectionEnvelope) []core.SecurityFinding {

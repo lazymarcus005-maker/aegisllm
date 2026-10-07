@@ -46,9 +46,11 @@ external/distributed limiter and is deferred.
 
 `MAX_PROMPT_CHARS` is measured over normalized text parts before scanners or
 upstream forwarding and returns `413`. Non-stream responses are bounded by
-`MAX_RESPONSE_BYTES` before any bytes are written. Streams remain pass-through,
-but their context is cancelled at `MAX_STREAM_DURATION` and their body is
-capped. Streamed content inspection is not part of this milestone.
+`MAX_RESPONSE_BYTES` before any bytes are written. Streaming requests are
+inspected and transformed before forwarding. SSE responses are parsed with a
+bounded event limit and a rolling holdback; protected text/tool arguments are
+never released until the window is safe. `MAX_STREAM_DURATION` cancels the
+upstream request and client disconnects propagate to the upstream context.
 
 Upstream connections use explicit dial, TLS, response-header, overall request,
 idle-connection, and pool bounds. Transport failures are sanitized as `502`,
@@ -105,6 +107,13 @@ Runtime protection metrics also include `rate_limited_total`,
 `active_requests`, and `active_laya_evaluations`. They have no tenant or
 application labels. Alert on sustained limiter rejection, response-budget
 rejections, upstream timeouts, or an open breaker.
+
+Streaming adds `stream_actions_total{direction,endpoint_family,predicted_action,applied_action,mode}`,
+`stream_bytes_inspected_total{direction,endpoint_family}`, and
+`stream_events_inspected_total{direction,endpoint_family}`. Labels use the
+fixed endpoint families `openai-chat`, `openai-responses`, `anthropic`, and
+`generic`; raw chunks never enter metrics or audit events. Shadow mode records
+the predicted action and `applied_action=ALLOW`.
 
 Alerts worth wiring: `fallback_total` spikes (Laya instability),
 `laya_errors_total` rate, p95 `gateway_security_latency_ms` > 25 ms,
@@ -177,6 +186,34 @@ tolerance violations (`evaltool -compare`).
 
 ## Streaming
 
-Streaming requests bypass outbound scanning in this MVP stage and pass
-through verbatim (documented behavior; architecture §13 plan: buffered
-non-streaming enforce → streaming shadow → streaming enforce).
+The production streaming guarantee covers known deterministic secret/PII
+detectors when a candidate is no longer than the configured holdback. The
+derived operational minimum is `STREAM_INSPECTION_WINDOW=4096` bytes: it
+covers the structured credential and PII candidates normally split across
+provider deltas while keeping memory and first-token delay bounded. Production
+startup rejects smaller values. Candidates longer than the configured window
+are outside the guarantee; the bounded queue still fails closed when its byte
+budget is exhausted.
+`MAX_SSE_EVENT_BYTES` defaults to 64 KiB, `MAX_BUFFERED_STREAM_BYTES` to 1 MiB,
+and `STREAM_FLUSH_INTERVAL` to 25 ms. The parser supports comments,
+keepalives, multiline `data:` fields, and provider `[DONE]` markers.
+
+OpenAI Chat Completions inspect `choices[].delta.content` and tool-call
+argument deltas. OpenAI Responses inspect output-text and function/tool
+argument deltas. Anthropic Messages inspect `content_block_delta` text and
+`partial_json`; generic SSE accepts known JSON text/content/argument fields
+or plain text conservatively. BLOCK/REVIEW sends a sanitized provider-style
+terminal error and closes the stream. REDACT/TOKENIZE preserve SSE framing and
+use the same placeholders/vault semantics as buffered responses.
+
+The holdback adds up to one inspection window of latency for small streams;
+providers should send normal keepalive and terminal events. Malformed,
+oversized, budget-exhausted, or timed-out streams fail closed in production.
+Development can explicitly set `STREAM_FAIL_CLOSED=false` for compatibility,
+but that setting is not appropriate for production traffic.
+
+The checked-in parser benchmark (`go test ./internal/streaming -run '^$' -bench
+BenchmarkParser -benchmem -count=1`) measured 206,493 ns/op and 87,328 B/op
+for a 1,632-byte, 32-event OpenAI-shaped input on the verification host.
+Treat this as a baseline; production capacity planning must include detector and
+policy latency in addition to framing overhead.

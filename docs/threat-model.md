@@ -21,7 +21,7 @@ Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
 
 | Threat | Control | Residual risk |
 | --- | --- | --- |
-| Secret leakage to LLM | deterministic secret detectors + policy BLOCK before forwarding (AS-001); outbound scan blocks model-emitted secrets (AS-005) | encoded/split/homoglyph evasions (pinned as known-limitation tests) |
+| Secret leakage to LLM | deterministic secret detectors + policy BLOCK before forwarding (AS-001); bounded stateful outbound SSE scan with holdback blocks split model-emitted secrets (AS-005) | encoded/homoglyph evasions and candidates longer than the configured holdback remain limitations |
 | Secret leakage to Laya | planner skips semantics on deterministic secret findings (SEC-002) | none deterministic-path |
 | Secret leakage to logs | findings carry HMAC value hashes only; audit events are whitelisted-field structs; leak tests over audit + logs | operator-added logging must follow the same rule |
 | PII leakage to cloud providers | PII/span detection + policy TOKENIZE/REDACT per provider (AS-002); outbound redaction (UC-008) | heuristic person-name spans are regex-based; NER adapter deferred |
@@ -41,7 +41,7 @@ Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
 | Oversized request / DoS | MaxBytesReader → 413 before inspection; read-header timeout; Laya circuit breaker | volumetric DDoS protection belongs to the edge |
 | Tenant/application abuse and cost amplification | verified-identity token bucket and concurrency semaphore, normalized prompt budget, bounded response/stream lifetime, global Laya semaphore, bounded key cleanup | process-local limits do not enforce a global budget across instances; distributed limiter is deferred |
 | Upstream stall or connection exhaustion | dial/TLS/header/request/idle timeouts, bounded pool, response byte cap, no automatic POST retry, circuit breaker and sanitized readiness | provider-side overload and volumetric attacks still need edge controls |
-| Unicode/encoding evasions | documented limitations (base64, homoglyphs, cross-message splits) pinned in tests | future stateful/rolling-window scanning |
+| Unicode/encoding evasions | documented limitations (base64/homoglyphs); bounded rolling SSE state covers split structured candidates | arbitrary encodings and streams exceeding configured memory budgets fail closed rather than being scanned without bounds |
 | Cross-tenant token collision | token namespace is per-request ID; vault keys carry namespace + token label | multi-tenant session namespaces are a V1.1 item |
 | Model context carries tool credentials | out of scope for the gateway (TB-5) — credential broker is Phase 2 | deployment must route tool creds outside model context |
 
@@ -55,6 +55,9 @@ Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
   unknown action).
 - Audit sink failure → console sink; production deployments should buffer
   minimal sanitized events and alert.
-- Stream response content is intentionally not inspected in this milestone;
-  only lifetime, transport, and byte bounds apply. Streaming inspection is a
-  separate P0.3 effort.
+- Streaming responses are inspected through bounded SSE parsing. Production
+  requires a 4096-byte minimum holdback, 64 KiB default event limit, and 1 MiB
+  default queued-byte budget. On BLOCK/REVIEW the upstream body is closed and
+  the client receives only a sanitized error; shadow records a prediction but
+  forwards the original event. A provider that emits malformed or oversized
+  events is rejected in production.

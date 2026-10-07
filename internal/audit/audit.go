@@ -54,6 +54,12 @@ type Event struct {
 	FindingSummary  []policy.FindingSummary `json:"finding_summary,omitempty"`
 	LatencyMS       map[string]int64        `json:"latency_ms,omitempty"`
 	Laya            *LayaInfo               `json:"laya,omitempty"`
+	PredictedAction core.Action             `json:"predicted_action,omitempty"`
+	AppliedAction   core.Action             `json:"applied_action,omitempty"`
+	Stream          bool                    `json:"stream,omitempty"`
+	EndpointFamily  string                  `json:"endpoint_family,omitempty"`
+	BytesInspected  int64                   `json:"bytes_inspected,omitempty"`
+	EventsInspected int                     `json:"events_inspected,omitempty"`
 }
 
 // Sink receives audit events.

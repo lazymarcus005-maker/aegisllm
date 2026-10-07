@@ -205,14 +205,12 @@ func TestUniversalBadBodyAndSecretBlock(t *testing.T) {
 	}
 }
 
-func TestStreamingIsForwardedVerbatim(t *testing.T) {
+func TestStreamingRequestIsInspectedBeforeUpstream(t *testing.T) {
 	called := false
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		body, _ := io.ReadAll(r.Body)
-		if string(body) != `{"model":"m","stream":true,"messages":[{"role":"user","content":"sk-abcdefghijklmnopqrstuvwxyz123456"}]}` {
-			t.Fatalf("stream body changed: %s", body)
-		}
+		_ = body
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
@@ -229,8 +227,32 @@ func TestStreamingIsForwardedVerbatim(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !called {
-		t.Fatalf("stream was not forwarded: status=%d called=%v", resp.StatusCode, called)
+	if resp.StatusCode != http.StatusForbidden || called {
+		t.Fatalf("stream request bypassed policy: status=%d called=%v", resp.StatusCode, called)
+	}
+}
+
+func TestStreamingRequestPIIIsTransformedBeforeUpstream(t *testing.T) {
+	var upstreamBody string
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	})
+	pipe, _ := newRealPipeline(t)
+	srv.SetPipeline(pipe)
+	body := `{"model":"m","stream":true,"messages":[{"role":"user","content":"call 0812345678"}]}`
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	if strings.Contains(upstreamBody, "0812345678") || !strings.Contains(upstreamBody, "PHONE_NUMBER_001") {
+		t.Fatalf("stream request was not transformed: %s", upstreamBody)
 	}
 }
 

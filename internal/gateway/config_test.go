@@ -74,6 +74,22 @@ func TestProductionValidationRejectsUnsafeRuntimeLimit(t *testing.T) {
 	}
 }
 
+func TestProductionValidationRejectsUnsafeStreamingWindow(t *testing.T) {
+	cfg := productionConfig(t)
+	cfg.StreamInspectionWindow = 1024
+	if err := ValidateConfig(cfg); err == nil || !strings.Contains(err.Error(), "STREAM_INSPECTION_WINDOW") {
+		t.Fatalf("unsafe streaming window error = %v", err)
+	}
+}
+
+func TestProductionValidationRequiresFailClosedStreaming(t *testing.T) {
+	cfg := productionConfig(t)
+	cfg.StreamingFailClosed = false
+	if err := ValidateConfig(cfg); err == nil || !strings.Contains(err.Error(), "STREAM_FAIL_CLOSED") {
+		t.Fatalf("fail-open streaming config error = %v", err)
+	}
+}
+
 func TestConfigInvalidIntFallsBackToDefault(t *testing.T) {
 	cfg := configFrom(func(k string) string {
 		if k == "MAX_BODY_BYTES" {
@@ -129,6 +145,11 @@ func productionConfig(t *testing.T) Config {
 		MaxResponseBytes:              4 << 20,
 		MaxPromptChars:                64 * 1024,
 		MaxStreamDuration:             5 * time.Minute,
+		MaxSSEEventBytes:              64 * 1024,
+		StreamInspectionWindow:        4096,
+		MaxBufferedStreamBytes:        1 << 20,
+		StreamFlushInterval:           25 * time.Millisecond,
+		StreamingFailClosed:           true,
 		RequestsPerSecond:             10,
 		RateBurst:                     20,
 		MaxConcurrentRequests:         16,

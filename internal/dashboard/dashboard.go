@@ -25,6 +25,8 @@ type Stats struct {
 	Redacted       uint64         `json:"redacted"`
 	Review         uint64         `json:"review"`
 	Allowed        uint64         `json:"allowed"`
+	StreamBytes    uint64         `json:"stream_bytes_inspected"`
+	StreamEvents   uint64         `json:"stream_events_inspected"`
 	ByCategory     []CategoryStat `json:"by_category"`
 	UpdatedAt      time.Time      `json:"updated_at"`
 }
@@ -55,16 +57,17 @@ func (d *Dashboard) Snapshot() Stats {
 }
 
 // Snapshot projects the observability registry into the public dashboard
-// contract. Prevented is deliberately request-action based: one BLOCK,
-// TOKENIZE, REDACT, or REVIEW request is one prevented sensitive send.
+// contract. Applied stream actions are included alongside request actions;
+// shadow predictions do not increment prevented totals.
 func Snapshot(metrics *observability.Metrics) Stats {
 	metricSnapshot := metrics.Snapshot()
 	stats := Stats{
-		Blocked:    metricSnapshot.Blocked,
-		Tokenized:  metricSnapshot.Tokenized,
-		Redacted:   metricSnapshot.Redacted,
-		Review:     metricSnapshot.Review,
-		Allowed:    metricSnapshot.Allowed,
+		Blocked:     metricSnapshot.Blocked,
+		Tokenized:   metricSnapshot.Tokenized,
+		Redacted:    metricSnapshot.Redacted,
+		Review:      metricSnapshot.Review,
+		Allowed:     metricSnapshot.Allowed,
+		StreamBytes: metricSnapshot.StreamBytes, StreamEvents: metricSnapshot.StreamEvents,
 		ByCategory: []CategoryStat{},
 		UpdatedAt:  time.Now().UTC(),
 	}

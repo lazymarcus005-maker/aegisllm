@@ -23,7 +23,7 @@ Each item lists its implementation and the test/artifact that evidences it.
 - [x] **Threat model is reviewed** — `docs/threat-model.md` (handoff §14 checklist), reviewed in this sweep.
 - [x] **No raw secret appears in test logs** — assertions over audit output and server logs. Evidence: `TestGatewayLogsCarryNoSecret`, `TestAS001*` leak checks; `go test ./...` passes with leak assertions active.
 
-Deferred by design (spec §19): streaming enforcement, image/document PII, full
+Deferred by design (spec §19): image/document PII, full
 MCP proxy, credential broker, Vault/workload-identity integration, admin UI,
 central policy distribution, Jev provider, Laya fine-tuning.
 

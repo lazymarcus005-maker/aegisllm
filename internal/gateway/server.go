@@ -280,6 +280,9 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isStream := env.Metadata["stream"] == "true" || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream")
+	if isStream {
+		env.Metadata["stream"] = "true"
+	}
 	requestCtx := r.Context()
 	var streamCancel context.CancelFunc
 	if isStream {
@@ -287,10 +290,6 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 		defer streamCancel()
 		r = r.WithContext(requestCtx)
 	}
-	if isStream {
-		env.Metadata["skipped_stream"] = "true"
-	}
-
 	forwardBody := body
 	if s.pipeline != nil {
 		var dec RequestDecision
@@ -305,9 +304,7 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusInternalServerError, "gateway_error", "", "Security pipeline failure.", env.RequestID)
 			return
 		}
-		if !isStream {
-			forwardBody = s.applyDecision(w, env, normalizer, dec, forwardBody)
-		}
+		forwardBody = s.applyDecision(w, env, normalizer, dec, forwardBody)
 		if forwardBody == nil {
 			return // response already written
 		}
@@ -320,12 +317,11 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Outbound protection (ticket 07): non-streaming JSON responses are
-	// scanned and policy-filtered before reaching the client. Streaming
-	// follows the deferred plan in architecture §13.
+	// Outbound protection scans buffered JSON here and stateful SSE through the
+	// bounded streaming adapter below.
 	_, embeddingsResponse := normalizer.(openAIEmbeddingsNormalizer)
 	if isStream {
-		s.copyStreamResponse(w, resp, env.RequestID)
+		s.copyStreamResponse(w, resp, env, normalizer)
 		return
 	}
 
@@ -371,22 +367,6 @@ func readBounded(body io.Reader, max int64) ([]byte, bool, error) {
 	}
 	data, err := io.ReadAll(io.LimitReader(body, max+1))
 	return data, int64(len(data)) > max, err
-}
-
-func (s *Server) copyStreamResponse(w http.ResponseWriter, resp *http.Response, requestID string) {
-	defer resp.Body.Close()
-	copyResponseHeaders(w, resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	_, copyErr := io.Copy(w, io.LimitReader(resp.Body, s.cfg.MaxResponseBytes))
-	if copyErr != nil && upstreamTimeout(copyErr) {
-		s.proxy.RecordFailure()
-		s.runtimeMetrics.ObserveUpstreamTimeout()
-	}
-	var extra [1]byte
-	if n, _ := resp.Body.Read(extra[:]); n > 0 {
-		s.runtimeMetrics.ObserveResponseTooLarge()
-		s.logger.Warn("upstream stream exceeded response limit", "request_id", requestID)
-	}
 }
 
 func (s *Server) writeUpstreamError(w http.ResponseWriter, err error, requestID string) {

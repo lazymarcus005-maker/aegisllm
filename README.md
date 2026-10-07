@@ -65,6 +65,11 @@ All configuration is environment-based; see [.env.example](.env.example).
 | `MAX_RESPONSE_BYTES` | `4194304` | Maximum buffered upstream response (oversized → sanitized 502) |
 | `MAX_PROMPT_CHARS` | `65536` | Normalized prompt character budget (oversized → 413) |
 | `MAX_STREAM_DURATION` | `5m` | Maximum stream lifetime |
+| `MAX_SSE_EVENT_BYTES` | `65536` | Maximum one SSE event, including framing |
+| `STREAM_INSPECTION_WINDOW` | `4096` | Rolling response holdback; production rejects values below 4096 |
+| `MAX_BUFFERED_STREAM_BYTES` | `1048576` | Maximum queued stream bytes during inspection |
+| `STREAM_FLUSH_INTERVAL` | `25ms` | Streaming flush/latency budget |
+| `STREAM_FAIL_CLOSED` | `true` | Fail malformed/oversized streams closed; production always fails closed |
 | `UPSTREAM_DIAL_TIMEOUT` / `UPSTREAM_TLS_HANDSHAKE_TIMEOUT` | `5s` | Upstream connection bounds |
 | `UPSTREAM_RESPONSE_HEADER_TIMEOUT` | `30s` | Maximum wait for upstream headers |
 | `UPSTREAM_REQUEST_TIMEOUT` | `2m` | Overall upstream request bound |
@@ -102,6 +107,17 @@ tenant/application in JWT mode. Development uses application plus remote
 address as a compatibility fallback. Multiple gateway instances require an
 external/distributed limiter for global enforcement; that is deferred.
 
+## Streaming security
+
+`stream:true` changes only response transport: the request is still normalized,
+detected, policy-evaluated, and transformed before upstream forwarding. Known
+OpenAI Chat/Responses, Anthropic Messages, and generic SSE deltas are parsed
+incrementally. A bounded rolling holdback protects secrets and PII split over
+events; BLOCK/REVIEW closes with a sanitized terminal error, while
+REDACT/TOKENIZE use the established placeholders and vault behavior. See
+[operations.md](docs/operations.md#streaming) for provider coverage,
+limitations, and production configuration.
+
 ## Repository layout
 
 Layered modules from `docs/code-structure.md`, adapted to Go conventions:
@@ -116,6 +132,7 @@ internal/pii/         infrastructure: PII spans + transformation planner
 internal/decision/    infrastructure: DecisionProvider and Laya adapter
 internal/policy/      domain policy-as-code schema + deterministic engine
 internal/tokenization/ infrastructure: tokenizer + encrypted token vault
+internal/streaming/    bounded SSE parser and provider delta extraction
 internal/audit/       infrastructure: sanitized audit events
 internal/observability/ infrastructure: metrics + tracing
 internal/dashboard/   transport: sanitized protection statistics
@@ -137,7 +154,10 @@ docs/                 spec, architecture, handoff, threat model, ADRs
 `rate_limited_total`, `concurrency_rejected_total`,
 `prompt_budget_rejected_total`, `response_too_large_total`,
 `upstream_timeout_total`, `breaker_open_total`, `active_requests`, and
-`active_laya_evaluations`. Runtime metrics have no tenant/application labels.
+`active_laya_evaluations`. Streaming also exposes bounded
+`stream_actions_total`, `stream_bytes_inspected_total`, and
+`stream_events_inspected_total`; runtime metrics have no tenant/application
+labels.
 Docker Compose includes a Prometheus scraping the gateway; see
 [docs/operations.md](docs/operations.md) for runbook guidance.
 
@@ -179,7 +199,8 @@ The gateway accepts OpenAI-compatible chat/responses/completions/embeddings and
 Anthropic-compatible messages/complete endpoints, plus generic aliases such as
 `/message`, `/chatcompletion`, and `/response`. All supported POST formats use
 the same normalized security pipeline. `GET /v1/models` is a body-free
-passthrough with audit/metrics coverage. Streaming requests are inspected for
-audit evidence but forwarded verbatim and are never blocked or rewritten.
+passthrough with audit/metrics coverage. Streaming requests are inspected and
+request policy is enforced before forwarding. Streaming responses are
+statefully inspected, transformed, or terminated using bounded SSE controls.
 They remain subject to admission, prompt/response budgets, upstream timeouts,
-and `MAX_STREAM_DURATION`; streamed content inspection is deferred to P0.3.
+and `MAX_STREAM_DURATION`.
