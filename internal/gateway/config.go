@@ -37,106 +37,122 @@ const (
 // Config holds all gateway runtime configuration, sourced from the
 // environment (see .env.example).
 type Config struct {
-	DeploymentProfile             DeploymentProfile
-	ListenAddr                    string
-	InboundTLSCertFile            string
-	InboundTLSKeyFile             string
-	InboundTLSClientCAFile        string
-	InboundMTLSMode               string // off | require
-	TLSMinVersion                 uint16
-	TLSMaxVersion                 uint16
-	TLSReloadInterval             time.Duration
-	TLSTerminatedByTrustedEdge    bool
-	PlaintextDependencyDevWaiver  bool
-	UpstreamBaseURL               string
-	UpstreamRegistryFile          string
-	MCPRegistryFile               string
-	MCPCredentialsFile            string
-	MCPSessionTTL                 time.Duration
-	MCPToolSchemaTTL              time.Duration
-	MCPMaxBodyBytes               int64
-	MCPMaxEventBytes              int64
-	MCPMaxStreamDuration          time.Duration
-	MCPMaxSessionCount            int
-	UpstreamAuthMode              string // none | bearer | header
-	UpstreamAPIKey                string
-	UpstreamAPIKeyFile            string
-	UpstreamAuthHeaderName        string
-	UpstreamAuthHeaderValue       string
-	UpstreamAuthHeaderValueFile   string
-	UpstreamTLSCAFile             string
-	UpstreamTLSCertFile           string
-	UpstreamTLSKeyFile            string
-	UpstreamTLSServerName         string
-	UpstreamChatPathPrefix        string
-	UpstreamDialTimeout           time.Duration
-	UpstreamTLSHandshakeTimeout   time.Duration
-	UpstreamResponseHeaderTimeout time.Duration
-	UpstreamRequestTimeout        time.Duration
-	UpstreamIdleConnTimeout       time.Duration
-	UpstreamMaxIdleConns          int
-	MaxBodyBytes                  int64
-	MaxResponseBytes              int64
-	MaxPromptChars                int
-	MaxStreamDuration             time.Duration
-	MaxSSEEventBytes              int64
-	StreamInspectionWindow        int
-	MaxBufferedStreamBytes        int64
-	StreamFlushInterval           time.Duration
-	StreamingFailClosed           bool
-	RequestsPerSecond             float64
-	RateBurst                     int
-	MaxConcurrentRequests         int
-	MaxConcurrentLaya             int
-	LimiterMaxKeys                int
-	LimiterKeyIdleTimeout         time.Duration
-	UpstreamBreakerThreshold      int
-	UpstreamBreakerOpenInterval   time.Duration
-	ServerReadHeaderTimeout       time.Duration
-	ServerReadTimeout             time.Duration
-	ServerIdleTimeout             time.Duration
-	ServerShutdownTimeout         time.Duration
-	SecurityMode                  string // off | shadow | enforce
-	SemanticEnforce               bool
-	LayaURL                       string
-	LayaEvaluatePath              string
-	LayaTimeout                   time.Duration
-	LayaTLSCAFile                 string
-	LayaTLSCertFile               string
-	LayaTLSKeyFile                string
-	LayaTLSServerName             string
-	PIIRegistryFile               string
-	PIIRequireNER                 bool
-	HeaderApplication             string
-	HeaderTenant                  string
-	HeaderUser                    string
-	HeaderTargetProvider          string
-	DefaultTargetProvider         string
-	PolicyFile                    string
-	QuestionsFile                 string
-	ThresholdsFile                string
-	TokenVaultKey                 string
-	TokenVaultKeyFile             string
-	TokenVaultKeyringFile         string
-	TokenVaultAllowKeyRemoval     bool
-	TokenVaultRedisURL            string
-	TokenVaultRedisCAFile         string
-	TokenVaultRedisCertFile       string
-	TokenVaultRedisKeyFile        string
-	TokenVaultRedisServerName     string
-	TelemetryHMACKey              string
-	TelemetryHMACKeyFile          string
-	AuthMode                      string // off | jwt | mtls
-	JWTPublicKeyFile              string
-	JWTHMACSecret                 string
-	JWTIssuer                     string
-	JWTAudience                   string
-	JWTTenantClaim                string
-	JWTApplicationClaim           string
-	JWTSubjectClaim               string
-	JWTRolesClaim                 string
-	JWTProviderClaim              string
-	AllowUnauthenticatedShadow    bool
+	DeploymentProfile              DeploymentProfile
+	ListenAddr                     string
+	InboundTLSCertFile             string
+	InboundTLSKeyFile              string
+	InboundTLSClientCAFile         string
+	InboundMTLSMode                string // off | require
+	TLSMinVersion                  uint16
+	TLSMaxVersion                  uint16
+	TLSReloadInterval              time.Duration
+	TLSTerminatedByTrustedEdge     bool
+	PlaintextDependencyDevWaiver   bool
+	UpstreamBaseURL                string
+	UpstreamRegistryFile           string
+	MCPRegistryFile                string
+	MCPCredentialsFile             string
+	MCPSessionTTL                  time.Duration
+	MCPToolSchemaTTL               time.Duration
+	MCPMaxBodyBytes                int64
+	MCPMaxEventBytes               int64
+	MCPMaxStreamDuration           time.Duration
+	MCPMaxSessionCount             int
+	UpstreamAuthMode               string // none | bearer | header
+	UpstreamAPIKey                 string
+	UpstreamAPIKeyFile             string
+	UpstreamAuthHeaderName         string
+	UpstreamAuthHeaderValue        string
+	UpstreamAuthHeaderValueFile    string
+	UpstreamTLSCAFile              string
+	UpstreamTLSCertFile            string
+	UpstreamTLSKeyFile             string
+	UpstreamTLSServerName          string
+	UpstreamChatPathPrefix         string
+	UpstreamDialTimeout            time.Duration
+	UpstreamTLSHandshakeTimeout    time.Duration
+	UpstreamResponseHeaderTimeout  time.Duration
+	UpstreamRequestTimeout         time.Duration
+	UpstreamIdleConnTimeout        time.Duration
+	UpstreamMaxIdleConns           int
+	MaxBodyBytes                   int64
+	MaxResponseBytes               int64
+	MaxPromptChars                 int
+	MaxStreamDuration              time.Duration
+	MaxSSEEventBytes               int64
+	StreamInspectionWindow         int
+	MaxBufferedStreamBytes         int64
+	StreamFlushInterval            time.Duration
+	StreamingFailClosed            bool
+	RequestsPerSecond              float64
+	RateBurst                      int
+	MaxConcurrentRequests          int
+	MaxConcurrentLaya              int
+	LimiterMaxKeys                 int
+	LimiterKeyIdleTimeout          time.Duration
+	UpstreamBreakerThreshold       int
+	UpstreamBreakerOpenInterval    time.Duration
+	ServerReadHeaderTimeout        time.Duration
+	ServerReadTimeout              time.Duration
+	ServerIdleTimeout              time.Duration
+	ServerShutdownTimeout          time.Duration
+	SecurityMode                   string // off | shadow | enforce
+	SemanticEnforce                bool
+	LayaURL                        string
+	LayaEvaluatePath               string
+	LayaTimeout                    time.Duration
+	LayaTLSCAFile                  string
+	LayaTLSCertFile                string
+	LayaTLSKeyFile                 string
+	LayaTLSServerName              string
+	PIIRegistryFile                string
+	PIIRequireNER                  bool
+	HeaderApplication              string
+	HeaderTenant                   string
+	HeaderUser                     string
+	HeaderTargetProvider           string
+	DefaultTargetProvider          string
+	PolicyFile                     string
+	QuestionsFile                  string
+	ThresholdsFile                 string
+	PolicyBundleDir                string
+	PolicyBundlePath               string
+	PolicyControlPlaneURL          string
+	PolicyTrustStoreFile           string
+	PolicyStateFile                string
+	PolicyDistributionTimeout      time.Duration
+	PolicyDistributionPollInterval time.Duration
+	PolicyTLSCAFile                string
+	PolicyTLSCertFile              string
+	PolicyTLSKeyFile               string
+	PolicyTLSServerName            string
+	PolicyCanaryPercent            int
+	PolicyCanarySoak               time.Duration
+	GatewayVersion                 string
+	GatewayInstanceID              string
+	DeploymentEnvironment          string
+	TokenVaultKey                  string
+	TokenVaultKeyFile              string
+	TokenVaultKeyringFile          string
+	TokenVaultAllowKeyRemoval      bool
+	TokenVaultRedisURL             string
+	TokenVaultRedisCAFile          string
+	TokenVaultRedisCertFile        string
+	TokenVaultRedisKeyFile         string
+	TokenVaultRedisServerName      string
+	TelemetryHMACKey               string
+	TelemetryHMACKeyFile           string
+	AuthMode                       string // off | jwt | mtls
+	JWTPublicKeyFile               string
+	JWTHMACSecret                  string
+	JWTIssuer                      string
+	JWTAudience                    string
+	JWTTenantClaim                 string
+	JWTApplicationClaim            string
+	JWTSubjectClaim                string
+	JWTRolesClaim                  string
+	JWTProviderClaim               string
+	AllowUnauthenticatedShadow     bool
 }
 
 // LoadConfig reads configuration from the process environment.
@@ -152,106 +168,122 @@ func configFrom(get func(string) string) Config {
 		profile = DeploymentProfile(profileValue)
 	}
 	return Config{
-		DeploymentProfile:             profile,
-		ListenAddr:                    getenvDefault(get, "LISTEN_ADDR", ":8080"),
-		InboundTLSCertFile:            get("INBOUND_TLS_CERT_FILE"),
-		InboundTLSKeyFile:             get("INBOUND_TLS_KEY_FILE"),
-		InboundTLSClientCAFile:        get("INBOUND_TLS_CLIENT_CA_FILE"),
-		InboundMTLSMode:               getenvDefault(get, "INBOUND_MTLS_MODE", "off"),
-		TLSMinVersion:                 parseTLSVersion(getenvDefault(get, "TLS_MIN_VERSION", "1.2")),
-		TLSMaxVersion:                 parseTLSVersion(getenvDefault(get, "TLS_MAX_VERSION", "")),
-		TLSReloadInterval:             getenvDuration(get, "TLS_RELOAD_INTERVAL", 2*time.Second),
-		TLSTerminatedByTrustedEdge:    getenvBool(get, "TLS_TERMINATED_BY_TRUSTED_EDGE", false),
-		PlaintextDependencyDevWaiver:  getenvBool(get, "PLAINTEXT_DEPENDENCY_DEVELOPMENT_WAIVER", false),
-		UpstreamBaseURL:               get("UPSTREAM_BASE_URL"),
-		UpstreamRegistryFile:          get("UPSTREAM_REGISTRY_FILE"),
-		MCPRegistryFile:               get("MCP_REGISTRY_FILE"),
-		MCPCredentialsFile:            get("MCP_CREDENTIALS_FILE"),
-		MCPSessionTTL:                 getenvDuration(get, "MCP_SESSION_TTL", 15*time.Minute),
-		MCPToolSchemaTTL:              getenvDuration(get, "MCP_TOOL_SCHEMA_TTL", 5*time.Minute),
-		MCPMaxBodyBytes:               getenvInt64(get, "MCP_MAX_BODY_BYTES", 1<<20),
-		MCPMaxEventBytes:              getenvInt64(get, "MCP_MAX_EVENT_BYTES", 64<<10),
-		MCPMaxStreamDuration:          getenvDuration(get, "MCP_MAX_STREAM_DURATION", 5*time.Minute),
-		MCPMaxSessionCount:            getenvInt(get, "MCP_MAX_SESSION_COUNT", 10000),
-		UpstreamAuthMode:              getenvDefault(get, "UPSTREAM_AUTH_MODE", "none"),
-		UpstreamAPIKey:                get("UPSTREAM_API_KEY"),
-		UpstreamAPIKeyFile:            get("UPSTREAM_API_KEY_FILE"),
-		UpstreamAuthHeaderName:        getenvDefault(get, "UPSTREAM_AUTH_HEADER_NAME", "X-Upstream-Api-Key"),
-		UpstreamAuthHeaderValue:       get("UPSTREAM_AUTH_HEADER_VALUE"),
-		UpstreamAuthHeaderValueFile:   get("UPSTREAM_AUTH_HEADER_VALUE_FILE"),
-		UpstreamTLSCAFile:             get("UPSTREAM_TLS_CA_FILE"),
-		UpstreamTLSCertFile:           get("UPSTREAM_TLS_CERT_FILE"),
-		UpstreamTLSKeyFile:            get("UPSTREAM_TLS_KEY_FILE"),
-		UpstreamTLSServerName:         get("UPSTREAM_TLS_SERVER_NAME"),
-		UpstreamChatPathPrefix:        get("UPSTREAM_CHAT_PATH_PREFIX"),
-		UpstreamDialTimeout:           getenvDuration(get, "UPSTREAM_DIAL_TIMEOUT", 5*time.Second),
-		UpstreamTLSHandshakeTimeout:   getenvDuration(get, "UPSTREAM_TLS_HANDSHAKE_TIMEOUT", 5*time.Second),
-		UpstreamResponseHeaderTimeout: getenvDuration(get, "UPSTREAM_RESPONSE_HEADER_TIMEOUT", 30*time.Second),
-		UpstreamRequestTimeout:        getenvDuration(get, "UPSTREAM_REQUEST_TIMEOUT", 2*time.Minute),
-		UpstreamIdleConnTimeout:       getenvDuration(get, "UPSTREAM_IDLE_CONN_TIMEOUT", 90*time.Second),
-		UpstreamMaxIdleConns:          getenvInt(get, "UPSTREAM_MAX_IDLE_CONNS", 100),
-		MaxBodyBytes:                  getenvInt64(get, "MAX_BODY_BYTES", 1<<20),
-		MaxResponseBytes:              getenvInt64(get, "MAX_RESPONSE_BYTES", 4<<20),
-		MaxPromptChars:                getenvInt(get, "MAX_PROMPT_CHARS", 64*1024),
-		MaxStreamDuration:             getenvDuration(get, "MAX_STREAM_DURATION", 5*time.Minute),
-		MaxSSEEventBytes:              getenvInt64(get, "MAX_SSE_EVENT_BYTES", 64*1024),
-		StreamInspectionWindow:        getenvInt(get, "STREAM_INSPECTION_WINDOW", 4096),
-		MaxBufferedStreamBytes:        getenvInt64(get, "MAX_BUFFERED_STREAM_BYTES", 1<<20),
-		StreamFlushInterval:           getenvDuration(get, "STREAM_FLUSH_INTERVAL", 25*time.Millisecond),
-		StreamingFailClosed:           getenvBool(get, "STREAM_FAIL_CLOSED", true),
-		RequestsPerSecond:             getenvFloat(get, "REQUESTS_PER_SECOND", 10),
-		RateBurst:                     getenvInt(get, "RATE_BURST", 20),
-		MaxConcurrentRequests:         getenvInt(get, "MAX_CONCURRENT_REQUESTS", 16),
-		MaxConcurrentLaya:             getenvInt(get, "MAX_CONCURRENT_LAYA", 4),
-		LimiterMaxKeys:                getenvInt(get, "LIMITER_MAX_KEYS", 10000),
-		LimiterKeyIdleTimeout:         getenvDuration(get, "LIMITER_KEY_IDLE_TIMEOUT", 10*time.Minute),
-		UpstreamBreakerThreshold:      getenvInt(get, "UPSTREAM_BREAKER_FAILURE_THRESHOLD", 3),
-		UpstreamBreakerOpenInterval:   getenvDuration(get, "UPSTREAM_BREAKER_OPEN_INTERVAL", 30*time.Second),
-		ServerReadHeaderTimeout:       getenvDuration(get, "SERVER_READ_HEADER_TIMEOUT", 10*time.Second),
-		ServerReadTimeout:             getenvDuration(get, "SERVER_READ_TIMEOUT", 30*time.Second),
-		ServerIdleTimeout:             getenvDuration(get, "SERVER_IDLE_TIMEOUT", 2*time.Minute),
-		ServerShutdownTimeout:         getenvDuration(get, "SERVER_SHUTDOWN_TIMEOUT", 10*time.Second),
-		SecurityMode:                  getenvDefault(get, "SECURITY_MODE", ModeOff),
-		SemanticEnforce:               getenvBool(get, "SECURITY_SEMANTIC_ENFORCE", false),
-		LayaURL:                       get("LAYA_URL"),
-		LayaEvaluatePath:              getenvDefault(get, "LAYA_EVALUATE_PATH", "/v1/evaluate"),
-		LayaTimeout:                   getenvDuration(get, "LAYA_TIMEOUT", 5*time.Second),
-		LayaTLSCAFile:                 get("LAYA_TLS_CA_FILE"),
-		LayaTLSCertFile:               get("LAYA_TLS_CERT_FILE"),
-		LayaTLSKeyFile:                get("LAYA_TLS_KEY_FILE"),
-		LayaTLSServerName:             get("LAYA_TLS_SERVER_NAME"),
-		PIIRegistryFile:               get("PII_NER_REGISTRY_FILE"),
-		PIIRequireNER:                 getenvBool(get, "PII_NER_REQUIRED", profile == ProfileProduction),
-		HeaderApplication:             getenvDefault(get, "HEADER_APPLICATION", "X-Application-Id"),
-		HeaderTenant:                  getenvDefault(get, "HEADER_TENANT", "X-Tenant-Id"),
-		HeaderUser:                    getenvDefault(get, "HEADER_USER", "X-User-Id"),
-		HeaderTargetProvider:          getenvDefault(get, "HEADER_TARGET_PROVIDER", "X-Target-Provider"),
-		DefaultTargetProvider:         getenvDefault(get, "DEFAULT_TARGET_PROVIDER", "cloud"),
-		PolicyFile:                    getenvDefault(get, "POLICY_FILE", "policies/enterprise-default.yaml"),
-		QuestionsFile:                 getenvDefault(get, "QUESTIONS_FILE", "questions/security-v1.yaml"),
-		ThresholdsFile:                getenvDefault(get, "THRESHOLDS_FILE", "policies/thresholds-security-v1.yaml"),
-		TokenVaultKey:                 get("TOKEN_VAULT_KEY"),
-		TokenVaultKeyFile:             get("TOKEN_VAULT_KEY_FILE"),
-		TokenVaultKeyringFile:         get("TOKEN_VAULT_KEYRING_FILE"),
-		TokenVaultAllowKeyRemoval:     getenvBool(get, "TOKEN_VAULT_ALLOW_KEY_REMOVAL", false),
-		TokenVaultRedisURL:            get("TOKEN_VAULT_REDIS_URL"),
-		TokenVaultRedisCAFile:         get("TOKEN_VAULT_REDIS_CA_FILE"),
-		TokenVaultRedisCertFile:       get("TOKEN_VAULT_REDIS_CERT_FILE"),
-		TokenVaultRedisKeyFile:        get("TOKEN_VAULT_REDIS_KEY_FILE"),
-		TokenVaultRedisServerName:     get("TOKEN_VAULT_REDIS_SERVER_NAME"),
-		TelemetryHMACKey:              get("TELEMETRY_HMAC_KEY"),
-		TelemetryHMACKeyFile:          get("TELEMETRY_HMAC_KEY_FILE"),
-		AuthMode:                      getenvDefault(get, "AUTH_MODE", auth.ModeOff),
-		JWTPublicKeyFile:              get("JWT_PUBLIC_KEY_FILE"),
-		JWTHMACSecret:                 get("JWT_HMAC_SECRET"),
-		JWTIssuer:                     get("JWT_ISSUER"),
-		JWTAudience:                   get("JWT_AUDIENCE"),
-		JWTTenantClaim:                getenvDefault(get, "JWT_TENANT_CLAIM", "tenant_id"),
-		JWTApplicationClaim:           getenvDefault(get, "JWT_APPLICATION_CLAIM", "azp"),
-		JWTSubjectClaim:               getenvDefault(get, "JWT_SUBJECT_CLAIM", "sub"),
-		JWTRolesClaim:                 getenvDefault(get, "JWT_ROLES_CLAIM", "roles"),
-		JWTProviderClaim:              getenvDefault(get, "JWT_PROVIDER_CLAIM", "provider"),
-		AllowUnauthenticatedShadow:    strings.EqualFold(get("ALLOW_UNAUTHENTICATED_SHADOW"), "true"),
+		DeploymentProfile:              profile,
+		ListenAddr:                     getenvDefault(get, "LISTEN_ADDR", ":8080"),
+		InboundTLSCertFile:             get("INBOUND_TLS_CERT_FILE"),
+		InboundTLSKeyFile:              get("INBOUND_TLS_KEY_FILE"),
+		InboundTLSClientCAFile:         get("INBOUND_TLS_CLIENT_CA_FILE"),
+		InboundMTLSMode:                getenvDefault(get, "INBOUND_MTLS_MODE", "off"),
+		TLSMinVersion:                  parseTLSVersion(getenvDefault(get, "TLS_MIN_VERSION", "1.2")),
+		TLSMaxVersion:                  parseTLSVersion(getenvDefault(get, "TLS_MAX_VERSION", "")),
+		TLSReloadInterval:              getenvDuration(get, "TLS_RELOAD_INTERVAL", 2*time.Second),
+		TLSTerminatedByTrustedEdge:     getenvBool(get, "TLS_TERMINATED_BY_TRUSTED_EDGE", false),
+		PlaintextDependencyDevWaiver:   getenvBool(get, "PLAINTEXT_DEPENDENCY_DEVELOPMENT_WAIVER", false),
+		UpstreamBaseURL:                get("UPSTREAM_BASE_URL"),
+		UpstreamRegistryFile:           get("UPSTREAM_REGISTRY_FILE"),
+		MCPRegistryFile:                get("MCP_REGISTRY_FILE"),
+		MCPCredentialsFile:             get("MCP_CREDENTIALS_FILE"),
+		MCPSessionTTL:                  getenvDuration(get, "MCP_SESSION_TTL", 15*time.Minute),
+		MCPToolSchemaTTL:               getenvDuration(get, "MCP_TOOL_SCHEMA_TTL", 5*time.Minute),
+		MCPMaxBodyBytes:                getenvInt64(get, "MCP_MAX_BODY_BYTES", 1<<20),
+		MCPMaxEventBytes:               getenvInt64(get, "MCP_MAX_EVENT_BYTES", 64<<10),
+		MCPMaxStreamDuration:           getenvDuration(get, "MCP_MAX_STREAM_DURATION", 5*time.Minute),
+		MCPMaxSessionCount:             getenvInt(get, "MCP_MAX_SESSION_COUNT", 10000),
+		UpstreamAuthMode:               getenvDefault(get, "UPSTREAM_AUTH_MODE", "none"),
+		UpstreamAPIKey:                 get("UPSTREAM_API_KEY"),
+		UpstreamAPIKeyFile:             get("UPSTREAM_API_KEY_FILE"),
+		UpstreamAuthHeaderName:         getenvDefault(get, "UPSTREAM_AUTH_HEADER_NAME", "X-Upstream-Api-Key"),
+		UpstreamAuthHeaderValue:        get("UPSTREAM_AUTH_HEADER_VALUE"),
+		UpstreamAuthHeaderValueFile:    get("UPSTREAM_AUTH_HEADER_VALUE_FILE"),
+		UpstreamTLSCAFile:              get("UPSTREAM_TLS_CA_FILE"),
+		UpstreamTLSCertFile:            get("UPSTREAM_TLS_CERT_FILE"),
+		UpstreamTLSKeyFile:             get("UPSTREAM_TLS_KEY_FILE"),
+		UpstreamTLSServerName:          get("UPSTREAM_TLS_SERVER_NAME"),
+		UpstreamChatPathPrefix:         get("UPSTREAM_CHAT_PATH_PREFIX"),
+		UpstreamDialTimeout:            getenvDuration(get, "UPSTREAM_DIAL_TIMEOUT", 5*time.Second),
+		UpstreamTLSHandshakeTimeout:    getenvDuration(get, "UPSTREAM_TLS_HANDSHAKE_TIMEOUT", 5*time.Second),
+		UpstreamResponseHeaderTimeout:  getenvDuration(get, "UPSTREAM_RESPONSE_HEADER_TIMEOUT", 30*time.Second),
+		UpstreamRequestTimeout:         getenvDuration(get, "UPSTREAM_REQUEST_TIMEOUT", 2*time.Minute),
+		UpstreamIdleConnTimeout:        getenvDuration(get, "UPSTREAM_IDLE_CONN_TIMEOUT", 90*time.Second),
+		UpstreamMaxIdleConns:           getenvInt(get, "UPSTREAM_MAX_IDLE_CONNS", 100),
+		MaxBodyBytes:                   getenvInt64(get, "MAX_BODY_BYTES", 1<<20),
+		MaxResponseBytes:               getenvInt64(get, "MAX_RESPONSE_BYTES", 4<<20),
+		MaxPromptChars:                 getenvInt(get, "MAX_PROMPT_CHARS", 64*1024),
+		MaxStreamDuration:              getenvDuration(get, "MAX_STREAM_DURATION", 5*time.Minute),
+		MaxSSEEventBytes:               getenvInt64(get, "MAX_SSE_EVENT_BYTES", 64*1024),
+		StreamInspectionWindow:         getenvInt(get, "STREAM_INSPECTION_WINDOW", 4096),
+		MaxBufferedStreamBytes:         getenvInt64(get, "MAX_BUFFERED_STREAM_BYTES", 1<<20),
+		StreamFlushInterval:            getenvDuration(get, "STREAM_FLUSH_INTERVAL", 25*time.Millisecond),
+		StreamingFailClosed:            getenvBool(get, "STREAM_FAIL_CLOSED", true),
+		RequestsPerSecond:              getenvFloat(get, "REQUESTS_PER_SECOND", 10),
+		RateBurst:                      getenvInt(get, "RATE_BURST", 20),
+		MaxConcurrentRequests:          getenvInt(get, "MAX_CONCURRENT_REQUESTS", 16),
+		MaxConcurrentLaya:              getenvInt(get, "MAX_CONCURRENT_LAYA", 4),
+		LimiterMaxKeys:                 getenvInt(get, "LIMITER_MAX_KEYS", 10000),
+		LimiterKeyIdleTimeout:          getenvDuration(get, "LIMITER_KEY_IDLE_TIMEOUT", 10*time.Minute),
+		UpstreamBreakerThreshold:       getenvInt(get, "UPSTREAM_BREAKER_FAILURE_THRESHOLD", 3),
+		UpstreamBreakerOpenInterval:    getenvDuration(get, "UPSTREAM_BREAKER_OPEN_INTERVAL", 30*time.Second),
+		ServerReadHeaderTimeout:        getenvDuration(get, "SERVER_READ_HEADER_TIMEOUT", 10*time.Second),
+		ServerReadTimeout:              getenvDuration(get, "SERVER_READ_TIMEOUT", 30*time.Second),
+		ServerIdleTimeout:              getenvDuration(get, "SERVER_IDLE_TIMEOUT", 2*time.Minute),
+		ServerShutdownTimeout:          getenvDuration(get, "SERVER_SHUTDOWN_TIMEOUT", 10*time.Second),
+		SecurityMode:                   getenvDefault(get, "SECURITY_MODE", ModeOff),
+		SemanticEnforce:                getenvBool(get, "SECURITY_SEMANTIC_ENFORCE", false),
+		LayaURL:                        get("LAYA_URL"),
+		LayaEvaluatePath:               getenvDefault(get, "LAYA_EVALUATE_PATH", "/v1/evaluate"),
+		LayaTimeout:                    getenvDuration(get, "LAYA_TIMEOUT", 5*time.Second),
+		LayaTLSCAFile:                  get("LAYA_TLS_CA_FILE"),
+		LayaTLSCertFile:                get("LAYA_TLS_CERT_FILE"),
+		LayaTLSKeyFile:                 get("LAYA_TLS_KEY_FILE"),
+		LayaTLSServerName:              get("LAYA_TLS_SERVER_NAME"),
+		PIIRegistryFile:                get("PII_NER_REGISTRY_FILE"),
+		PIIRequireNER:                  getenvBool(get, "PII_NER_REQUIRED", profile == ProfileProduction),
+		HeaderApplication:              getenvDefault(get, "HEADER_APPLICATION", "X-Application-Id"),
+		HeaderTenant:                   getenvDefault(get, "HEADER_TENANT", "X-Tenant-Id"),
+		HeaderUser:                     getenvDefault(get, "HEADER_USER", "X-User-Id"),
+		HeaderTargetProvider:           getenvDefault(get, "HEADER_TARGET_PROVIDER", "X-Target-Provider"),
+		DefaultTargetProvider:          getenvDefault(get, "DEFAULT_TARGET_PROVIDER", "cloud"),
+		PolicyFile:                     getenvDefault(get, "POLICY_FILE", "policies/enterprise-default.yaml"),
+		QuestionsFile:                  getenvDefault(get, "QUESTIONS_FILE", "questions/security-v1.yaml"),
+		ThresholdsFile:                 getenvDefault(get, "THRESHOLDS_FILE", "policies/thresholds-security-v1.yaml"),
+		PolicyBundleDir:                get("POLICY_BUNDLE_DIR"),
+		PolicyBundlePath:               get("POLICY_BUNDLE_PATH"),
+		PolicyControlPlaneURL:          get("POLICY_CONTROL_PLANE_URL"),
+		PolicyTrustStoreFile:           get("POLICY_TRUST_STORE_FILE"),
+		PolicyStateFile:                get("POLICY_STATE_FILE"),
+		PolicyDistributionTimeout:      getenvDuration(get, "POLICY_DISTRIBUTION_TIMEOUT", 10*time.Second),
+		PolicyDistributionPollInterval: getenvDuration(get, "POLICY_DISTRIBUTION_POLL_INTERVAL", 30*time.Second),
+		PolicyTLSCAFile:                get("POLICY_TLS_CA_FILE"),
+		PolicyTLSCertFile:              get("POLICY_TLS_CERT_FILE"),
+		PolicyTLSKeyFile:               get("POLICY_TLS_KEY_FILE"),
+		PolicyTLSServerName:            get("POLICY_TLS_SERVER_NAME"),
+		PolicyCanaryPercent:            getenvInt(get, "POLICY_CANARY_PERCENT", 0),
+		PolicyCanarySoak:               getenvDuration(get, "POLICY_CANARY_SOAK", 0),
+		GatewayVersion:                 getenvDefault(get, "GATEWAY_VERSION", "1.5.0"),
+		GatewayInstanceID:              getenvDefault(get, "GATEWAY_INSTANCE_ID", "gateway"),
+		DeploymentEnvironment:          getenvDefault(get, "DEPLOYMENT_ENVIRONMENT", string(profile)),
+		TokenVaultKey:                  get("TOKEN_VAULT_KEY"),
+		TokenVaultKeyFile:              get("TOKEN_VAULT_KEY_FILE"),
+		TokenVaultKeyringFile:          get("TOKEN_VAULT_KEYRING_FILE"),
+		TokenVaultAllowKeyRemoval:      getenvBool(get, "TOKEN_VAULT_ALLOW_KEY_REMOVAL", false),
+		TokenVaultRedisURL:             get("TOKEN_VAULT_REDIS_URL"),
+		TokenVaultRedisCAFile:          get("TOKEN_VAULT_REDIS_CA_FILE"),
+		TokenVaultRedisCertFile:        get("TOKEN_VAULT_REDIS_CERT_FILE"),
+		TokenVaultRedisKeyFile:         get("TOKEN_VAULT_REDIS_KEY_FILE"),
+		TokenVaultRedisServerName:      get("TOKEN_VAULT_REDIS_SERVER_NAME"),
+		TelemetryHMACKey:               get("TELEMETRY_HMAC_KEY"),
+		TelemetryHMACKeyFile:           get("TELEMETRY_HMAC_KEY_FILE"),
+		AuthMode:                       getenvDefault(get, "AUTH_MODE", auth.ModeOff),
+		JWTPublicKeyFile:               get("JWT_PUBLIC_KEY_FILE"),
+		JWTHMACSecret:                  get("JWT_HMAC_SECRET"),
+		JWTIssuer:                      get("JWT_ISSUER"),
+		JWTAudience:                    get("JWT_AUDIENCE"),
+		JWTTenantClaim:                 getenvDefault(get, "JWT_TENANT_CLAIM", "tenant_id"),
+		JWTApplicationClaim:            getenvDefault(get, "JWT_APPLICATION_CLAIM", "azp"),
+		JWTSubjectClaim:                getenvDefault(get, "JWT_SUBJECT_CLAIM", "sub"),
+		JWTRolesClaim:                  getenvDefault(get, "JWT_ROLES_CLAIM", "roles"),
+		JWTProviderClaim:               getenvDefault(get, "JWT_PROVIDER_CLAIM", "provider"),
+		AllowUnauthenticatedShadow:     strings.EqualFold(get("ALLOW_UNAUTHENTICATED_SHADOW"), "true"),
 	}
 }
 
@@ -415,16 +447,26 @@ func ValidateConfig(cfg Config) error {
 	if err := validateProductionTransport(cfg); err != nil {
 		return err
 	}
-	if err := validatePolicyFile(cfg.PolicyFile); err != nil {
-		return err
-	}
-	if err := validateQuestionsFile(cfg.QuestionsFile); err != nil {
-		return err
+	if cfg.policyDistributionEnabled() {
+		if strings.TrimSpace(cfg.PolicyTrustStoreFile) == "" {
+			return errors.New("policy distribution requires POLICY_TRUST_STORE_FILE")
+		}
+	} else {
+		if err := validatePolicyFile(cfg.PolicyFile); err != nil {
+			return err
+		}
+		if err := validateQuestionsFile(cfg.QuestionsFile); err != nil {
+			return err
+		}
 	}
 	// Threshold artifacts are mandatory and strictly validated only when
 	// semantic enforcement is requested. Deterministic-only production may
 	// omit or ignore semantic artifacts and reports semantic=disabled.
 	return nil
+}
+
+func (c Config) policyDistributionEnabled() bool {
+	return strings.TrimSpace(c.PolicyBundleDir) != "" || strings.TrimSpace(c.PolicyBundlePath) != "" || strings.TrimSpace(c.PolicyControlPlaneURL) != ""
 }
 
 func validateSemanticConfig(cfg Config) error {

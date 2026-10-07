@@ -1,0 +1,12 @@
+# Non-production integration fixture. It intentionally uses plain HTTP and
+# must never be used as a production control plane.
+services:
+  fake-policy-control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile.fake-control-plane
+    command: ["-bundle", "/bundles/current", "-addr", ":8091"]
+    volumes:
+      - ./bundles/current:/bundles/current:ro
+    ports:
+      - "8091:8091"

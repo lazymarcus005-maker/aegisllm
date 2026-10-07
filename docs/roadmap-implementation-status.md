@@ -48,3 +48,12 @@ Verification note: the first full-suite run observed the existing deterministic
 scan p95 target above 10 ms under host load; the isolated
 `TestDeterministicScanLatencyTarget` rerun passed at 6.527 ms without changing
 the threshold.
+# P1.5 signed policy distribution
+
+Implemented on `feature/production-readiness-roadmap`: deterministic bundle
+format/tooling, trust rotation and validity checks, local/HTTPS sources with
+ETag and bounded reads, atomic runtime snapshots, durable anti-replay, canary
+shadow comparison, operator promotion/rollback endpoints, retention, and a
+non-production fake control plane. Remaining deployment-specific work is
+operator provisioning of real CA/client certificates and production signer
+governance.

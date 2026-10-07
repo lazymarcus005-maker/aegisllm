@@ -45,7 +45,7 @@ func (p *SecurityPipeline) ProcessRequestContext(ctx context.Context, env *core.
 		p.audit.Record(p.auditEvent(ins))
 		return RequestDecision{Action: ins.dec.Action, Code: ins.dec.Code, Transformations: plan}, nil
 	case core.ActionRestrictTools:
-		body, err := stripRestrictedTools(raw, p.engine.RestrictedTools())
+		body, err := stripRestrictedTools(raw, p.current().Engine.RestrictedTools())
 		if err != nil {
 			return RequestDecision{}, err
 		}

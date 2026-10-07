@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/limiter"
+	"github.com/aegisllm/gateway/internal/policydistribution"
 	"github.com/aegisllm/gateway/internal/routing"
 	"github.com/aegisllm/gateway/web/leaderboard"
 )
@@ -26,6 +29,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.Handle("GET /api/protection-stats", s.protect(http.HandlerFunc(s.handleProtectionStats), "aegis.operator"))
 	mux.Handle("GET /api/effective-policy", s.protect(http.HandlerFunc(s.handleEffectivePolicy), "aegis.operator"))
+	mux.Handle("GET /api/policies/status", s.protect(http.HandlerFunc(s.handlePolicyStatus), auth.RoleOperator))
+	mux.Handle("POST /api/policies/activate", s.protect(http.HandlerFunc(s.handlePolicyActivate), auth.RoleOperator))
+	mux.Handle("POST /api/policies/rollback", s.protect(http.HandlerFunc(s.handlePolicyRollback), auth.RoleOperator))
 	mux.Handle("GET /api/routes", s.protect(http.HandlerFunc(s.handleRoutes), "aegis.operator"))
 	mux.Handle("GET /api/pii/providers", s.protect(http.HandlerFunc(s.handlePIIProviders), "aegis.operator"))
 	if s.mcp != nil {
@@ -42,6 +48,73 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /metrics", s.protect(s.metrics, "aegis.operator"))
 	}
 	return mux
+}
+
+func (s *Server) handlePolicyStatus(w http.ResponseWriter, _ *http.Request) {
+	if s.distribution == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "policy distribution unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.distribution.Status())
+}
+
+func (s *Server) handlePolicyActivate(w http.ResponseWriter, r *http.Request) {
+	if s.distribution == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "policy distribution unavailable"})
+		return
+	}
+	var request struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid activation request"})
+		return
+	}
+	if err := s.distribution.PromoteAuthorized(request.Reason, auth.RoleOperator); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "activation rejected"})
+		return
+	}
+	if current := s.distribution.Current(); current != nil {
+		s.SetRuntimePolicy(current.Policy)
+	}
+	writeJSON(w, http.StatusOK, s.distribution.Status())
+}
+
+func (s *Server) handlePolicyRollback(w http.ResponseWriter, r *http.Request) {
+	if s.distribution == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "policy distribution unavailable"})
+		return
+	}
+	var request struct {
+		Version        int    `json:"version"`
+		Action         string `json:"action"`
+		TargetSequence uint64 `json:"target_sequence"`
+		TargetHash     string `json:"target_hash"`
+		Reason         string `json:"reason"`
+		Role           string `json:"role"`
+		Issuer         string `json:"issuer"`
+		KeyID          string `json:"key_id"`
+		Issued         string `json:"issued"`
+		Signature      string `json:"signature"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid rollback authorization"})
+		return
+	}
+	signature, err := base64.StdEncoding.DecodeString(request.Signature)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid rollback authorization"})
+		return
+	}
+	authz := policydistribution.Authorization{Version: request.Version, Action: request.Action, TargetSequence: request.TargetSequence, TargetHash: request.TargetHash, Reason: request.Reason, Role: request.Role, Issuer: request.Issuer, KeyID: request.KeyID, Issued: request.Issued, Signature: signature}
+	if err := s.distribution.Rollback(authz, nil); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "rollback rejected"})
+		return
+	}
+	if current := s.distribution.Current(); current != nil {
+		s.SetRuntimePolicy(current.Policy)
+	}
+	writeJSON(w, http.StatusOK, s.distribution.Status())
 }
 
 func (s *Server) handleMCPServers(w http.ResponseWriter, _ *http.Request) {

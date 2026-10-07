@@ -34,6 +34,7 @@ func (p *SecurityPipeline) inspect(env *core.InspectionEnvelope) *inspection {
 }
 
 func (p *SecurityPipeline) inspectContext(ctx context.Context, env *core.InspectionEnvelope) *inspection {
+	runtime := p.current()
 	ins := &inspection{env: env, start: time.Now()}
 	scanStart := time.Now()
 	findings := p.registry.RunAllContext(ctx, env, p.evasionConfig())
@@ -50,10 +51,16 @@ func (p *SecurityPipeline) inspectContext(ctx context.Context, env *core.Inspect
 			p.recorder.ObserveFindings(string(f.Category), f.Subtype)
 		}
 	}
-	ins.explanation = p.engine.Explain(policy.Context{Envelope: env, Findings: ins.findings})
+	ins.explanation = runtime.Engine.Explain(policy.Context{Envelope: env, Findings: ins.findings})
 	ins.dec = ins.explanation.Decision
+	if candidate := p.candidate.Load(); candidate != nil && (p.canaryEligible == nil || p.canaryEligible(env)) {
+		candidateDecision := candidate.Engine.Explain(policy.Context{Envelope: env, Findings: ins.findings}).Decision
+		if p.canaryObserve != nil {
+			p.canaryObserve(candidateDecision.Action != ins.dec.Action)
+		}
+	}
 	if entityErr != nil && p.spanRequired {
-		ins.dec = policy.Decision{Action: core.ActionBlock, PolicyID: p.engine.Policy().ID, PolicyVersion: p.engine.Policy().Version,
+		ins.dec = policy.Decision{Action: core.ActionBlock, PolicyID: runtime.Engine.Policy().ID, PolicyVersion: runtime.Engine.Policy().Version,
 			MatchedRule: "pii_ner_required", PrecedenceStage: policy.StageFallback, Code: "PII_NER_UNAVAILABLE",
 			Reason: "required local PII recognizer unavailable"}
 		ins.explanation.Decision = ins.dec
@@ -85,7 +92,7 @@ func (p *SecurityPipeline) inspectContext(ctx context.Context, env *core.Inspect
 		}
 	}
 	ins.detMS = time.Since(ins.start).Milliseconds()
-	if p.provider != nil && p.planner != nil && ins.dec.Action != core.ActionBlock {
+	if p.provider != nil && runtime.Planner != nil && ins.dec.Action != core.ActionBlock {
 		p.semanticStage(ctx, ins)
 	}
 	p.recorder.ObserveSecurityLatency(float64(ins.detMS))

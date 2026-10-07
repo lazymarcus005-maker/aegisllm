@@ -12,21 +12,52 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
 	"github.com/aegisllm/gateway/internal/audit"
+	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/detectors"
 	"github.com/aegisllm/gateway/internal/gateway"
 	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/policydistribution"
 	"github.com/aegisllm/gateway/internal/securetransport"
 	"github.com/aegisllm/gateway/internal/tokenization"
 )
+
+type distributionObserver struct {
+	metrics *observability.Metrics
+	sink    audit.Sink
+}
+
+func (o distributionObserver) RecordDistribution(event, reason, keyID string) {
+	if o.metrics != nil {
+		o.metrics.RecordDistribution(event, reason, keyID)
+	}
+	if o.sink != nil {
+		o.sink.Record(audit.Event{RequestID: "policy-distribution", Timestamp: time.Now().UTC(), Mode: "distribution", Action: core.ActionAllow, Code: boundedDistributionValue(event), Reason: boundedDistributionValue(reason), DistributionEvent: boundedDistributionValue(event), DistributionKeyID: boundedDistributionValue(keyID)})
+	}
+}
+func boundedDistributionValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 64 {
+		value = value[:64]
+	}
+	out := []byte(value)
+	for i, c := range out {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' || c == ':' {
+			continue
+		}
+		out[i] = '_'
+	}
+	return string(out)
+}
 
 // loadVaultKey returns the 32-byte token-vault master key: hex-encoded via
 // TOKEN_VAULT_KEY, or an ephemeral random key in development and shadow.
@@ -116,11 +147,36 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Invalid policy fails startup (T-010).
-	pol, err := policy.LoadFile(cfg.PolicyFile)
-	if err != nil {
-		logger.Error("policy load failed", "path", cfg.PolicyFile)
-		os.Exit(1)
+	// Invalid policy fails startup (T-010). When signed distribution is
+	// configured, the verified bundle is the only source of runtime policy.
+	var distribution *policydistribution.Manager
+	var initialSnapshot *policydistribution.Snapshot
+	var pol *policy.Policy
+	var err error
+	if cfg.PolicyBundleDir != "" || cfg.PolicyBundlePath != "" || cfg.PolicyControlPlaneURL != "" {
+		distribution, err = policydistribution.NewManager(policydistribution.Config{
+			BundleDir: cfg.PolicyBundleDir, BundlePath: cfg.PolicyBundlePath, ControlPlaneURL: cfg.PolicyControlPlaneURL,
+			TrustStorePath: cfg.PolicyTrustStoreFile, StatePath: cfg.PolicyStateFile, Timeout: cfg.PolicyDistributionTimeout, PollInterval: cfg.PolicyDistributionPollInterval,
+			GatewayVersion: cfg.GatewayVersion, Environment: cfg.DeploymentEnvironment, Retain: 3,
+			CanaryPercent: cfg.PolicyCanaryPercent, CanarySoak: cfg.PolicyCanarySoak,
+			TLS: securetransport.ClientTLSOptions{CAFile: cfg.PolicyTLSCAFile, CertificateFile: cfg.PolicyTLSCertFile, KeyFile: cfg.PolicyTLSKeyFile, ServerName: cfg.PolicyTLSServerName, MinVersion: cfg.TLSMinVersion, MaxVersion: cfg.TLSMaxVersion, PollInterval: cfg.TLSReloadInterval},
+		}, nil)
+		if err != nil {
+			logger.Error("policy distribution configuration failed", "error", err)
+			os.Exit(1)
+		}
+		if err = distribution.LoadInitial(context.Background()); err != nil {
+			logger.Error("signed policy bundle unavailable")
+			os.Exit(1)
+		}
+		initialSnapshot = distribution.Current()
+		pol = initialSnapshot.Policy
+	} else {
+		pol, err = policy.LoadFile(cfg.PolicyFile)
+		if err != nil {
+			logger.Error("policy load failed", "path", cfg.PolicyFile)
+			os.Exit(1)
+		}
 	}
 
 	srv, err := gateway.NewServer(cfg, logger)
@@ -131,10 +187,15 @@ func main() {
 	defer srv.Close()
 
 	// Versioned question schema (FR-009); invalid schema fails startup.
-	questionSchema, err := decision.LoadQuestionsFile(cfg.QuestionsFile)
-	if err != nil {
-		logger.Error("question schema load failed", "path", cfg.QuestionsFile)
-		os.Exit(1)
+	var questionSchema *decision.QuestionSchema
+	if initialSnapshot != nil && initialSnapshot.Questions != nil {
+		questionSchema = initialSnapshot.Questions
+	} else {
+		questionSchema, err = decision.LoadQuestionsFile(cfg.QuestionsFile)
+		if err != nil {
+			logger.Error("question schema load failed", "path", cfg.QuestionsFile)
+			os.Exit(1)
+		}
 	}
 
 	metrics := observability.New()
@@ -150,6 +211,9 @@ func main() {
 	}
 	registry := detectors.ProductionRegistry(telemetryKey, nil)
 	sink := audit.NewWriterSink(os.Stdout)
+	if distribution != nil {
+		distribution.SetObserver(distributionObserver{metrics: metrics, sink: sink})
+	}
 	// Security mode is not stated here: Server.SetPipeline propagates
 	// cfg.SecurityMode into the pipeline — the server owns the mode.
 	pipe := gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink)
@@ -286,7 +350,13 @@ func main() {
 		pipe.SetDecisionProvider(&decision.NoopProvider{}, questionSchema)
 	}
 	var thresholds *policy.SemanticThresholds
-	if cfg.ThresholdsFile != "" {
+	if initialSnapshot != nil {
+		thresholds = initialSnapshot.Thresholds
+		if thresholds != nil {
+			pipe.SetSemanticThresholds(thresholds)
+			metrics.ObserveCalibrationArtifact(thresholds.ID, thresholds.Version, thresholds.Provider, thresholds.Checkpoint, thresholds.QuestionSchemaID, thresholds.State, thresholds.CalibrationTimestamp)
+		}
+	} else if cfg.ThresholdsFile != "" {
 		if _, statErr := os.Stat(cfg.ThresholdsFile); statErr == nil {
 			var loadErr error
 			thresholds, loadErr = policy.LoadSemanticThresholdsFile(cfg.ThresholdsFile)
@@ -334,6 +404,27 @@ func main() {
 
 	srv.SetPipeline(pipe)
 	srv.SetPolicy(pol)
+	if distribution != nil {
+		pipe.SetCanaryAssignment(func(env *core.InspectionEnvelope) bool {
+			return distribution.IsCanary(cfg.GatewayInstanceID, env.Tenant, env.Application)
+		})
+		pipe.SetCanaryObserver(func(disagreement bool) { distribution.ObserveCanary(cfg.GatewayInstanceID, disagreement) })
+		distribution.SetApply(func(snapshot *policydistribution.Snapshot) error {
+			if err := pipe.ActivateRuntimeSnapshot(policy.NewEngine(snapshot.Policy), snapshot.Questions, snapshot.Thresholds); err != nil {
+				return err
+			}
+			srv.SetRuntimePolicy(snapshot.Policy)
+			return nil
+		})
+		distribution.SetCandidateApply(func(snapshot *policydistribution.Snapshot) error {
+			if snapshot == nil {
+				pipe.ClearCandidateRuntimeSnapshot()
+				return nil
+			}
+			return pipe.SetCandidateRuntimeSnapshot(policy.NewEngine(snapshot.Policy), snapshot.Questions, snapshot.Thresholds)
+		})
+		srv.SetPolicyDistribution(distribution)
+	}
 	srv.AddReadinessCheck("policy_loaded", func() string { return "" })
 	srv.AddReadinessCheck("questions_loaded", func() string { return "" })
 	if cfg.TokenVaultRedisURL == "" {
@@ -370,6 +461,20 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if distribution != nil && cfg.PolicyControlPlaneURL != "" {
+		go func() {
+			ticker := time.NewTicker(cfg.PolicyDistributionPollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					_ = distribution.Poll(ctx)
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
 
 	go func() {
 		<-ctx.Done()

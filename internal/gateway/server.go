@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aegisllm/gateway/internal/auth"
@@ -20,6 +21,7 @@ import (
 	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/policydistribution"
 	"github.com/aegisllm/gateway/internal/routing"
 	"github.com/aegisllm/gateway/internal/securetransport"
 	"github.com/aegisllm/gateway/web/leaderboard"
@@ -62,6 +64,8 @@ type Server struct {
 	dashboard      *dashboard.Dashboard
 	authn          *auth.Authenticator
 	policy         *policy.Policy
+	policyRef      atomic.Pointer[policy.Policy]
+	distribution   *policydistribution.Manager
 	mcp            *mcpGateway
 	semanticStatus func() SemanticReadiness
 	materials      map[string]func() securetransport.Status
@@ -214,7 +218,18 @@ func (s *Server) Close() {
 
 // SetPolicy attaches the already validated policy for the operator-only
 // effective-policy endpoint. The endpoint exposes only Policy.Summary().
-func (s *Server) SetPolicy(p *policy.Policy) { s.policy = p }
+func (s *Server) SetPolicy(p *policy.Policy) { s.policy = p; s.policyRef.Store(p) }
+
+func (s *Server) SetRuntimePolicy(p *policy.Policy) { s.policyRef.Store(p) }
+
+func (s *Server) SetPolicyDistribution(m *policydistribution.Manager) { s.distribution = m }
+
+func (s *Server) currentPolicy() *policy.Policy {
+	if p := s.policyRef.Load(); p != nil {
+		return p
+	}
+	return s.policy
+}
 
 // SetPIIProviderStatus mounts a sanitized operator projection. The callback
 // must return metadata only; provider URLs, credentials, payloads, and text
@@ -223,25 +238,26 @@ func (s *Server) SetPIIProviderStatus(fn func() []pii.ProviderStatus) { s.piiSta
 
 func (s *Server) routeConstraint(action core.Action, provider string) routing.Constraint {
 	var out routing.Constraint
-	if s.policy != nil && s.policy.Routing != nil {
+	currentPolicy := s.currentPolicy()
+	if currentPolicy != nil && currentPolicy.Routing != nil {
 		if action == core.ActionForceLocalModel {
-			c := s.policy.Routing.ForceLocal
+			c := currentPolicy.Routing.ForceLocal
 			out = routing.Constraint{Routes: c.Routes, Classes: c.Classes, Providers: c.Providers, FallbackChain: c.FallbackChain}
 		} else {
-			for name, c := range s.policy.Routing.Actions {
+			for name, c := range currentPolicy.Routing.Actions {
 				if strings.EqualFold(name, string(action)) {
 					out = routing.Constraint{Routes: c.Routes, Classes: c.Classes, Providers: c.Providers, FallbackChain: c.FallbackChain}
 					break
 				}
 			}
 			if len(out.Routes) == 0 && len(out.Classes) == 0 && len(out.Providers) == 0 && out.FallbackChain == "" {
-				if c, ok := s.policy.Routing.ProviderBoundaries[provider]; ok {
+				if c, ok := currentPolicy.Routing.ProviderBoundaries[provider]; ok {
 					out = routing.Constraint{Routes: c.Routes, Classes: c.Classes, Providers: c.Providers, FallbackChain: c.FallbackChain}
 				}
 			}
 		}
 		if action != core.ActionForceLocalModel {
-			if boundary, ok := s.policy.Routing.ProviderBoundaries[provider]; ok {
+			if boundary, ok := currentPolicy.Routing.ProviderBoundaries[provider]; ok {
 				if len(boundary.Classes) > 0 {
 					out.Classes = boundary.Classes
 				}
@@ -358,14 +374,15 @@ func (s *Server) handleProtectionStats(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleEffectivePolicy(w http.ResponseWriter, _ *http.Request) {
-	if s.policy == nil {
+	pol := s.currentPolicy()
+	if pol == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "policy unavailable"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"policy_id": s.policy.ID, "policy_version": s.policy.Version,
-		"owner": s.policy.Owner, "effective_date": s.policy.EffectiveDate,
-		"rules": s.policy.Summary(),
+		"policy_id": pol.ID, "policy_version": pol.Version,
+		"owner": pol.Owner, "effective_date": pol.EffectiveDate,
+		"rules": pol.Summary(),
 	})
 }
 

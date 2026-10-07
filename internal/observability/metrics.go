@@ -93,6 +93,7 @@ type Metrics struct {
 	nerCalls            *prometheus.CounterVec
 	nerLatency          *prometheus.HistogramVec
 	evasion             *prometheus.CounterVec
+	distribution        *prometheus.CounterVec
 	registry            *prometheus.Registry
 }
 
@@ -201,6 +202,7 @@ func New() *Metrics {
 		nerCalls:            prometheus.NewCounterVec(prometheus.CounterOpts{Name: "pii_ner_calls_total", Help: "Local NER calls by bounded provider/entity/language/confidence and outcome."}, []string{"provider", "entity", "language", "confidence_bucket", "error", "fallback"}),
 		nerLatency:          prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "pii_ner_latency_ms", Help: "Local NER latency by bounded provider and language."}, []string{"provider", "language"}),
 		evasion:             prometheus.NewCounterVec(prometheus.CounterOpts{Name: "evasion_events_total", Help: "Bounded canonicalization/evasion events by type, depth, action, and budget outcome."}, []string{"type", "encoding_depth", "action", "budget_rejected"}),
+		distribution:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "policy_distribution_events_total", Help: "Signed policy distribution events by bounded event, reason, and key ID."}, []string{"event", "reason", "key_id"}),
 		registry:            reg,
 	}
 	reg.MustRegister(m.requestsTotal, m.blockedTotal, m.tokenizedTotal, m.redactedTotal,
@@ -209,9 +211,15 @@ func New() *Metrics {
 		m.falsePositiveSample, m.fallbackTotal, m.transformations, m.rateLimited,
 		m.concurrencyRejected, m.promptRejected, m.responseTooLarge, m.upstreamTimeout,
 		m.breakerOpen, m.activeRequests, m.activeLaya, m.calibrationInfo, m.semanticRejected,
-		m.schemaMismatch, m.checkpointMismatch, m.missingDecisions, m.fallbackReasons,
+		m.schemaMismatch, m.checkpointMismatch, m.missingDecisions, m.fallbackReasons, m.distribution,
 		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring, m.routeSelected, m.routeFailover, m.routeHealth, m.routeRejected, m.routeUnavailable, m.nerCalls, m.nerLatency, m.evasion)
 	return m
+}
+
+// RecordDistribution implements the signed policy manager observer without
+// exposing bundle contents or unbounded error strings.
+func (m *Metrics) RecordDistribution(event, reason, keyID string) {
+	m.distribution.WithLabelValues(boundedMetadata(event), boundedReason(reason), boundedMetadata(keyID)).Inc()
 }
 
 // Handler serves the Prometheus exposition format on /metrics.
@@ -498,7 +506,7 @@ func (m *Metrics) SetActiveLayaEvaluations(n int) { m.activeLaya.Set(float64(n))
 
 func boundedReason(reason string) string {
 	switch reason {
-	case "provider", "schema", "checkpoint", "unknown_question", "confidence", "missing_decision", "semantic_evidence_rejected":
+	case "provider", "schema", "checkpoint", "unknown_question", "confidence", "missing_decision", "semantic_evidence_rejected", "ready", "rejected", "initial", "promoted", "operator_authorized", "candidate":
 		return reason
 	default:
 		return "other"

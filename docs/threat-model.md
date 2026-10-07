@@ -73,3 +73,16 @@ Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
   the client receives only a sanitized error; shadow records a prediction but
   forwards the original event. A provider that emits malformed or oversized
   events is rejected in production.
+# P1.5 distribution threats
+
+Policy distribution treats the control plane as untrusted transport: Ed25519
+signatures, a rotating multi-key trust store, validity windows, artifact
+hashes, target gates, and durable sequence/hash state protect against tamper,
+unknown/revoked signer, replay, and rollback. HTTPS/mTLS protects transport
+confidentiality and endpoint identity but is not a substitute for signing.
+
+Canary candidates run shadow-only, stable assignment prevents cohort churn,
+and promotion is an authenticated operator action. A signed rollback
+authorization is required to restore a retained complete snapshot. Bundle
+manifests and operational metrics intentionally contain no prompts, traffic,
+secrets, private keys, or sensitive policy conditions.

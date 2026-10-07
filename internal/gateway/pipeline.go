@@ -1,10 +1,13 @@
 package gateway
 
 import (
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aegisllm/gateway/internal/audit"
+	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/detectors"
 	"github.com/aegisllm/gateway/internal/observability"
@@ -33,12 +36,58 @@ type SecurityPipeline struct {
 	semanticEnforce bool
 	recorder        observability.Recorder
 	spanRequired    bool
+	runtime         atomic.Pointer[RuntimeSnapshot]
+	candidate       atomic.Pointer[RuntimeSnapshot]
+	canaryEligible  func(*core.InspectionEnvelope) bool
+	canaryObserve   func(bool)
+}
+
+// RuntimeSnapshot groups every policy-bound artifact used by one request.
+// The pointer is swapped once, so readers can never observe a mixed policy,
+// question schema, and threshold configuration.
+type RuntimeSnapshot struct {
+	Engine     *policy.Engine
+	Questions  *decision.QuestionSchema
+	Planner    *decision.Planner
+	Thresholds *policy.SemanticThresholds
 }
 
 // NewSecurityPipeline constructs a pipeline in OFF mode with no-op metrics.
 func NewSecurityPipeline(registry *detectors.Registry, engine *policy.Engine, sink audit.Sink) *SecurityPipeline {
-	return &SecurityPipeline{registry: registry, engine: engine, audit: sink, mode: ModeOff, recorder: observability.Noop{}}
+	p := &SecurityPipeline{registry: registry, engine: engine, audit: sink, mode: ModeOff, recorder: observability.Noop{}}
+	p.runtime.Store(&RuntimeSnapshot{Engine: engine})
+	return p
 }
+
+func (p *SecurityPipeline) current() *RuntimeSnapshot {
+	if snapshot := p.runtime.Load(); snapshot != nil {
+		return snapshot
+	}
+	return &RuntimeSnapshot{Engine: p.engine, Questions: p.questions, Planner: p.planner, Thresholds: p.thresholds}
+}
+
+// ActivateRuntimeSnapshot atomically changes the complete policy artifact set.
+func (p *SecurityPipeline) ActivateRuntimeSnapshot(engine *policy.Engine, questions *decision.QuestionSchema, thresholds *policy.SemanticThresholds) error {
+	if engine == nil || engine.Policy() == nil {
+		return fmt.Errorf("runtime policy snapshot is empty")
+	}
+	p.runtime.Store(&RuntimeSnapshot{Engine: engine, Questions: questions, Planner: decision.NewPlanner(questions), Thresholds: thresholds})
+	return nil
+}
+
+func (p *SecurityPipeline) SetCandidateRuntimeSnapshot(engine *policy.Engine, questions *decision.QuestionSchema, thresholds *policy.SemanticThresholds) error {
+	if engine == nil || engine.Policy() == nil {
+		return fmt.Errorf("candidate policy snapshot is empty")
+	}
+	p.candidate.Store(&RuntimeSnapshot{Engine: engine, Questions: questions, Planner: decision.NewPlanner(questions), Thresholds: thresholds})
+	return nil
+}
+
+func (p *SecurityPipeline) ClearCandidateRuntimeSnapshot() { p.candidate.Store(nil) }
+func (p *SecurityPipeline) SetCanaryAssignment(fn func(*core.InspectionEnvelope) bool) {
+	p.canaryEligible = fn
+}
+func (p *SecurityPipeline) SetCanaryObserver(fn func(bool)) { p.canaryObserve = fn }
 
 // SetSecurityMode sets the deployment mode. The HTTP server is the owner of
 // this value and propagates it when it attaches the pipeline.
@@ -59,7 +108,7 @@ func (p *SecurityPipeline) evasionConfig() detectors.EvasionConfig {
 	if p == nil || p.engine == nil || p.engine.Policy() == nil {
 		return detectors.DefaultEvasionConfig()
 	}
-	e := p.engine.Policy().Evasion
+	e := p.current().Engine.Policy().Evasion
 	// Policies written before P1.4 receive the safe defaults. A non-empty
 	// evasion block is authoritative, including enabled: false.
 	if !e.Enabled && len(e.Transforms) == 0 && e.MaxDecodeDepth == 0 && e.MaxDecodeWorkBytes == 0 && e.MaxJSONDepth == 0 && e.MaxJSONNodes == 0 {
@@ -98,20 +147,26 @@ func (p *SecurityPipeline) SetDecisionProvider(dp decision.DecisionProvider, qs 
 	p.provider = dp
 	p.questions = qs
 	p.planner = decision.NewPlanner(qs)
+	current := p.current()
+	p.runtime.Store(&RuntimeSnapshot{Engine: current.Engine, Questions: qs, Planner: p.planner, Thresholds: current.Thresholds})
 }
 
 // EnableSemanticEnforce opts into calibrated semantic enforcement.
 func (p *SecurityPipeline) EnableSemanticEnforce() { p.semanticEnforce = true }
 
 // SetSemanticThresholds attaches the calibrated semantic threshold policy.
-func (p *SecurityPipeline) SetSemanticThresholds(t *policy.SemanticThresholds) { p.thresholds = t }
+func (p *SecurityPipeline) SetSemanticThresholds(t *policy.SemanticThresholds) {
+	p.thresholds = t
+	current := p.current()
+	p.runtime.Store(&RuntimeSnapshot{Engine: current.Engine, Questions: current.Questions, Planner: current.Planner, Thresholds: t})
+}
 
 // RestrictedTools returns the policy's deterministic tool deny set to the MCP
 // transport. The transport applies this before schema validation or network
 // execution, so guessed tool names cannot bypass RESTRICT_TOOLS.
 func (p *SecurityPipeline) RestrictedTools() []string {
-	if p == nil || p.engine == nil {
+	if p == nil || p.current().Engine == nil {
 		return nil
 	}
-	return p.engine.RestrictedTools()
+	return p.current().Engine.RestrictedTools()
 }

@@ -38,7 +38,8 @@ func languageOf(text string) string {
 // the fitted threshold. Without a threshold policy, semantic evidence cannot
 // enforce.
 func (p *SecurityPipeline) gateSignals(env *core.InspectionEnvelope, signals []policy.SemanticSignal, evidence decision.DecisionEvidence) []policy.SemanticSignal {
-	if p.thresholds == nil {
+	runtime := p.current()
+	if runtime.Thresholds == nil {
 		return nil
 	}
 	subject, _ := semanticSubject(env)
@@ -48,7 +49,7 @@ func (p *SecurityPipeline) gateSignals(env *core.InspectionEnvelope, signals []p
 		if !sig.Triggered {
 			continue
 		}
-		rec, ok := p.thresholds.Match(sig.QuestionID, lang, env.Application, evidence.Provider)
+		rec, ok := runtime.Thresholds.Match(sig.QuestionID, lang, env.Application, evidence.Provider)
 		if !ok || !rec.Evaluated || sig.Confidence < rec.MinConfidence {
 			continue
 		}
@@ -89,6 +90,7 @@ func semanticSubject(env *core.InspectionEnvelope) (string, core.Role) {
 // semanticStage consults the provider only when deterministic policy did not
 // already produce a definitive block.
 func (p *SecurityPipeline) semanticStage(ctx context.Context, ins *inspection) {
+	runtime := p.current()
 	env := ins.env
 	layaStart := time.Now()
 	evidence, signals, plan, err := p.evaluateSemantic(ctx, env, ins.findings)
@@ -96,7 +98,7 @@ func (p *SecurityPipeline) semanticStage(ctx context.Context, ins *inspection) {
 	if err != nil || evidence != nil {
 		ins.laya = &audit.LayaInfo{}
 		if evidence != nil {
-			ins.laya = layaAuditInfo(evidence, p.questions)
+			ins.laya = layaAuditInfo(evidence, runtime.Questions)
 		}
 		p.recorder.ObserveLaya(float64(ins.layaMS), err != nil)
 	}
@@ -118,10 +120,10 @@ func (p *SecurityPipeline) semanticStage(ctx context.Context, ins *inspection) {
 				// Preserve the established outage contract and its stable audit
 				// code. Evidence-shape failures use the new reasoned matrix.
 				if plan.MaxRisk == "high" {
-					fb, ok = p.engine.LayaUnavailableFallback()
+					fb, ok = runtime.Engine.LayaUnavailableFallback()
 				}
 			} else {
-				fb, ok = p.engine.SemanticFallback(plan.MaxRisk, strings.ToLower(string(env.Direction)), provider, err.Error())
+				fb, ok = runtime.Engine.SemanticFallback(plan.MaxRisk, strings.ToLower(string(env.Direction)), provider, err.Error())
 			}
 			if ok {
 				ins.dec = fb
@@ -138,21 +140,22 @@ func (p *SecurityPipeline) semanticStage(ctx context.Context, ins *inspection) {
 	if evidence == nil {
 		return
 	}
-	ins.laya = layaAuditInfo(evidence, p.questions)
+	ins.laya = layaAuditInfo(evidence, runtime.Questions)
 	switch {
 	case p.mode == ModeShadow:
-		ins.explanation = p.engine.Explain(policy.Context{Envelope: env, Findings: ins.findings, Semantic: signals})
+		ins.explanation = runtime.Engine.Explain(policy.Context{Envelope: env, Findings: ins.findings, Semantic: signals})
 		ins.dec = ins.explanation.Decision
 	case p.semanticEnforce:
 		if gated := p.gateSignals(env, signals, *evidence); len(gated) > 0 {
-			ins.explanation = p.engine.Explain(policy.Context{Envelope: env, Findings: ins.findings, Semantic: gated})
+			ins.explanation = runtime.Engine.Explain(policy.Context{Envelope: env, Findings: ins.findings, Semantic: gated})
 			ins.dec = ins.explanation.Decision
 		}
 	}
 }
 
 func (p *SecurityPipeline) evaluateSemantic(ctx context.Context, env *core.InspectionEnvelope, findings []core.SecurityFinding) (*decision.DecisionEvidence, []policy.SemanticSignal, decision.Plan, error) {
-	plan := p.planner.Plan(env.Direction, env.Application, env.Target, findings)
+	runtime := p.current()
+	plan := runtime.Planner.Plan(env.Direction, env.Application, env.Target, findings)
 	if !plan.Ask {
 		return nil, nil, plan, nil
 	}
@@ -178,35 +181,36 @@ func (p *SecurityPipeline) evaluateSemantic(ctx context.Context, env *core.Inspe
 			continue
 		}
 		signals = append(signals, policy.SemanticSignal{
-			QuestionID: id, Triggered: d.Value, Confidence: d.Confidence, Risk: p.questions.RiskOf(id),
+			QuestionID: id, Triggered: d.Value, Confidence: d.Confidence, Risk: runtime.Questions.RiskOf(id),
 		})
 	}
 	return &evidence, signals, plan, nil
 }
 
 func (p *SecurityPipeline) validateEvidence(evidence decision.DecisionEvidence, required []string) error {
+	runtime := p.current()
 	if strings.TrimSpace(evidence.Provider) == "" || strings.EqualFold(evidence.Provider, "noop") {
 		p.recorder.ObserveSemanticRejected("provider")
 		return fmt.Errorf("semantic provider is missing or noop")
 	}
-	if p.questions == nil {
+	if runtime.Questions == nil {
 		p.recorder.ObserveSemanticRejected("schema")
 		return fmt.Errorf("question schema is not loaded")
 	}
-	if evidence.SchemaVersion != p.questions.Schema {
+	if evidence.SchemaVersion != runtime.Questions.Schema {
 		p.recorder.ObserveSchemaMismatch()
 		return fmt.Errorf("semantic schema mismatch")
 	}
-	if p.thresholds != nil && p.thresholds.QuestionSchema != "" && p.thresholds.QuestionSchema != "legacy" {
-		if evidence.SchemaVersion != p.thresholds.QuestionSchemaID {
+	if runtime.Thresholds != nil && runtime.Thresholds.QuestionSchema != "" && runtime.Thresholds.QuestionSchema != "legacy" {
+		if evidence.SchemaVersion != runtime.Thresholds.QuestionSchemaID {
 			p.recorder.ObserveSchemaMismatch()
 			return fmt.Errorf("semantic schema mismatch")
 		}
-		if p.thresholds.Checkpoint != "" && evidence.Checkpoint != p.thresholds.Checkpoint {
+		if runtime.Thresholds.Checkpoint != "" && evidence.Checkpoint != runtime.Thresholds.Checkpoint {
 			p.recorder.ObserveCheckpointMismatch()
 			return fmt.Errorf("semantic checkpoint mismatch")
 		}
-		if p.thresholds.Provider != "" && p.thresholds.Provider != "legacy" && !strings.EqualFold(evidence.Provider, p.thresholds.Provider) {
+		if runtime.Thresholds.Provider != "" && runtime.Thresholds.Provider != "legacy" && !strings.EqualFold(evidence.Provider, runtime.Thresholds.Provider) {
 			p.recorder.ObserveSemanticRejected("provider")
 			return fmt.Errorf("semantic provider mismatch")
 		}

@@ -4,16 +4,20 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/gateway"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/policydistribution"
 )
 
 type result struct {
@@ -33,6 +37,10 @@ func main() {
 		fail("command is required: validate, effective, or explain")
 	}
 	command := os.Args[1]
+	if command == "bundle" {
+		bundleMain(os.Args[2:])
+		return
+	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	policyPath := fs.String("policy", "policies/enterprise-default.yaml", "policy YAML file")
@@ -69,6 +77,180 @@ func main() {
 	default:
 		fail("unknown command")
 	}
+}
+
+func bundleMain(args []string) {
+	if len(args) == 0 {
+		fail("bundle command is required: create, sign, verify, or inspect")
+	}
+	command := args[0]
+	fs := flag.NewFlagSet("bundle "+command, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	out := fs.String("out", "", "bundle directory")
+	bundlePath := fs.String("bundle", "", "bundle directory")
+	policyPath := fs.String("policy", "policies/enterprise-default.yaml", "policy YAML file")
+	questionsPath := fs.String("questions", "", "question schema YAML file")
+	thresholdsPath := fs.String("thresholds", "", "threshold YAML file")
+	keyPath := fs.String("key", "", "Ed25519 private key file, or - for stdin")
+	trustPath := fs.String("trust-store", "", "public trust store JSON/YAML")
+	bundleID := fs.String("bundle-id", "", "bundle identifier")
+	targetHash := fs.String("target-hash", "", "retained bundle hash for rollback authorization")
+	sequence := fs.Uint64("sequence", 0, "monotonically increasing bundle sequence")
+	issuer := fs.String("issuer", "", "issuer identifier")
+	keyID := fs.String("key-id", "", "signing key identifier")
+	role := fs.String("role", "aegis.operator", "operator role for rollback authorization")
+	reason := fs.String("reason", "", "operator rollback reason")
+	artifacts := fs.String("artifacts", "", "evaluation artifacts as name=path pairs separated by commas")
+	created := fs.String("created", "", "RFC3339 creation timestamp")
+	expires := fs.String("expires", "", "RFC3339 expiry timestamp")
+	notBefore := fs.String("not-before", "", "RFC3339 not-before timestamp")
+	minimum := fs.String("minimum-gateway-version", "", "minimum gateway version")
+	environments := fs.String("environment", "", "comma-separated target environments")
+	tenants := fs.String("tenant", "", "comma-separated target tenants")
+	if err := fs.Parse(args[1:]); err != nil {
+		fail("invalid bundle command arguments")
+	}
+	switch command {
+	case "create":
+		if *out == "" || *sequence == 0 || *issuer == "" || *keyID == "" {
+			fail("create requires -out, -sequence, -issuer, and -key-id")
+		}
+		policyData, err := os.ReadFile(*policyPath)
+		if err != nil {
+			fail("policy artifact unavailable")
+		}
+		questionData := readOptional(*questionsPath)
+		thresholdData := readOptional(*thresholdsPath)
+		manifest := policydistribution.Manifest{BundleID: *bundleID, Sequence: *sequence, Issuer: *issuer, KeyID: *keyID,
+			Created: *created, Expires: *expires, NotBefore: *notBefore, MinimumGatewayVersion: *minimum,
+			TargetEnvironments: splitCSV(*environments), TargetTenants: splitCSV(*tenants)}
+		bundle, err := policydistribution.Create(policyData, questionData, thresholdData, manifest)
+		if err != nil {
+			fail("bundle creation failed")
+		}
+		for _, item := range splitCSV(*artifacts) {
+			parts := strings.SplitN(item, "=", 2)
+			if len(parts) != 2 {
+				fail("invalid evaluation artifact")
+			}
+			data, readErr := os.ReadFile(parts[1])
+			if readErr != nil || policydistribution.AddFile(bundle, parts[0], data, true) != nil {
+				fail("evaluation artifact unavailable")
+			}
+		}
+		if err := policydistribution.WriteDirectory(*out, bundle); err != nil {
+			fail("bundle write failed")
+		}
+	case "sign":
+		if *bundlePath == "" || *keyPath == "" {
+			fail("sign requires -bundle and -key")
+		}
+		bundle, err := policydistribution.ReadDirectory(*bundlePath)
+		if err != nil {
+			fail("bundle read failed")
+		}
+		keyData, err := readSecretInput(*keyPath)
+		if err != nil {
+			fail("private key unavailable")
+		}
+		privateKey, err := policydistribution.ParsePrivateKey(keyData)
+		if err != nil || policydistribution.Sign(bundle, privateKey) != nil {
+			fail("bundle signing failed")
+		}
+		destination := *out
+		if destination == "" {
+			destination = *bundlePath
+		}
+		if err := policydistribution.WriteDirectory(destination, bundle); err != nil {
+			fail("signed bundle write failed")
+		}
+	case "verify":
+		if *bundlePath == "" || *trustPath == "" {
+			fail("verify requires -bundle and -trust-store")
+		}
+		bundle, err := policydistribution.ReadDirectory(*bundlePath)
+		if err != nil {
+			fail("bundle read failed")
+		}
+		trust := policydistribution.NewTrustStore(*trustPath)
+		key, err := trust.Key(bundle.Manifest.KeyID, time.Now().UTC())
+		if err != nil || bundle.Verify(key, time.Now().UTC()) != nil {
+			fail("bundle verification failed")
+		}
+		snapshot, err := bundle.Snapshot()
+		if err != nil {
+			fail("bundle contract failed")
+		}
+		write(map[string]any{"valid": true, "bundle_id": bundle.Manifest.BundleID, "sequence": bundle.Manifest.Sequence, "bundle_hash": snapshot.BundleHash, "key_id": bundle.Manifest.KeyID})
+	case "inspect":
+		if *bundlePath == "" {
+			fail("inspect requires -bundle")
+		}
+		bundle, err := policydistribution.ReadDirectory(*bundlePath)
+		if err != nil {
+			fail("bundle read failed")
+		}
+		write(map[string]any{"manifest": bundle.Manifest, "bundle_hash": bundle.Hash(), "files": bundle.SortedFileNames()})
+	case "rollback":
+		if *out == "" || *keyPath == "" || *keyID == "" || *sequence == 0 || (*targetHash == "" && *bundleID == "") {
+			fail("rollback requires -out, -key, -key-id, -sequence, and -target-hash")
+		}
+		keyData, err := readSecretInput(*keyPath)
+		if err != nil {
+			fail("private key unavailable")
+		}
+		privateKey, err := policydistribution.ParsePrivateKey(keyData)
+		if err != nil {
+			fail("private key unavailable")
+		}
+		hash := *targetHash
+		if hash == "" {
+			hash = *bundleID
+		}
+		authz := policydistribution.Authorization{Version: 1, Action: "rollback", TargetSequence: *sequence, TargetHash: hash, Reason: *reason, Role: *role, Issuer: *issuer, KeyID: *keyID, Issued: time.Now().UTC().Format(time.RFC3339Nano)}
+		if authz.Reason == "" {
+			fail("rollback requires -reason")
+		}
+		if err := policydistribution.SignAuthorization(&authz, privateKey); err != nil {
+			fail("rollback authorization failed")
+		}
+		payload := map[string]any{"version": authz.Version, "action": authz.Action, "target_sequence": authz.TargetSequence, "target_hash": authz.TargetHash, "reason": authz.Reason, "role": authz.Role, "issuer": authz.Issuer, "key_id": authz.KeyID, "issued": authz.Issued, "signature": base64.StdEncoding.EncodeToString(authz.Signature)}
+		data, _ := json.Marshal(payload)
+		data = append(data, '\n')
+		if err := os.WriteFile(filepath.Clean(*out), data, 0600); err != nil {
+			fail("rollback authorization write failed")
+		}
+	default:
+		fail("unknown bundle command")
+	}
+}
+
+func readSecretInput(path string) ([]byte, error) {
+	if path == "-" {
+		return io.ReadAll(os.Stdin)
+	}
+	return os.ReadFile(filepath.Clean(path))
+}
+
+func readOptional(path string) []byte {
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fail("optional artifact unavailable")
+	}
+	return data
+}
+
+func splitCSV(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func explainInto(out *result, pol *policy.Policy, requestPath, endpoint, provider, tenant, application string) {

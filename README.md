@@ -287,3 +287,10 @@ request policy is enforced before forwarding. Streaming responses are
 statefully inspected, transformed, or terminated using bounded SSE controls.
 They remain subject to admission, prompt/response budgets, upstream timeouts,
 and `MAX_STREAM_DURATION`.
+# Signed policy distribution
+
+P1.5 adds versioned Ed25519-signed policy bundles, durable anti-replay state,
+atomic policy/question/threshold activation, deterministic canaries, and
+operator-authorized rollback. See [docs/policy-bundles.md](docs/policy-bundles.md),
+the [runbook](docs/policy-distribution-runbook.md), and the
+[control-plane contract](docs/control-plane-contract.md).
