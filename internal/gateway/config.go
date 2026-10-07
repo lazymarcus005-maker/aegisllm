@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"net/url"
@@ -36,11 +37,26 @@ const (
 type Config struct {
 	DeploymentProfile             DeploymentProfile
 	ListenAddr                    string
+	InboundTLSCertFile            string
+	InboundTLSKeyFile             string
+	InboundTLSClientCAFile        string
+	InboundMTLSMode               string // off | require
+	TLSMinVersion                 uint16
+	TLSMaxVersion                 uint16
+	TLSReloadInterval             time.Duration
+	TLSTerminatedByTrustedEdge    bool
+	PlaintextDependencyDevWaiver  bool
 	UpstreamBaseURL               string
 	UpstreamAuthMode              string // none | bearer | header
 	UpstreamAPIKey                string
+	UpstreamAPIKeyFile            string
 	UpstreamAuthHeaderName        string
 	UpstreamAuthHeaderValue       string
+	UpstreamAuthHeaderValueFile   string
+	UpstreamTLSCAFile             string
+	UpstreamTLSCertFile           string
+	UpstreamTLSKeyFile            string
+	UpstreamTLSServerName         string
 	UpstreamChatPathPrefix        string
 	UpstreamDialTimeout           time.Duration
 	UpstreamTLSHandshakeTimeout   time.Duration
@@ -74,6 +90,10 @@ type Config struct {
 	LayaURL                       string
 	LayaEvaluatePath              string
 	LayaTimeout                   time.Duration
+	LayaTLSCAFile                 string
+	LayaTLSCertFile               string
+	LayaTLSKeyFile                string
+	LayaTLSServerName             string
 	HeaderApplication             string
 	HeaderTenant                  string
 	HeaderUser                    string
@@ -83,9 +103,17 @@ type Config struct {
 	QuestionsFile                 string
 	ThresholdsFile                string
 	TokenVaultKey                 string
+	TokenVaultKeyFile             string
+	TokenVaultKeyringFile         string
+	TokenVaultAllowKeyRemoval     bool
 	TokenVaultRedisURL            string
+	TokenVaultRedisCAFile         string
+	TokenVaultRedisCertFile       string
+	TokenVaultRedisKeyFile        string
+	TokenVaultRedisServerName     string
 	TelemetryHMACKey              string
-	AuthMode                      string // off | jwt
+	TelemetryHMACKeyFile          string
+	AuthMode                      string // off | jwt | mtls
 	JWTPublicKeyFile              string
 	JWTHMACSecret                 string
 	JWTIssuer                     string
@@ -113,11 +141,26 @@ func configFrom(get func(string) string) Config {
 	return Config{
 		DeploymentProfile:             profile,
 		ListenAddr:                    getenvDefault(get, "LISTEN_ADDR", ":8080"),
+		InboundTLSCertFile:            get("INBOUND_TLS_CERT_FILE"),
+		InboundTLSKeyFile:             get("INBOUND_TLS_KEY_FILE"),
+		InboundTLSClientCAFile:        get("INBOUND_TLS_CLIENT_CA_FILE"),
+		InboundMTLSMode:               getenvDefault(get, "INBOUND_MTLS_MODE", "off"),
+		TLSMinVersion:                 parseTLSVersion(getenvDefault(get, "TLS_MIN_VERSION", "1.2")),
+		TLSMaxVersion:                 parseTLSVersion(getenvDefault(get, "TLS_MAX_VERSION", "")),
+		TLSReloadInterval:             getenvDuration(get, "TLS_RELOAD_INTERVAL", 2*time.Second),
+		TLSTerminatedByTrustedEdge:    getenvBool(get, "TLS_TERMINATED_BY_TRUSTED_EDGE", false),
+		PlaintextDependencyDevWaiver:  getenvBool(get, "PLAINTEXT_DEPENDENCY_DEVELOPMENT_WAIVER", false),
 		UpstreamBaseURL:               get("UPSTREAM_BASE_URL"),
 		UpstreamAuthMode:              getenvDefault(get, "UPSTREAM_AUTH_MODE", "none"),
 		UpstreamAPIKey:                get("UPSTREAM_API_KEY"),
+		UpstreamAPIKeyFile:            get("UPSTREAM_API_KEY_FILE"),
 		UpstreamAuthHeaderName:        getenvDefault(get, "UPSTREAM_AUTH_HEADER_NAME", "X-Upstream-Api-Key"),
 		UpstreamAuthHeaderValue:       get("UPSTREAM_AUTH_HEADER_VALUE"),
+		UpstreamAuthHeaderValueFile:   get("UPSTREAM_AUTH_HEADER_VALUE_FILE"),
+		UpstreamTLSCAFile:             get("UPSTREAM_TLS_CA_FILE"),
+		UpstreamTLSCertFile:           get("UPSTREAM_TLS_CERT_FILE"),
+		UpstreamTLSKeyFile:            get("UPSTREAM_TLS_KEY_FILE"),
+		UpstreamTLSServerName:         get("UPSTREAM_TLS_SERVER_NAME"),
 		UpstreamChatPathPrefix:        get("UPSTREAM_CHAT_PATH_PREFIX"),
 		UpstreamDialTimeout:           getenvDuration(get, "UPSTREAM_DIAL_TIMEOUT", 5*time.Second),
 		UpstreamTLSHandshakeTimeout:   getenvDuration(get, "UPSTREAM_TLS_HANDSHAKE_TIMEOUT", 5*time.Second),
@@ -151,6 +194,10 @@ func configFrom(get func(string) string) Config {
 		LayaURL:                       get("LAYA_URL"),
 		LayaEvaluatePath:              getenvDefault(get, "LAYA_EVALUATE_PATH", "/v1/evaluate"),
 		LayaTimeout:                   getenvDuration(get, "LAYA_TIMEOUT", 5*time.Second),
+		LayaTLSCAFile:                 get("LAYA_TLS_CA_FILE"),
+		LayaTLSCertFile:               get("LAYA_TLS_CERT_FILE"),
+		LayaTLSKeyFile:                get("LAYA_TLS_KEY_FILE"),
+		LayaTLSServerName:             get("LAYA_TLS_SERVER_NAME"),
 		HeaderApplication:             getenvDefault(get, "HEADER_APPLICATION", "X-Application-Id"),
 		HeaderTenant:                  getenvDefault(get, "HEADER_TENANT", "X-Tenant-Id"),
 		HeaderUser:                    getenvDefault(get, "HEADER_USER", "X-User-Id"),
@@ -160,8 +207,16 @@ func configFrom(get func(string) string) Config {
 		QuestionsFile:                 getenvDefault(get, "QUESTIONS_FILE", "questions/security-v1.yaml"),
 		ThresholdsFile:                getenvDefault(get, "THRESHOLDS_FILE", "policies/thresholds-security-v1.yaml"),
 		TokenVaultKey:                 get("TOKEN_VAULT_KEY"),
+		TokenVaultKeyFile:             get("TOKEN_VAULT_KEY_FILE"),
+		TokenVaultKeyringFile:         get("TOKEN_VAULT_KEYRING_FILE"),
+		TokenVaultAllowKeyRemoval:     getenvBool(get, "TOKEN_VAULT_ALLOW_KEY_REMOVAL", false),
 		TokenVaultRedisURL:            get("TOKEN_VAULT_REDIS_URL"),
+		TokenVaultRedisCAFile:         get("TOKEN_VAULT_REDIS_CA_FILE"),
+		TokenVaultRedisCertFile:       get("TOKEN_VAULT_REDIS_CERT_FILE"),
+		TokenVaultRedisKeyFile:        get("TOKEN_VAULT_REDIS_KEY_FILE"),
+		TokenVaultRedisServerName:     get("TOKEN_VAULT_REDIS_SERVER_NAME"),
 		TelemetryHMACKey:              get("TELEMETRY_HMAC_KEY"),
+		TelemetryHMACKeyFile:          get("TELEMETRY_HMAC_KEY_FILE"),
 		AuthMode:                      getenvDefault(get, "AUTH_MODE", auth.ModeOff),
 		JWTPublicKeyFile:              get("JWT_PUBLIC_KEY_FILE"),
 		JWTHMACSecret:                 get("JWT_HMAC_SECRET"),
@@ -217,6 +272,9 @@ func ValidateConfig(cfg Config) error {
 	if cfg.StreamFlushInterval == 0 {
 		cfg.StreamFlushInterval = streamDefaults.StreamFlushInterval
 	}
+	if cfg.TLSMinVersion == 0 {
+		cfg.TLSMinVersion = tls.VersionTLS12
+	}
 	profile, err := ParseDeploymentProfile(string(cfg.profile()))
 	if err != nil {
 		return err
@@ -242,23 +300,25 @@ func ValidateConfig(cfg Config) error {
 	if cfg.SecurityMode != ModeEnforce {
 		return errors.New("production requires SECURITY_MODE=enforce")
 	}
-	if cfg.AuthMode != auth.ModeJWT {
-		return errors.New("production requires AUTH_MODE=jwt")
+	if cfg.AuthMode != auth.ModeJWT && cfg.AuthMode != auth.ModeMTLS {
+		return errors.New("production requires AUTH_MODE=jwt or mtls")
 	}
-	if strings.TrimSpace(cfg.JWTIssuer) == "" {
-		return errors.New("production requires JWT_ISSUER")
+	if cfg.AuthMode == auth.ModeJWT {
+		if strings.TrimSpace(cfg.JWTIssuer) == "" {
+			return errors.New("production requires JWT_ISSUER")
+		}
+		if strings.TrimSpace(cfg.JWTAudience) == "" {
+			return errors.New("production requires JWT_AUDIENCE")
+		}
+		if strings.TrimSpace(cfg.JWTPublicKeyFile) == "" || strings.TrimSpace(cfg.JWTHMACSecret) != "" {
+			return errors.New("production requires an asymmetric JWT_PUBLIC_KEY_FILE")
+		}
 	}
-	if strings.TrimSpace(cfg.JWTAudience) == "" {
-		return errors.New("production requires JWT_AUDIENCE")
+	if strings.TrimSpace(cfg.TokenVaultKey) != "" {
+		return errors.New("production requires TOKEN_VAULT_KEY_FILE or TOKEN_VAULT_KEYRING_FILE; inline TOKEN_VAULT_KEY is rejected")
 	}
-	if strings.TrimSpace(cfg.JWTPublicKeyFile) == "" || strings.TrimSpace(cfg.JWTHMACSecret) != "" {
-		return errors.New("production requires an asymmetric JWT_PUBLIC_KEY_FILE")
-	}
-	if len(cfg.TokenVaultKey) != 64 {
-		return errors.New("TOKEN_VAULT_KEY must be 64 hex chars")
-	}
-	if _, err := hex.DecodeString(cfg.TokenVaultKey); err != nil {
-		return errors.New("TOKEN_VAULT_KEY must be 64 hex chars")
+	if strings.TrimSpace(cfg.TokenVaultKeyFile) == "" && strings.TrimSpace(cfg.TokenVaultKeyringFile) == "" {
+		return errors.New("production requires TOKEN_VAULT_KEY_FILE or TOKEN_VAULT_KEYRING_FILE")
 	}
 	if strings.TrimSpace(cfg.TokenVaultRedisURL) == "" {
 		return errors.New("TOKEN_VAULT_REDIS_URL is required")
@@ -267,7 +327,12 @@ func ValidateConfig(cfg Config) error {
 		return errors.New("TOKEN_VAULT_REDIS_URL is invalid")
 	}
 	if strings.TrimSpace(cfg.TelemetryHMACKey) == "" {
-		return errors.New("TELEMETRY_HMAC_KEY is required")
+		if strings.TrimSpace(cfg.TelemetryHMACKeyFile) == "" {
+			return errors.New("production requires TELEMETRY_HMAC_KEY_FILE")
+		}
+	}
+	if strings.TrimSpace(cfg.TelemetryHMACKeyFile) != "" && strings.TrimSpace(cfg.TelemetryHMACKey) != "" {
+		return errors.New("production rejects inline TELEMETRY_HMAC_KEY when TELEMETRY_HMAC_KEY_FILE is configured")
 	}
 	if strings.TrimSpace(cfg.UpstreamBaseURL) == "" {
 		return errors.New("UPSTREAM_BASE_URL is required")
@@ -278,6 +343,18 @@ func ValidateConfig(cfg Config) error {
 	}
 	if isMockUpstream(upstream.Hostname()) {
 		return errors.New("UPSTREAM_BASE_URL must not reference a mock upstream")
+	}
+	if err := validateProductionTransport(cfg); err != nil {
+		return err
+	}
+	if cfg.UpstreamAuthMode == "bearer" && strings.TrimSpace(cfg.UpstreamAPIKeyFile) == "" {
+		return errors.New("production requires UPSTREAM_API_KEY_FILE for bearer credentials")
+	}
+	if cfg.UpstreamAuthMode == "header" && strings.TrimSpace(cfg.UpstreamAuthHeaderValueFile) == "" {
+		return errors.New("production requires UPSTREAM_AUTH_HEADER_VALUE_FILE for header credentials")
+	}
+	if strings.TrimSpace(cfg.UpstreamAPIKey) != "" || strings.TrimSpace(cfg.UpstreamAuthHeaderValue) != "" {
+		return errors.New("production rejects inline upstream credentials; use *_FILE")
 	}
 	if err := validatePolicyFile(cfg.PolicyFile); err != nil {
 		return err
@@ -337,6 +414,69 @@ func validateSemanticConfig(cfg Config) error {
 	}
 	if err := thresholds.ValidateForEnforcement(qs.Schema, qs.Version, questionIDs, "laya"); err != nil {
 		return errors.New("THRESHOLDS_FILE is not promotion-ready")
+	}
+	return nil
+}
+
+func validateProductionTransport(cfg Config) error {
+	if cfg.PlaintextDependencyDevWaiver {
+		return errors.New("PLAINTEXT_DEPENDENCY_DEVELOPMENT_WAIVER is rejected in production")
+	}
+	mtlsMode := cfg.InboundMTLSMode
+	if mtlsMode == "" {
+		mtlsMode = "off"
+	}
+	if cfg.TLSTerminatedByTrustedEdge {
+		if cfg.InboundTLSCertFile != "" || cfg.InboundTLSKeyFile != "" || mtlsMode == "require" {
+			return errors.New("TLS_TERMINATED_BY_TRUSTED_EDGE cannot be combined with direct gateway TLS or inbound mTLS")
+		}
+	} else {
+		if strings.TrimSpace(cfg.InboundTLSCertFile) == "" || strings.TrimSpace(cfg.InboundTLSKeyFile) == "" {
+			return errors.New("production requires inbound TLS certificate/key or TLS_TERMINATED_BY_TRUSTED_EDGE=true")
+		}
+	}
+	if mtlsMode != "off" && mtlsMode != "require" {
+		return errors.New("INBOUND_MTLS_MODE must be off or require")
+	}
+	if mtlsMode == "require" && strings.TrimSpace(cfg.InboundTLSClientCAFile) == "" {
+		return errors.New("INBOUND_MTLS_MODE=require requires INBOUND_TLS_CLIENT_CA_FILE")
+	}
+	if cfg.TLSMinVersion < tls.VersionTLS12 {
+		return errors.New("TLS_MIN_VERSION must be 1.2 or newer")
+	}
+	for name, value := range map[string]string{
+		"UPSTREAM_BASE_URL":     cfg.UpstreamBaseURL,
+		"TOKEN_VAULT_REDIS_URL": cfg.TokenVaultRedisURL,
+	} {
+		u, ok := parseDependencyURL(value)
+		if !ok || !strings.EqualFold(u.Scheme, "https") && name == "UPSTREAM_BASE_URL" || !strings.EqualFold(u.Scheme, "rediss") && name == "TOKEN_VAULT_REDIS_URL" {
+			return errors.New(name + " must use verified TLS in production")
+		}
+	}
+	if cfg.LayaURL != "" {
+		u, ok := parseDependencyURL(cfg.LayaURL)
+		if !ok || !strings.EqualFold(u.Scheme, "https") {
+			return errors.New("LAYA_URL must use verified TLS in production")
+		}
+	}
+	if err := validateTLSFilePair("UPSTREAM_TLS", cfg.UpstreamTLSCertFile, cfg.UpstreamTLSKeyFile); err != nil {
+		return err
+	}
+	if err := validateTLSFilePair("LAYA_TLS", cfg.LayaTLSCertFile, cfg.LayaTLSKeyFile); err != nil {
+		return err
+	}
+	if err := validateTLSFilePair("TOKEN_VAULT_REDIS_TLS", cfg.TokenVaultRedisCertFile, cfg.TokenVaultRedisKeyFile); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.TelemetryHMACKey) != "" {
+		return errors.New("production rejects inline TELEMETRY_HMAC_KEY; use TELEMETRY_HMAC_KEY_FILE")
+	}
+	return nil
+}
+
+func validateTLSFilePair(name, certFile, keyFile string) error {
+	if (certFile == "") != (keyFile == "") {
+		return errors.New(name + " certificate and key must be configured together")
 	}
 	return nil
 }
@@ -485,8 +625,8 @@ func validateAuthConfig(cfg Config, profile DeploymentProfile) error {
 	if mode == "" {
 		mode = auth.ModeOff
 	}
-	if mode != auth.ModeOff && mode != auth.ModeJWT {
-		return errors.New("AUTH_MODE must be one of: off, jwt")
+	if mode != auth.ModeOff && mode != auth.ModeJWT && mode != auth.ModeMTLS {
+		return errors.New("AUTH_MODE must be one of: off, jwt, mtls")
 	}
 	if profile == ProfileProduction && mode == auth.ModeOff {
 		return errors.New("production rejects AUTH_MODE=off")
@@ -495,6 +635,12 @@ func validateAuthConfig(cfg Config, profile DeploymentProfile) error {
 		return errors.New("shadow requires AUTH_MODE=jwt unless ALLOW_UNAUTHENTICATED_SHADOW=true")
 	}
 	if mode == auth.ModeOff {
+		return nil
+	}
+	if mode == auth.ModeMTLS {
+		if cfg.InboundMTLSMode != "require" {
+			return errors.New("AUTH_MODE=mtls requires INBOUND_MTLS_MODE=require")
+		}
 		return nil
 	}
 	if strings.TrimSpace(cfg.JWTIssuer) == "" {
@@ -615,4 +761,15 @@ func getenvDuration(get func(string) string, key string, def time.Duration) time
 		}
 	}
 	return def
+}
+
+func parseTLSVersion(value string) uint16 {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "1.2", "tls1.2", "tls12":
+		return tls.VersionTLS12
+	case "1.3", "tls1.3", "tls13":
+		return tls.VersionTLS13
+	default:
+		return 0
+	}
 }

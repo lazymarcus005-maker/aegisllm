@@ -20,14 +20,20 @@ docker compose -f docker-compose.yml -f docker-compose.shadow.yml up --build
 ```
 
 Production requires `DEPLOYMENT_PROFILE=production`, `SECURITY_MODE=enforce`,
-and `AUTH_MODE=jwt`. Startup fails before the listener opens unless all of
-the following are present and valid: a 64-hex-character `TOKEN_VAULT_KEY`, a
-Redis `TOKEN_VAULT_REDIS_URL`, `TELEMETRY_HMAC_KEY`, `UPSTREAM_BASE_URL`, and
+and `AUTH_MODE=jwt` or direct `AUTH_MODE=mtls`. Startup fails before the
+listener opens unless it has a certificate/key or the explicit
+`TLS_TERMINATED_BY_TRUSTED_EDGE=true` contract. Service links must use
+verified `https://` and `rediss://`; production rejects plaintext links and
+inline secret values. Use mounted `*_FILE` values for credentials, JWT keys,
+telemetry keys, and vault keys; prefer the versioned
+`TOKEN_VAULT_KEYRING_FILE`. Startup fails before the listener opens unless all
+of the following are present and valid: a file-backed vault key, a Redis
+`TOKEN_VAULT_REDIS_URL`, telemetry key file, `UPSTREAM_BASE_URL`, and
 the reviewed policy and question files. If semantic enforcement is requested,
 the threshold artifact is additionally required to be readable, promoted, and
 strictly provenance-valid. Deterministic-only production may set
 `SECURITY_SEMANTIC_ENFORCE=false` and reports semantic `disabled`. Known
-mock-upstream hostnames are rejected in production. Inject secret values at deploy time;
+mock-upstream hostnames are rejected in production. Inject secret files at deploy time;
 never commit a populated `.env.production` or compose file. Use
 `.env.production.example` and `docker-compose.production.example.yml` as
 placeholder-only references.
@@ -77,6 +83,41 @@ be used with real traffic. Production requires an asymmetric public key and
 rejects HS256. Mount the public key at deploy time; never commit private keys
 or JWTs.
 
+### TLS, mTLS, and rotation
+
+The shared transport enforces TLS 1.2 or newer, uses the system trust store
+plus an optional custom CA bundle, verifies hostnames, and never enables
+`InsecureSkipVerify`. Client and listener certificate files are polled at the
+bounded `TLS_RELOAD_INTERVAL`. Replacements are loaded atomically; malformed
+files retain the last-known-good value and increment
+`secure_material_reload_failures_total`. Production readiness turns negative
+after a failed reload until a valid replacement is observed.
+
+For direct mTLS, set `INBOUND_MTLS_MODE=require` and mount
+`INBOUND_TLS_CLIENT_CA_FILE`. A verified client certificate supplies the
+principal subject/application identity; inbound identity headers are removed
+and cannot spoof it. `AUTH_MODE=mtls` grants the standard invoke role to a
+verified certificate. The trusted-edge contract terminates TLS before the
+gateway and cannot be combined with direct mTLS.
+
+Rotation procedure:
+
+1. Write new certificate, key, CA, credential, JWT key, or keyring material to
+   a new file and atomically replace the mounted path. Keep old material
+   available until the reload generation is visible in `/ready`.
+2. Confirm `generation` and `last_reload_success` changed, then exercise a new
+   connection/request against the dependency. Existing in-flight requests
+   continue on their established connection.
+3. For vault rotation, add the new active key while retaining every previous
+   decrypt key. New envelopes record the opaque active key ID. The default
+   policy rejects key removal; only after all records expire may an operator
+   use `TOKEN_VAULT_ALLOW_KEY_REMOVAL=true` for a controlled change, then roll
+   it back.
+
+Rollback is an atomic replacement using the prior known-good file. A malformed
+replacement keeps the old material, marks production readiness not ready, and
+raises the reload-failure metric. Never print file contents or credentials.
+
 ## Modes (FR-018)
 
 - `SECURITY_MODE=off` — pure proxy, no inspection, no audit.
@@ -96,8 +137,10 @@ or JWTs.
   provider, schema version, threshold policy id/version, checkpoint id, and
   calibration timestamp. It checks upstream reachability, policy loaded,
   question schema loaded, token store (Redis ping when configured), and
-  laya-serve (when `LAYA_URL` is configured). It never returns credentials,
-  endpoint URLs, auth configuration values, or inspected content. Non-200 →
+  laya-serve (when `LAYA_URL` is configured). `secure_material` contains only
+  loaded state, generation, reload timestamps, failure count, and certificate
+  expiry. It never returns credentials, endpoint URLs, auth configuration
+  values, key IDs, or inspected content. Non-200 →
   not ready.
 
 ## Metrics (spec §15)
@@ -128,6 +171,9 @@ P0.5 adds bounded `semantic_calibration_artifact_info`,
 `semantic_rejected_evidence_total`, schema/checkpoint mismatch counters,
 `semantic_missing_decisions_total`, and reason-labelled
 `semantic_fallback_total`.
+P0.7 adds `secure_material_reload_failures_total` and
+`secure_certificate_expiring_total`; alert on any production reload failure
+and certificates inside the 30-day expiry horizon.
 
 ## Audit events
 

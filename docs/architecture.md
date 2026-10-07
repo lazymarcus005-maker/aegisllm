@@ -1081,3 +1081,21 @@ AI Security Platform
 - Laya GitHub: https://github.com/NandhaKishorM/laya
 - OWASP LLM02: Sensitive Information Disclosure: https://genai.owasp.org/llmrisk/llm022025-sensitive-information-disclosure/
 - OWASP LLM07: System Prompt Leakage: https://genai.owasp.org/llmrisk/llm072025-system-prompt-leakage/
+# P0.7 encrypted service links and rotation
+
+All outbound HTTPS and `rediss://` links are constructed through
+`internal/securetransport`. It combines system trust with an optional
+dependency-specific CA bundle, enforces TLS 1.2 or newer, verifies the server
+name, and optionally presents a client certificate. The inbound listener uses
+the same reloadable certificate material and can require a client CA. A
+trusted-edge termination mode is an explicit production contract; it does not
+disable verification on dependency links.
+
+Mounted certificates, JWT public keys, credentials, and vault keyrings are
+polled with bounded intervals and replaced atomically. The active value is
+kept on malformed replacement. Readiness and metrics expose only generation,
+reload timestamps, bounded failure state, and certificate expiry. Vault
+envelopes carry an opaque key ID and version; the active key seals new values
+while retained previous keys decrypt existing values. The default keyring
+reload policy refuses removal of a retained key until an operator explicitly
+proves expiry and enables the controlled removal flag.

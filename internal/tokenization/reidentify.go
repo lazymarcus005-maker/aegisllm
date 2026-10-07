@@ -23,10 +23,10 @@ type Caller struct {
 // caller can be resolved.
 type Reidentifier struct {
 	vault  Vault
-	crypto *Crypto
+	crypto Cipher
 }
 
-func NewReidentifier(vault Vault, crypto *Crypto) *Reidentifier {
+func NewReidentifier(vault Vault, crypto Cipher) *Reidentifier {
 	return &Reidentifier{vault: vault, crypto: crypto}
 }
 

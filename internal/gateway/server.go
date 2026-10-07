@@ -20,6 +20,7 @@ import (
 	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/securetransport"
 	"github.com/aegisllm/gateway/web/leaderboard"
 )
 
@@ -60,6 +61,7 @@ type Server struct {
 	authn          *auth.Authenticator
 	policy         *policy.Policy
 	semanticStatus func() SemanticReadiness
+	materials      map[string]func() securetransport.Status
 }
 
 // SemanticReadiness is the sanitized semantic contract exposed by /ready.
@@ -113,12 +115,13 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 		Issuer: cfg.JWTIssuer, Audience: cfg.JWTAudience,
 		TenantClaim: cfg.JWTTenantClaim, ApplicationClaim: cfg.JWTApplicationClaim,
 		SubjectClaim: cfg.JWTSubjectClaim, RolesClaim: cfg.JWTRolesClaim,
-		ProviderClaim: cfg.JWTProviderClaim,
+		ProviderClaim: cfg.JWTProviderClaim, ClientCertIdentity: cfg.AuthMode == auth.ModeMTLS,
 	})
 	if err != nil {
 		return nil, err
 	}
 	srv := &Server{cfg: cfg, proxy: proxy, logger: logger, readyFns: map[string]func() string{}, authn: authn,
+		materials:      map[string]func() securetransport.Status{},
 		runtimeMetrics: observability.Noop{}, limiter: limiter.New(limiter.Config{
 			RequestsPerSecond: cfg.RequestsPerSecond, Burst: cfg.RateBurst,
 			MaxConcurrent: cfg.MaxConcurrentRequests, MaxKeys: cfg.LimiterMaxKeys,
@@ -132,6 +135,12 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 			status = "shadow"
 		}
 		return SemanticReadiness{Status: status}
+	}
+	for name, fn := range proxy.MaterialStatuses() {
+		srv.AddMaterialReadiness(name, fn)
+	}
+	if cfg.JWTPublicKeyFile != "" {
+		srv.AddMaterialReadiness("jwt_verification_key", authn.KeyStatus)
 	}
 	return srv, nil
 }
@@ -176,6 +185,28 @@ func (s *Server) AddReadinessCheck(name string, fn func() string) {
 		s.readyOrder = append(s.readyOrder, name)
 	}
 	s.readyFns[name] = fn
+}
+
+// AddMaterialReadiness registers sanitized status for reloadable TLS,
+// certificate, secret, or keyring material. Names are operator-chosen bounded
+// labels and status never contains the underlying path or value.
+func (s *Server) AddMaterialReadiness(name string, fn func() securetransport.Status) {
+	if name == "" || fn == nil {
+		return
+	}
+	s.materials[name] = fn
+}
+
+func (s *Server) SetSecureMaterialMetrics(metrics securetransport.Metrics) {
+	if s == nil {
+		return
+	}
+	if s.proxy != nil {
+		s.proxy.SetSecureMaterialMetrics(metrics)
+	}
+	if s.authn != nil {
+		s.authn.SetSecureMaterialMetrics(metrics)
+	}
 }
 
 // Handler returns the routed HTTP handler.
@@ -231,11 +262,30 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 			dependencies[name] = "ready"
 		}
 	}
+	materialResponse := map[string]any{}
+	for name, fn := range s.materials {
+		status := fn()
+		entry := map[string]any{"loaded": status.Loaded, "generation": status.Generation, "last_reload_success": status.LastSuccess}
+		if !status.LastFailure.IsZero() {
+			entry["last_reload_failure"] = status.LastFailure
+			entry["reload_failures"] = status.FailureCount
+		}
+		if !status.CertificateExpiry.IsZero() {
+			entry["certificate_expiry"] = status.CertificateExpiry
+		}
+		materialResponse[safeSemanticMetadata(name)] = entry
+		if !status.Loaded || (s.cfg.profile() == ProfileProduction && status.FailureCount > 0 && status.LastFailure.After(status.LastSuccess)) {
+			if firstReason == "" {
+				firstReason = "secure material is not ready"
+			}
+		}
+	}
 	response := map[string]any{
 		"status":             "ready",
 		"deployment_profile": string(s.cfg.profile()),
 		"security_mode":      s.cfg.SecurityMode,
 		"dependencies":       dependencies,
+		"secure_material":    materialResponse,
 	}
 	semantic := SemanticReadiness{Status: "disabled"}
 	if s.semanticStatus != nil {

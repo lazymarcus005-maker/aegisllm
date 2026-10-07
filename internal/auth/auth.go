@@ -13,12 +13,14 @@ import (
 	"os"
 	"strings"
 
+	"github.com/aegisllm/gateway/internal/securetransport"
 	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
-	ModeOff = "off"
-	ModeJWT = "jwt"
+	ModeOff  = "off"
+	ModeJWT  = "jwt"
+	ModeMTLS = "mtls"
 
 	RoleInvoke   = "aegis.invoke"
 	RoleOperator = "aegis.operator"
@@ -39,6 +41,7 @@ type Config struct {
 	SubjectClaim         string
 	RolesClaim           string
 	ProviderClaim        string
+	ClientCertIdentity   bool
 }
 
 // Principal is the identity verified by the gateway. It contains selected
@@ -81,6 +84,7 @@ type Authenticator struct {
 	cfg       Config
 	key       any
 	algorithm string
+	keyFile   *securetransport.File[any]
 }
 
 // New loads and validates the configured verification material.
@@ -106,12 +110,18 @@ func New(cfg Config) (*Authenticator, error) {
 	if cfg.ProviderClaim == "" {
 		cfg.ProviderClaim = "provider"
 	}
-	if cfg.Mode != ModeOff && cfg.Mode != ModeJWT {
-		return nil, errors.New("AUTH_MODE must be off or jwt")
+	if cfg.Mode != ModeOff && cfg.Mode != ModeJWT && cfg.Mode != ModeMTLS {
+		return nil, errors.New("AUTH_MODE must be off, jwt, or mtls")
 	}
 	if cfg.Mode == ModeOff {
 		if cfg.DeploymentProfile != "development" && cfg.DeploymentProfile != "test" && !(cfg.DeploymentProfile == "shadow" && cfg.AllowUnauthenticated) {
 			return nil, errors.New("AUTH_MODE=off is allowed only in development or with the shadow waiver")
+		}
+		return &Authenticator{cfg: cfg}, nil
+	}
+	if cfg.Mode == ModeMTLS {
+		if !cfg.ClientCertIdentity {
+			return nil, errors.New("mTLS authentication requires certificate identity")
 		}
 		return &Authenticator{cfg: cfg}, nil
 	}
@@ -130,11 +140,21 @@ func New(cfg Config) (*Authenticator, error) {
 	if cfg.PublicKeyFile == "" {
 		return nil, errors.New("JWT_PUBLIC_KEY_FILE is required when AUTH_MODE=jwt")
 	}
-	key, algorithm, err := loadPublicKey(cfg.PublicKeyFile)
+	keyFile, err := securetransport.PublicKeyFile(cfg.PublicKeyFile, securetransport.MinPollInterval, nil)
 	if err != nil {
 		return nil, errors.New("JWT_PUBLIC_KEY_FILE is invalid")
 	}
-	return &Authenticator{cfg: cfg, key: key, algorithm: algorithm}, nil
+	key, err := keyFile.Get()
+	if err != nil {
+		keyFile.Close()
+		return nil, errors.New("JWT_PUBLIC_KEY_FILE is invalid")
+	}
+	algorithm, err := keyAlgorithm(key)
+	if err != nil {
+		keyFile.Close()
+		return nil, errors.New("JWT_PUBLIC_KEY_FILE is invalid")
+	}
+	return &Authenticator{cfg: cfg, key: key, algorithm: algorithm, keyFile: keyFile}, nil
 }
 
 // Middleware authenticates a request when JWT mode is enabled and enforces
@@ -146,7 +166,13 @@ func (a *Authenticator) Middleware(next http.Handler, roles ...string) http.Hand
 			next.ServeHTTP(w, r)
 			return
 		}
-		principal, err := a.authenticate(r)
+		var principal Principal
+		var err error
+		if a.cfg.Mode == ModeMTLS {
+			principal, err = a.authenticateCertificate(r)
+		} else {
+			principal, err = a.authenticate(r)
+		}
 		if err != nil {
 			writeAuthError(w, http.StatusUnauthorized)
 			return
@@ -160,6 +186,19 @@ func (a *Authenticator) Middleware(next http.Handler, roles ...string) http.Hand
 	})
 }
 
+func (a *Authenticator) KeyStatus() securetransport.Status {
+	if a == nil || a.keyFile == nil {
+		return securetransport.Status{Loaded: a != nil && a.key != nil}
+	}
+	return a.keyFile.Status()
+}
+
+func (a *Authenticator) SetSecureMaterialMetrics(metrics securetransport.Metrics) {
+	if a != nil && a.keyFile != nil {
+		a.keyFile.SetMetrics(metrics)
+	}
+}
+
 func hasAnyRole(p Principal, roles []string) bool {
 	for _, role := range roles {
 		if p.HasRole(role) {
@@ -170,13 +209,26 @@ func hasAnyRole(p Principal, roles []string) bool {
 }
 
 func (a *Authenticator) authenticate(r *http.Request) (Principal, error) {
+	key := a.key
+	algorithm := a.algorithm
+	if a.keyFile != nil {
+		var err error
+		key, err = a.keyFile.Get()
+		if err != nil {
+			return Principal{}, errors.New("verification key unavailable")
+		}
+		algorithm, err = keyAlgorithm(key)
+		if err != nil {
+			return Principal{}, errors.New("verification key invalid")
+		}
+	}
 	parts := strings.Fields(r.Header.Get("Authorization"))
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 		return Principal{}, errors.New("missing bearer token")
 	}
 
 	options := []jwt.ParserOption{
-		jwt.WithValidMethods([]string{a.algorithm}),
+		jwt.WithValidMethods([]string{algorithm}),
 		jwt.WithExpirationRequired(),
 	}
 	if a.cfg.Issuer != "" {
@@ -186,10 +238,10 @@ func (a *Authenticator) authenticate(r *http.Request) (Principal, error) {
 		options = append(options, jwt.WithAudience(a.cfg.Audience))
 	}
 	token, err := jwt.Parse(parts[1], func(token *jwt.Token) (any, error) {
-		if token.Method == nil || token.Method.Alg() != a.algorithm {
+		if token.Method == nil || token.Method.Alg() != algorithm {
 			return nil, errors.New("unexpected signing algorithm")
 		}
-		return a.key, nil
+		return key, nil
 	}, options...)
 	if err != nil || token == nil || !token.Valid {
 		return Principal{}, errors.New("invalid bearer token")
@@ -206,6 +258,46 @@ func (a *Authenticator) authenticate(r *http.Request) (Principal, error) {
 		Roles:       claimRoles(claims, a.cfg.RolesClaim),
 	}
 	return p, nil
+}
+
+func (a *Authenticator) authenticateCertificate(r *http.Request) (Principal, error) {
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 || len(r.TLS.VerifiedChains) == 0 {
+		return Principal{}, errors.New("verified client certificate required")
+	}
+	cert := r.TLS.PeerCertificates[0]
+	application := first(cert.Subject.OrganizationalUnit)
+	tenant := first(cert.Subject.Organization)
+	if application == "" {
+		application = tenant
+	}
+	roles := []string{RoleInvoke}
+	for _, value := range cert.Subject.OrganizationalUnit {
+		if strings.HasPrefix(value, "role:") && len(value) > len("role:") {
+			roles = append(roles, value[len("role:"):])
+		}
+	}
+	return Principal{Tenant: tenant, Application: application, Subject: cert.Subject.CommonName, Roles: roles}, nil
+}
+
+func first(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func keyAlgorithm(key any) (string, error) {
+	switch k := key.(type) {
+	case *rsa.PublicKey:
+		return jwt.SigningMethodRS256.Alg(), nil
+	case *ecdsa.PublicKey:
+		if k.Curve != elliptic.P256() {
+			return "", errors.New("unsupported EC curve")
+		}
+		return jwt.SigningMethodES256.Alg(), nil
+	default:
+		return "", errors.New("unsupported verification key")
+	}
 }
 
 func loadPublicKey(path string) (any, string, error) {

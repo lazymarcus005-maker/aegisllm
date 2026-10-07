@@ -3,7 +3,9 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -109,6 +111,65 @@ func TestRoleAuthorizationAndDevelopmentHMAC(t *testing.T) {
 	}
 	if _, err := New(Config{Mode: ModeJWT, DeploymentProfile: "production", HMACSecret: "secret"}); err == nil {
 		t.Fatal("production HMAC configuration accepted")
+	}
+}
+
+func TestPublicKeyRotationKeepsRBACEnforced(t *testing.T) {
+	first, second := mustRSAKey(t), mustRSAKey(t)
+	path := writePublicKey(t, &first.PublicKey)
+	a, err := New(Config{Mode: ModeJWT, DeploymentProfile: "production", PublicKeyFile: path, Issuer: "issuer", Audience: "aud", RolesClaim: "roles"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeRequest := func(token string) int {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp := httptest.NewRecorder()
+		a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }), RoleInvoke).ServeHTTP(resp, req)
+		return resp.Code
+	}
+	oldToken := signToken(t, jwt.SigningMethodRS256, first, jwt.MapClaims{"iss": "issuer", "aud": "aud", "exp": time.Now().Add(time.Minute).Unix(), "roles": []string{RoleInvoke}})
+	newToken := signToken(t, jwt.SigningMethodRS256, second, jwt.MapClaims{"iss": "issuer", "aud": "aud", "exp": time.Now().Add(time.Minute).Unix(), "roles": []string{RoleInvoke}})
+	if got := makeRequest(oldToken); got != http.StatusNoContent {
+		t.Fatalf("old token before rotation status=%d", got)
+	}
+	der, _ := x509.MarshalPKIXPublicKey(&second.PublicKey)
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if got := makeRequest(newToken); got != http.StatusNoContent {
+		t.Fatalf("new token after rotation status=%d", got)
+	}
+	if got := makeRequest(oldToken); got != http.StatusUnauthorized {
+		t.Fatalf("old token after rotation status=%d", got)
+	}
+	operatorToken := signToken(t, jwt.SigningMethodRS256, second, jwt.MapClaims{"iss": "issuer", "aud": "aud", "exp": time.Now().Add(time.Minute).Unix(), "roles": []string{RoleInvoke}})
+	if got := makeRequest(operatorToken); got != http.StatusNoContent {
+		t.Fatalf("RBAC baseline status=%d", got)
+	}
+}
+
+func TestMTLSIdentityCannotBeSpoofedByHeaders(t *testing.T) {
+	a, err := New(Config{Mode: ModeMTLS, DeploymentProfile: "production", ClientCertIdentity: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{Subject: pkix.Name{CommonName: "cert-user", Organization: []string{"tenant-cert"}, OrganizationalUnit: []string{"app-cert", "role:aegis.operator"}}}}, VerifiedChains: [][]*x509.Certificate{{{}}}}
+	req.Header.Set("X-Tenant-Id", "spoofed")
+	req.Header.Set("X-Application-Id", "spoofed")
+	var principal Principal
+	resp := httptest.NewRecorder()
+	a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal, _ = PrincipalFromContext(r.Context())
+		if r.Header.Get("X-Tenant-Id") != "" {
+			t.Error("tenant header was not stripped")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}), RoleOperator).ServeHTTP(resp, req)
+	if resp.Code != http.StatusNoContent || principal.Tenant != "tenant-cert" || principal.Application != "app-cert" || !principal.HasRole(RoleOperator) {
+		t.Fatalf("status=%d principal=%+v", resp.Code, principal)
 	}
 }
 

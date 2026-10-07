@@ -5,7 +5,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+	"time"
 )
 
 func TestForwardPreservesPathBodyAndContentType(t *testing.T) {
@@ -74,6 +76,51 @@ func TestForwardBearerAuthMode(t *testing.T) {
 	}
 	if gotAuth != "Bearer upstream-secret" {
 		t.Fatalf("auth: %s", gotAuth)
+	}
+}
+
+func TestForwardBearerCredentialFileRotation(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	path := t.TempDir() + "/credential"
+	if err := os.WriteFile(path, []byte("first-secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewProxy(Config{UpstreamBaseURL: upstream.URL, UpstreamAuthMode: "bearer", UpstreamAPIKeyFile: path, TLSReloadInterval: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	req := httptest.NewRequest(http.MethodPost, "http://g/v1/chat/completions", nil)
+	if _, err := p.Forward(req, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer first-secret" {
+		t.Fatalf("initial auth=%q", gotAuth)
+	}
+	if err := os.WriteFile(path, []byte("second-secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if _, err := p.Forward(req, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer second-secret" {
+		t.Fatalf("rotated auth=%q", gotAuth)
+	}
+	if err := os.WriteFile(path, []byte("\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if _, err := p.Forward(req, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer second-secret" {
+		t.Fatalf("malformed replacement displaced credential=%q", gotAuth)
 	}
 }
 

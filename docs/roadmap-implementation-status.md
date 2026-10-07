@@ -11,6 +11,7 @@ separate feature-roadmap file).
 - [x] P0.3 PII transformation, encrypted vault, outbound protection hardening, and stateful streaming content inspection.
 - [x] P0.4 Runtime resilience, rate limits, cost controls, bounded upstream transport, and stream lifetime protection.
 - [x] P0.6 Declarative effective policy contract, reviewed profiles, shared explanations, sanitized simulator, and operator policy summary endpoint.
+- [x] P0.7 Encrypted gateway/dependency links, verified TLS/mTLS, file-backed secret and certificate rotation, reload-safe JWT/vault keyring rotation, sanitized readiness, and rotation smoke coverage.
 
 ## P1 — semantic and operational maturity
 

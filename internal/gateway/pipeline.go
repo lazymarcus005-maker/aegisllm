@@ -23,7 +23,7 @@ type SecurityPipeline struct {
 	audit           audit.Sink
 	mode            string
 	vault           tokenization.Vault
-	crypto          *tokenization.Crypto
+	crypto          tokenization.Cipher
 	vaultTTL        time.Duration
 	provider        decision.DecisionProvider
 	questions       *decision.QuestionSchema
@@ -49,7 +49,7 @@ func (p *SecurityPipeline) SetRecorder(r observability.Recorder) { p.recorder = 
 func (p *SecurityPipeline) SetSpanProvider(sp pii.SpanProvider) { p.spans = sp }
 
 // SetTokenStore attaches the encrypted vault used by TOKENIZE.
-func (p *SecurityPipeline) SetTokenStore(vault tokenization.Vault, crypto *tokenization.Crypto, ttl time.Duration) {
+func (p *SecurityPipeline) SetTokenStore(vault tokenization.Vault, crypto tokenization.Cipher, ttl time.Duration) {
 	p.vault, p.crypto, p.vaultTTL = vault, crypto, ttl
 }
 

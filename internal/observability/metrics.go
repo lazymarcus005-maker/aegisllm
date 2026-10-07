@@ -83,6 +83,8 @@ type Metrics struct {
 	streamActions       *prometheus.CounterVec
 	streamBytes         *prometheus.CounterVec
 	streamEvents        *prometheus.CounterVec
+	reloadFailures      *prometheus.CounterVec
+	certExpiring        *prometheus.CounterVec
 	registry            *prometheus.Registry
 }
 
@@ -179,6 +181,8 @@ func New() *Metrics {
 		streamActions:       prometheus.NewCounterVec(prometheus.CounterOpts{Name: "stream_actions_total", Help: "Streaming predicted and applied actions by bounded direction and endpoint family."}, []string{"direction", "endpoint_family", "predicted_action", "applied_action", "mode"}),
 		streamBytes:         prometheus.NewCounterVec(prometheus.CounterOpts{Name: "stream_bytes_inspected_total", Help: "Streaming response bytes inspected."}, []string{"direction", "endpoint_family"}),
 		streamEvents:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "stream_events_inspected_total", Help: "Streaming SSE events inspected."}, []string{"direction", "endpoint_family"}),
+		reloadFailures:      prometheus.NewCounterVec(prometheus.CounterOpts{Name: "secure_material_reload_failures_total", Help: "Secure material reload failures by bounded kind."}, []string{"kind"}),
+		certExpiring:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "secure_certificate_expiring_total", Help: "Secure certificates nearing expiry by bounded kind."}, []string{"kind"}),
 		registry:            reg,
 	}
 	reg.MustRegister(m.requestsTotal, m.blockedTotal, m.tokenizedTotal, m.redactedTotal,
@@ -188,7 +192,7 @@ func New() *Metrics {
 		m.concurrencyRejected, m.promptRejected, m.responseTooLarge, m.upstreamTimeout,
 		m.breakerOpen, m.activeRequests, m.activeLaya, m.calibrationInfo, m.semanticRejected,
 		m.schemaMismatch, m.checkpointMismatch, m.missingDecisions, m.fallbackReasons,
-		m.streamActions, m.streamBytes, m.streamEvents)
+		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring)
 	return m
 }
 
@@ -389,6 +393,14 @@ func (m *Metrics) ObserveStream(direction core.Direction, family string, predict
 			m.reviewTotal.Inc()
 		}
 	}
+}
+
+func (m *Metrics) ObserveReloadFailure(kind string) {
+	m.reloadFailures.WithLabelValues(boundedMetadata(kind)).Inc()
+}
+
+func (m *Metrics) ObserveCertificateExpiring(kind string) {
+	m.certExpiring.WithLabelValues(boundedMetadata(kind)).Inc()
 }
 
 func (m *Metrics) ObserveRateLimited()            { m.rateLimited.Inc() }

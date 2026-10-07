@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aegisllm/gateway/internal/decision"
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 var ErrUpstreamBreakerOpen = decision.ErrCircuitOpen
@@ -25,6 +26,9 @@ type Proxy struct {
 	client  *http.Client
 	cfg     Config
 	breaker *decision.CircuitBreaker
+	apiKey  *securetransport.File[string]
+	header  *securetransport.File[string]
+	certs   []*securetransport.File[tls.Certificate]
 }
 
 // NewProxy validates configuration and builds the upstream proxy.
@@ -43,15 +47,23 @@ func NewProxy(cfg Config) (*Proxy, error) {
 	switch cfg.UpstreamAuthMode {
 	case "none":
 	case "bearer":
-		if cfg.UpstreamAPIKey == "" {
+		if cfg.UpstreamAPIKey == "" && cfg.UpstreamAPIKeyFile == "" {
 			return nil, fmt.Errorf("UPSTREAM_API_KEY is required when UPSTREAM_AUTH_MODE=bearer")
 		}
 	case "header":
-		if cfg.UpstreamAuthHeaderName == "" || cfg.UpstreamAuthHeaderValue == "" {
+		if cfg.UpstreamAuthHeaderName == "" || (cfg.UpstreamAuthHeaderValue == "" && cfg.UpstreamAuthHeaderValueFile == "") {
 			return nil, fmt.Errorf("UPSTREAM_AUTH_HEADER_NAME and UPSTREAM_AUTH_HEADER_VALUE are required when UPSTREAM_AUTH_MODE=header")
 		}
 	default:
 		return nil, fmt.Errorf("unsupported UPSTREAM_AUTH_MODE: %s", cfg.UpstreamAuthMode)
+	}
+	tlsConfig, certs, err := (securetransport.ClientTLSOptions{
+		CAFile: cfg.UpstreamTLSCAFile, CertificateFile: cfg.UpstreamTLSCertFile, KeyFile: cfg.UpstreamTLSKeyFile,
+		ServerName: cfg.UpstreamTLSServerName, MinVersion: cfg.TLSMinVersion, MaxVersion: cfg.TLSMaxVersion,
+		PollInterval: cfg.TLSReloadInterval,
+	}).TLSConfig()
+	if err != nil {
+		return nil, err
 	}
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
@@ -61,12 +73,27 @@ func NewProxy(cfg Config) (*Proxy, error) {
 		IdleConnTimeout:       cfg.UpstreamIdleConnTimeout,
 		MaxIdleConns:          cfg.UpstreamMaxIdleConns,
 		MaxIdleConnsPerHost:   cfg.UpstreamMaxIdleConns,
-		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+		TLSClientConfig:       tlsConfig,
 	}
-	return &Proxy{
+	p := &Proxy{
 		baseURL: u, client: &http.Client{Transport: transport, Timeout: cfg.UpstreamRequestTimeout}, cfg: cfg,
-		breaker: decision.NewCircuitBreaker(cfg.UpstreamBreakerThreshold, cfg.UpstreamBreakerOpenInterval),
-	}, nil
+		breaker: decision.NewCircuitBreaker(cfg.UpstreamBreakerThreshold, cfg.UpstreamBreakerOpenInterval), certs: certs,
+	}
+	if cfg.UpstreamAPIKeyFile != "" {
+		p.apiKey, err = securetransport.SecretFile(cfg.UpstreamAPIKeyFile, cfg.TLSReloadInterval, nil)
+		if err != nil {
+			p.Close()
+			return nil, errors.New("UPSTREAM_API_KEY_FILE is invalid")
+		}
+	}
+	if cfg.UpstreamAuthHeaderValueFile != "" {
+		p.header, err = securetransport.SecretFile(cfg.UpstreamAuthHeaderValueFile, cfg.TLSReloadInterval, nil)
+		if err != nil {
+			p.Close()
+			return nil, errors.New("UPSTREAM_AUTH_HEADER_VALUE_FILE is invalid")
+		}
+	}
+	return p, nil
 }
 
 // Forward sends the raw request body to the upstream gateway at the same path.
@@ -98,9 +125,23 @@ func (p *Proxy) Forward(r *http.Request, body []byte) (*http.Response, error) {
 	}
 	switch p.cfg.UpstreamAuthMode {
 	case "bearer":
-		req.Header.Set("Authorization", "Bearer "+p.cfg.UpstreamAPIKey)
+		value := p.cfg.UpstreamAPIKey
+		if p.apiKey != nil {
+			value, err = p.apiKey.Get()
+			if err != nil {
+				return nil, errors.New("upstream credential unavailable")
+			}
+		}
+		req.Header.Set("Authorization", "Bearer "+value)
 	case "header":
-		req.Header.Set(p.cfg.UpstreamAuthHeaderName, p.cfg.UpstreamAuthHeaderValue)
+		value := p.cfg.UpstreamAuthHeaderValue
+		if p.header != nil {
+			value, err = p.header.Get()
+			if err != nil {
+				return nil, errors.New("upstream credential unavailable")
+			}
+		}
+		req.Header.Set(p.cfg.UpstreamAuthHeaderName, value)
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -111,6 +152,56 @@ func (p *Proxy) Forward(r *http.Request, body []byte) (*http.Response, error) {
 	// returned so the server can apply its normal bounded-body handling.
 	p.breaker.Record(resp.StatusCode < http.StatusInternalServerError)
 	return resp, nil
+}
+
+func (p *Proxy) Close() {
+	if p == nil {
+		return
+	}
+	if p.apiKey != nil {
+		p.apiKey.Close()
+	}
+	if p.header != nil {
+		p.header.Close()
+	}
+	for _, file := range p.certs {
+		file.Close()
+	}
+	if transport, ok := p.client.Transport.(*http.Transport); ok {
+		transport.CloseIdleConnections()
+	}
+}
+
+func (p *Proxy) MaterialStatuses() map[string]func() securetransport.Status {
+	result := map[string]func() securetransport.Status{}
+	if p == nil {
+		return result
+	}
+	if p.apiKey != nil {
+		result["upstream_credential"] = p.apiKey.Status
+	}
+	if p.header != nil {
+		result["upstream_header_credential"] = p.header.Status
+	}
+	for i, file := range p.certs {
+		result[fmt.Sprintf("upstream_client_certificate_%d", i+1)] = file.Status
+	}
+	return result
+}
+
+func (p *Proxy) SetSecureMaterialMetrics(metrics securetransport.Metrics) {
+	if p == nil {
+		return
+	}
+	if p.apiKey != nil {
+		p.apiKey.SetMetrics(metrics)
+	}
+	if p.header != nil {
+		p.header.SetMetrics(metrics)
+	}
+	for _, file := range p.certs {
+		file.SetMetrics(metrics)
+	}
 }
 
 func (p *Proxy) Readiness() string {

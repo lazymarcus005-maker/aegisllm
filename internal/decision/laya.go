@@ -3,11 +3,15 @@ package decision
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 // NoopProvider returns empty evidence without calling anything; used to
@@ -81,21 +85,61 @@ type LayaProvider struct {
 	path    string
 	schema  string
 	client  *http.Client
+	certs   []*securetransport.File[tls.Certificate]
 }
 
 func NewLayaProvider(baseURL, path string, timeout time.Duration) *LayaProvider {
+	p, err := NewSecureLayaProvider(baseURL, path, timeout, securetransport.ClientTLSOptions{})
+	if err != nil {
+		return &LayaProvider{baseURL: baseURL, path: path, schema: "security-v1", client: &http.Client{Timeout: timeout}}
+	}
+	return p
+}
+
+// NewSecureLayaProvider builds the Laya client with the shared verified TLS
+// transport. It keeps Laya's CA, client certificate, and server name separate
+// from upstream settings.
+func NewSecureLayaProvider(baseURL, path string, timeout time.Duration, tlsOptions securetransport.ClientTLSOptions) (*LayaProvider, error) {
 	if path == "" {
 		path = "/v1/evaluate"
 	}
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
+	tlsConfig, certs, err := tlsOptions.TLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	transport := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		DialContext:         (&net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout: timeout, ResponseHeaderTimeout: timeout,
+		IdleConnTimeout: 90 * time.Second, MaxIdleConns: 100, MaxIdleConnsPerHost: 100,
+		TLSClientConfig: tlsConfig,
+	}
 	return &LayaProvider{
 		baseURL: baseURL,
 		path:    path,
 		schema:  "security-v1",
-		client:  &http.Client{Timeout: timeout},
+		client:  &http.Client{Timeout: timeout, Transport: transport}, certs: certs,
+	}, nil
+}
+
+func (l *LayaProvider) Close() {
+	for _, file := range l.certs {
+		file.Close()
 	}
+	if transport, ok := l.client.Transport.(*http.Transport); ok {
+		transport.CloseIdleConnections()
+	}
+}
+
+func (l *LayaProvider) MaterialStatuses() map[string]func() securetransport.Status {
+	result := map[string]func() securetransport.Status{}
+	for i, file := range l.certs {
+		result[fmt.Sprintf("laya_client_certificate_%d", i+1)] = file.Status
+	}
+	return result
 }
 
 func (l *LayaProvider) Name() string { return "laya" }

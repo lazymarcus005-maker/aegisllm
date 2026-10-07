@@ -6,8 +6,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -22,6 +24,7 @@ import (
 	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/securetransport"
 	"github.com/aegisllm/gateway/internal/tokenization"
 )
 
@@ -41,6 +44,68 @@ func loadVaultKey(hexKey string, logger *slog.Logger) ([]byte, error) {
 	}
 	logger.Warn("TOKEN_VAULT_KEY not set; using ephemeral key (token mappings cannot survive restart)")
 	return key, nil
+}
+
+func loadConfiguredSecret(inline, path string, metrics securetransport.Metrics) (string, *securetransport.File[string], error) {
+	if path != "" {
+		if inline != "" {
+			return "", nil, errors.New("inline and file secret both configured")
+		}
+		file, err := securetransport.SecretFile(path, 2*time.Second, metrics)
+		if err != nil {
+			return "", nil, err
+		}
+		value, err := file.Get()
+		if err != nil {
+			file.Close()
+			return "", nil, err
+		}
+		return value, file, nil
+	}
+	return inline, nil, nil
+}
+
+func loadVaultCipher(cfg gateway.Config, metrics securetransport.Metrics, logger *slog.Logger) (tokenization.Cipher, func(), error) {
+	if cfg.TokenVaultKeyringFile != "" {
+		if cfg.TokenVaultKeyFile != "" || cfg.TokenVaultKey != "" {
+			return nil, nil, errors.New("multiple vault key sources configured")
+		}
+		keyring, err := tokenization.NewKeyringFile(cfg.TokenVaultKeyringFile, cfg.TLSReloadInterval, cfg.TokenVaultAllowKeyRemoval, metrics)
+		if err != nil {
+			return nil, nil, err
+		}
+		if _, err := keyring.Get(); err != nil {
+			keyring.Close()
+			return nil, nil, err
+		}
+		return keyring, keyring.Close, nil
+	}
+	if cfg.TokenVaultKeyFile != "" {
+		if cfg.TokenVaultKey != "" {
+			return nil, nil, errors.New("inline and file vault keys both configured")
+		}
+		file, err := securetransport.SecretFile(cfg.TokenVaultKeyFile, cfg.TLSReloadInterval, metrics)
+		if err != nil {
+			return nil, nil, err
+		}
+		encoded, err := file.Get()
+		if err != nil {
+			file.Close()
+			return nil, nil, err
+		}
+		key, err := hex.DecodeString(encoded)
+		if err != nil || len(key) != 32 {
+			file.Close()
+			return nil, nil, errors.New("vault key file is invalid")
+		}
+		return tokenization.NewReloadingCipher(file), file.Close, nil
+	}
+	key, err := loadVaultKey(cfg.TokenVaultKey, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	cipher, err := tokenization.NewCrypto(key)
+	return cipher, func() {}, err
 }
 
 func main() {
@@ -71,24 +136,34 @@ func main() {
 		os.Exit(1)
 	}
 
-	registry := detectors.ProductionRegistry(cfg.TelemetryHMACKey, nil)
+	metrics := observability.New()
+	srv.SetSecureMaterialMetrics(metrics)
+	telemetryKey, telemetryFile, err := loadConfiguredSecret(cfg.TelemetryHMACKey, cfg.TelemetryHMACKeyFile, metrics)
+	if err != nil {
+		logger.Error("telemetry key unavailable")
+		os.Exit(1)
+	}
+	if telemetryFile != nil {
+		defer telemetryFile.Close()
+		srv.AddMaterialReadiness("telemetry_hmac_key", telemetryFile.Status)
+	}
+	registry := detectors.ProductionRegistry(telemetryKey, nil)
 	sink := audit.NewWriterSink(os.Stdout)
 	// Security mode is not stated here: Server.SetPipeline propagates
 	// cfg.SecurityMode into the pipeline — the server owns the mode.
 	pipe := gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink)
 	pipe.SetSpanProvider(pii.NewCompositeSpanProvider(pii.NewRegexSpanProvider()))
-	metrics := observability.New()
-
 	// Token vault (ticket 06): envelope-encrypted mappings with TTL.
-	masterKey, err := loadVaultKey(cfg.TokenVaultKey, logger)
+	vaultCipher, closeVaultMaterial, err := loadVaultCipher(cfg, metrics, logger)
 	if err != nil {
-		logger.Error("token vault key invalid")
+		logger.Error("token vault keyring unavailable")
 		os.Exit(1)
 	}
-	crypto, err := tokenization.NewCrypto(masterKey)
-	if err != nil {
-		logger.Error("token vault crypto invalid", "error", err)
-		os.Exit(1)
+	if closeVaultMaterial != nil {
+		defer closeVaultMaterial()
+	}
+	if provider, ok := vaultCipher.(interface{ Status() securetransport.Status }); ok {
+		srv.AddMaterialReadiness("token_vault_key", provider.Status)
 	}
 	vaultTTL := 24 * time.Hour
 	if v := os.Getenv("TOKEN_VAULT_TTL"); v != "" {
@@ -103,6 +178,37 @@ func main() {
 			logger.Error("invalid TOKEN_VAULT_REDIS_URL")
 			os.Exit(1)
 		}
+		if opts.TLSConfig != nil || cfg.TokenVaultRedisCAFile != "" || cfg.TokenVaultRedisCertFile != "" || cfg.TokenVaultRedisKeyFile != "" {
+			serverName := cfg.TokenVaultRedisServerName
+			if serverName == "" {
+				if parsed, parseErr := url.Parse(redisURL); parseErr == nil {
+					serverName = parsed.Hostname()
+				}
+			}
+			tlsConfig, redisCertFiles, tlsErr := (securetransport.ClientTLSOptions{
+				CAFile: cfg.TokenVaultRedisCAFile, CertificateFile: cfg.TokenVaultRedisCertFile, KeyFile: cfg.TokenVaultRedisKeyFile,
+				ServerName: serverName, MinVersion: cfg.TLSMinVersion, MaxVersion: cfg.TLSMaxVersion,
+				PollInterval: cfg.TLSReloadInterval, Metrics: metrics,
+			}).TLSConfig()
+			if tlsErr != nil {
+				logger.Error("redis TLS configuration invalid")
+				os.Exit(1)
+			}
+			if opts.TLSConfig != nil {
+				opts.TLSConfig = tlsConfig
+			} else {
+				logger.Error("Redis TLS material requires rediss://")
+				os.Exit(1)
+			}
+			for i, file := range redisCertFiles {
+				srv.AddMaterialReadiness(fmt.Sprintf("redis_client_certificate_%d", i+1), file.Status)
+			}
+			defer func() {
+				for _, file := range redisCertFiles {
+					file.Close()
+				}
+			}()
+		}
 		client := redis.NewClient(opts)
 		vault = tokenization.NewRedisVault(client, "tokvault", vaultTTL)
 		srv.AddReadinessCheck("token_store", func() string {
@@ -115,14 +221,26 @@ func main() {
 		vault = tokenization.NewInMemoryVault()
 		logger.Warn("TOKEN_VAULT_REDIS_URL not set; using in-memory token vault (mappings are lost on restart)")
 	}
-	pipe.SetTokenStore(vault, crypto, vaultTTL)
+	pipe.SetTokenStore(vault, vaultCipher, vaultTTL)
 
 	// Semantic decision provider (ticket 08): local laya-serve when
 	// configured, otherwise a noop provider and no semantic calls.
 	var laya *decision.LayaProvider
 	providerName := "noop"
 	if cfg.LayaURL != "" {
-		laya = decision.NewLayaProvider(cfg.LayaURL, cfg.LayaEvaluatePath, cfg.LayaTimeout)
+		laya, err = decision.NewSecureLayaProvider(cfg.LayaURL, cfg.LayaEvaluatePath, cfg.LayaTimeout, securetransport.ClientTLSOptions{
+			CAFile: cfg.LayaTLSCAFile, CertificateFile: cfg.LayaTLSCertFile, KeyFile: cfg.LayaTLSKeyFile,
+			ServerName: cfg.LayaTLSServerName, MinVersion: cfg.TLSMinVersion, MaxVersion: cfg.TLSMaxVersion,
+			PollInterval: cfg.TLSReloadInterval, Metrics: metrics,
+		})
+		if err != nil {
+			logger.Error("Laya TLS configuration invalid")
+			os.Exit(1)
+		}
+		defer laya.Close()
+		for name, status := range laya.MaterialStatuses() {
+			srv.AddMaterialReadiness(name, status)
+		}
 		laya.SetQuestionSchema(questionSchema.Schema)
 		breaker := decision.NewCircuitBreaker(3, 30*time.Second)
 		provider := decision.NewResilientProvider(laya, breaker)
@@ -203,6 +321,26 @@ func main() {
 		ReadTimeout:       cfg.ServerReadTimeout,
 		IdleTimeout:       cfg.ServerIdleTimeout,
 	}
+	if cfg.InboundTLSCertFile != "" || cfg.InboundTLSKeyFile != "" {
+		tlsConfig, certFiles, tlsErr := (securetransport.ServerTLSOptions{
+			CertificateFile: cfg.InboundTLSCertFile, KeyFile: cfg.InboundTLSKeyFile, ClientCAFile: cfg.InboundTLSClientCAFile,
+			RequireClient: cfg.InboundMTLSMode == "require", MinVersion: cfg.TLSMinVersion, MaxVersion: cfg.TLSMaxVersion,
+			PollInterval: cfg.TLSReloadInterval, Metrics: metrics,
+		}).TLSConfig()
+		if tlsErr != nil {
+			logger.Error("inbound TLS configuration invalid")
+			os.Exit(1)
+		}
+		httpServer.TLSConfig = tlsConfig
+		for i, file := range certFiles {
+			srv.AddMaterialReadiness(fmt.Sprintf("inbound_server_certificate_%d", i+1), file.Status)
+		}
+		defer func() {
+			for _, file := range certFiles {
+				file.Close()
+			}
+		}()
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -219,7 +357,13 @@ func main() {
 		"addr", cfg.ListenAddr,
 		"deployment_profile", cfg.DeploymentProfile,
 		"security_mode", cfg.SecurityMode)
-	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	var serveErr error
+	if httpServer.TLSConfig != nil {
+		serveErr = httpServer.ListenAndServeTLS("", "")
+	} else {
+		serveErr = httpServer.ListenAndServe()
+	}
+	if err := serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server exited", "error", err)
 		os.Exit(1)
 	}

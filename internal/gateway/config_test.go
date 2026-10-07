@@ -128,6 +128,7 @@ func productionConfig(t *testing.T) Config {
 	root := filepath.Join("..", "..")
 	return Config{
 		DeploymentProfile:             ProfileProduction,
+		TLSTerminatedByTrustedEdge:    true,
 		SecurityMode:                  ModeEnforce,
 		AuthMode:                      "jwt",
 		JWTPublicKeyFile:              "/run/secrets/aegis-jwt-public.pem",
@@ -165,15 +166,66 @@ func productionConfig(t *testing.T) Config {
 		PolicyFile:                    filepath.Join(root, "policies", "enterprise-default.yaml"),
 		QuestionsFile:                 filepath.Join(root, "questions", "security-v1.yaml"),
 		ThresholdsFile:                filepath.Join(root, "policies", "thresholds-security-v1.yaml"),
-		TokenVaultKey:                 strings.Repeat("a", 64),
-		TokenVaultRedisURL:            "redis://redis.example.invalid:6379/0",
-		TelemetryHMACKey:              "synthetic-telemetry-key",
+		TokenVaultKeyFile:             "/run/secrets/aegis-vault-key",
+		TokenVaultRedisURL:            "rediss://redis.example.invalid:6379/0",
+		TelemetryHMACKeyFile:          "/run/secrets/aegis-telemetry-key",
 	}
 }
 
 func TestProductionConfigValidationSuccess(t *testing.T) {
 	if err := ValidateConfig(productionConfig(t)); err != nil {
 		t.Fatalf("valid production config rejected: %v", err)
+	}
+}
+
+func TestProductionRejectsPlaintextDependencyLinks(t *testing.T) {
+	cfg := productionConfig(t)
+	cfg.UpstreamBaseURL = "http://llm-gateway.example.invalid"
+	if err := ValidateConfig(cfg); err == nil || !strings.Contains(err.Error(), "verified TLS") {
+		t.Fatalf("plaintext upstream error = %v", err)
+	}
+	cfg = productionConfig(t)
+	cfg.TokenVaultRedisURL = "redis://redis.example.invalid:6379/0"
+	if err := ValidateConfig(cfg); err == nil || !strings.Contains(err.Error(), "verified TLS") {
+		t.Fatalf("plaintext redis error = %v", err)
+	}
+}
+
+func TestProductionRejectsInlineDependencySecrets(t *testing.T) {
+	cfg := productionConfig(t)
+	cfg.UpstreamAuthMode = "bearer"
+	cfg.UpstreamAPIKey = "inline-secret"
+	if err := ValidateConfig(cfg); err == nil || !strings.Contains(err.Error(), "UPSTREAM_API_KEY_FILE") {
+		t.Fatalf("inline upstream secret error = %v", err)
+	}
+	cfg = productionConfig(t)
+	cfg.TokenVaultKey = "inline-secret"
+	if err := ValidateConfig(cfg); err == nil || !strings.Contains(err.Error(), "TOKEN_VAULT_KEY_FILE") {
+		t.Fatalf("inline vault secret error = %v", err)
+	}
+}
+
+func TestProductionDirectTLSAndMTLSContract(t *testing.T) {
+	cfg := productionConfig(t)
+	cfg.TLSTerminatedByTrustedEdge = false
+	cfg.InboundTLSCertFile = "/run/secrets/gateway.crt"
+	cfg.InboundTLSKeyFile = "/run/secrets/gateway.key"
+	if err := ValidateConfig(cfg); err != nil {
+		t.Fatalf("direct TLS config rejected: %v", err)
+	}
+	cfg.AuthMode = "mtls"
+	cfg.InboundMTLSMode = "require"
+	cfg.InboundTLSClientCAFile = "/run/secrets/client-ca.pem"
+	if err := ValidateConfig(cfg); err != nil {
+		t.Fatalf("direct mTLS config rejected: %v", err)
+	}
+}
+
+func TestProductionRejectsDevelopmentPlaintextWaiver(t *testing.T) {
+	cfg := productionConfig(t)
+	cfg.PlaintextDependencyDevWaiver = true
+	if err := ValidateConfig(cfg); err == nil || !strings.Contains(err.Error(), "DEVELOPMENT_WAIVER") {
+		t.Fatalf("plaintext waiver error = %v", err)
 	}
 }
 
@@ -202,11 +254,11 @@ func TestProductionConfigValidationFailures(t *testing.T) {
 		want   string
 	}{
 		{"security mode", func(c *Config, _ *testing.T) { c.SecurityMode = ModeShadow }, "SECURITY_MODE"},
-		{"missing vault key", func(c *Config, _ *testing.T) { c.TokenVaultKey = "" }, "TOKEN_VAULT_KEY"},
-		{"invalid vault key", func(c *Config, _ *testing.T) { c.TokenVaultKey = "not-hex" }, "TOKEN_VAULT_KEY"},
+		{"missing vault key", func(c *Config, _ *testing.T) { c.TokenVaultKeyFile = "" }, "TOKEN_VAULT_KEY"},
+		{"invalid inline vault key", func(c *Config, _ *testing.T) { c.TokenVaultKey = "not-hex" }, "TOKEN_VAULT_KEY"},
 		{"missing redis", func(c *Config, _ *testing.T) { c.TokenVaultRedisURL = "" }, "TOKEN_VAULT_REDIS_URL"},
 		{"invalid redis", func(c *Config, _ *testing.T) { c.TokenVaultRedisURL = "redis" }, "TOKEN_VAULT_REDIS_URL"},
-		{"missing telemetry key", func(c *Config, _ *testing.T) { c.TelemetryHMACKey = " " }, "TELEMETRY_HMAC_KEY"},
+		{"missing telemetry key", func(c *Config, _ *testing.T) { c.TelemetryHMACKeyFile = "" }, "TELEMETRY_HMAC_KEY"},
 		{"missing upstream", func(c *Config, _ *testing.T) { c.UpstreamBaseURL = "" }, "UPSTREAM_BASE_URL"},
 		{"mock upstream", func(c *Config, _ *testing.T) { c.UpstreamBaseURL = "http://mock-upstream:9090" }, "mock upstream"},
 		{"missing policy", func(c *Config, _ *testing.T) { c.PolicyFile = filepath.Join("/tmp", "missing-policy.yaml") }, "POLICY_FILE"},

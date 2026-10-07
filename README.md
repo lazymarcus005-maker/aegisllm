@@ -40,7 +40,10 @@ Production uses the reviewed image plus external upstream and Redis services;
 start from [.env.production.example](.env.production.example) and
 [docker-compose.production.example.yml](docker-compose.production.example.yml).
 The production profile rejects missing protection settings before it opens a
-listening socket.
+listening socket. Direct gateway TLS is required unless the explicitly named
+`TLS_TERMINATED_BY_TRUSTED_EDGE=true` contract is configured. Upstream, Laya,
+and Redis use verified TLS (`https://`/`rediss://`); production never accepts
+plaintext dependency URLs or inline secret values.
 
 Run natively instead:
 
@@ -48,6 +51,10 @@ Run natively instead:
 go run ./cmd/mockupstream          # terminal 1 (listens on :9090)
 UPSTREAM_BASE_URL=http://localhost:9090 go run ./cmd/gateway   # terminal 2
 ```
+
+The local encrypted-link seam can be exercised without committing any
+material: `./scripts/mtls-smoke.sh` creates an ephemeral CA and client/server
+certificates in a temporary directory, verifies mTLS seams, and removes them.
 
 ## Configuration
 
@@ -60,7 +67,8 @@ All configuration is environment-based; see [.env.example](.env.example).
 | `UPSTREAM_BASE_URL` | — (required) | Upstream LLM Gateway base URL |
 | `UPSTREAM_CHAT_PATH_PREFIX` | — | Optional inbound path prefix to strip before forwarding (for example `/generic`) |
 | `UPSTREAM_AUTH_MODE` | `none` | `none`, `bearer`, or `header` |
-| `UPSTREAM_API_KEY` | — | Key for `bearer` mode (never a client-supplied value) |
+| `UPSTREAM_API_KEY_FILE` / `UPSTREAM_AUTH_HEADER_VALUE_FILE` | — | Reloadable mounted credential files; production requires the applicable file |
+| `UPSTREAM_TLS_CA_FILE` / `UPSTREAM_TLS_CERT_FILE` / `UPSTREAM_TLS_KEY_FILE` / `UPSTREAM_TLS_SERVER_NAME` | — | Upstream-specific trust and optional mTLS material |
 | `MAX_BODY_BYTES` | `1048576` | Request body limit (oversized → 413) |
 | `MAX_RESPONSE_BYTES` | `4194304` | Maximum buffered upstream response (oversized → sanitized 502) |
 | `MAX_PROMPT_CHARS` | `65536` | Normalized prompt character budget (oversized → 413) |
@@ -84,16 +92,21 @@ All configuration is environment-based; see [.env.example](.env.example).
 | `SECURITY_MODE` | `off` | `off`, `shadow`, `enforce` |
 | `SECURITY_SEMANTIC_ENFORCE` | `false` | Requires a reachable real Laya provider and a promoted, provenance-bound threshold artifact |
 | `LAYA_URL` / `LAYA_TIMEOUT` | — / `5s` | Operator-provided private Laya endpoint and bounded request timeout |
-| `AUTH_MODE` | `off` | `off` for development compatibility or `jwt` for authenticated ingress |
+| `LAYA_TLS_CA_FILE` / `LAYA_TLS_CERT_FILE` / `LAYA_TLS_KEY_FILE` / `LAYA_TLS_SERVER_NAME` | — | Laya-specific trust and optional mTLS material |
+| `AUTH_MODE` | `off` | `off`, `jwt`, or direct `mtls` authenticated ingress |
+| `INBOUND_TLS_CERT_FILE` / `INBOUND_TLS_KEY_FILE` / `INBOUND_TLS_CLIENT_CA_FILE` | — | Reloadable gateway listener certificate and optional client CA |
+| `INBOUND_MTLS_MODE` | `off` | `require` verifies client certificates against the configured client CA |
+| `TLS_MIN_VERSION` / `TLS_MAX_VERSION` / `TLS_RELOAD_INTERVAL` | `1.2` / automatic / `2s` | TLS floor, optional ceiling, and bounded material polling |
 | `JWT_PUBLIC_KEY_FILE` | — | PEM RSA (RS256) or P-256 EC (ES256) public key for JWT mode |
 | `JWT_HMAC_SECRET` | — | Development/test only HS256 secret; rejected in shadow/production |
 | `JWT_ISSUER` / `JWT_AUDIENCE` | — | Expected JWT issuer and audience; required in production |
 | `JWT_*_CLAIM` | see `.env.example` | Claim names for tenant, application, subject, roles, and provider |
 | `ALLOW_UNAUTHENTICATED_SHADOW` | `false` | Explicit local development waiver; carries spoofing risk |
 | `POLICY_FILE` / `QUESTIONS_FILE` / `THRESHOLDS_FILE` | versioned repo assets | Reviewed policy and semantic assets |
-| `TOKEN_VAULT_KEY` | ephemeral in development | Required as 64 hex chars in production |
-| `TOKEN_VAULT_REDIS_URL` | in-memory in development | Required in production |
-| `TELEMETRY_HMAC_KEY` | empty in development | Required in production |
+| `TOKEN_VAULT_KEYRING_FILE` / `TOKEN_VAULT_KEY_FILE` | ephemeral in development | Reloadable versioned keyring or legacy key file; production requires a file |
+| `TOKEN_VAULT_REDIS_URL` | in-memory in development | Required as verified `rediss://` in production |
+| `TOKEN_VAULT_REDIS_CA_FILE` / `TOKEN_VAULT_REDIS_CERT_FILE` / `TOKEN_VAULT_REDIS_KEY_FILE` | — | Redis-specific trust and optional mTLS material |
+| `TELEMETRY_HMAC_KEY_FILE` | empty in development | Reloadable mounted secret; production requires the file |
 | `DEFAULT_TARGET_PROVIDER` | `cloud` | Provider class when `X-Target-Provider` absent |
 
 Semantic enforcement is fail-closed at startup: `SECURITY_SEMANTIC_ENFORCE=true`
@@ -111,6 +124,12 @@ user, roles, and provider metadata come only from verified JWT claims. JWT
 defaults are `tenant_id`, `azp`, `sub`, `roles`, and `provider` respectively.
 LLM POST routes and `/v1/models` require `aegis.invoke` or `aegis.operator`;
 the dashboard, protection stats, and metrics require `aegis.operator`.
+
+Direct `AUTH_MODE=mtls` requires `INBOUND_MTLS_MODE=require`; the verified
+client certificate supplies subject/application identity and headers cannot
+override it. Development may use HTTP dependencies for local mocks; the
+narrow `PLAINTEXT_DEPENDENCY_DEVELOPMENT_WAIVER=true` flag is documented as a
+local-only contract and is rejected by the production profile.
 
 Rate and concurrency controls are process-local and keyed by verified
 tenant/application in JWT mode. Development uses application plus remote
