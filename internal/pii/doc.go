@@ -1,2 +1,2 @@
-// Package pii is delivered by its implementation ticket (see .scratch/security-gateway-mvp/issues/).
+// Package pii provides replaceable entity spans and transformation planning.
 package pii
