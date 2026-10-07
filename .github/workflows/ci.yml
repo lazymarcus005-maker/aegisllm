@@ -1,64 +1,31 @@
-name: ci
+name: pr-fast-gate
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  fast:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          go-version: stable
-      - name: Build
-        run: go build ./...
-      - name: Vet
-        run: go vet ./...
-      - name: Format
-        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
-      - name: Test
-        run: go test ./...
-  eval-regression:
+          go-version-file: go.mod
+          cache: true
+      - run: make test build vet
+      - run: test -z "$(gofmt -l .)"
+      - run: go run ./cmd/evaltool -provider noop -baseline /tmp/current.json -compare evals/baselines/security-v1-noop.json -tolerance 0.05
+
+  fake-conformance:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          go-version: stable
-      - name: Run evaluation and compare against committed baseline
-        run: |
-          go run ./cmd/evaltool -provider noop -baseline /tmp/current.json
-          go run ./cmd/evaltool -provider noop -baseline /tmp/current.json \
-            -compare evals/baselines/security-v1-noop.json -tolerance 0.05
-      - name: Exercise the in-repository fake HTTP semantic provider
-        run: |
-          go run ./cmd/fakelaya >/tmp/fake-laya.log 2>&1 &
-          fake_pid=$!
-          trap 'kill "$fake_pid"' EXIT
-          for attempt in $(seq 1 20); do curl --fail --silent http://127.0.0.1:8300/health && break || sleep 1; done
-          go run ./cmd/evaltool -action evaluate -provider laya -url http://127.0.0.1:8300 -baseline /tmp/fake-laya-eval.json
-  container-smoke:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build self-contained gateway image and start local dependencies
-        env:
-          TOKEN_VAULT_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-          TELEMETRY_HMAC_KEY: ci-synthetic-telemetry-key
-        run: |
-          docker compose -f docker-compose.yml -f docker-compose.shadow.yml up -d --build
-      - name: Smoke test health and readiness
-        run: |
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent http://localhost:8080/health >/dev/null && \
-               curl --fail --silent http://localhost:8080/ready >/dev/null; then
-              exit 0
-            fi
-            sleep 2
-          done
-          docker compose -f docker-compose.yml -f docker-compose.shadow.yml logs
-          exit 1
-      - name: Stop smoke stack
-        if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.shadow.yml down -v
+          go-version-file: go.mod
+          cache: true
+      - run: scripts/release/conformance-docker.sh

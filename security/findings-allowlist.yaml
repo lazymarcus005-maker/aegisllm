@@ -1,0 +1,4 @@
+schema_version: aegisllm.security-allowlist/v1
+entries: []
+# Any future suppression requires an owner, UTC expiry, exact tool/finding,
+# affected path, and a review reason. Expired entries fail the release gate.

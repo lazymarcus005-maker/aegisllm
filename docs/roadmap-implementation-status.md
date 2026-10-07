@@ -26,6 +26,7 @@ separate feature-roadmap file).
 - [x] P1.7 Security Operations Dashboard v2: operator-only versioned aggregate APIs, bounded process-local rolling telemetry, responsive embedded operations UI, freshness/reset semantics, sanitized alerts, CSP/security headers, and SLO/data semantics documentation.
 - [x] P1.8 Provider conformance and compatibility lab: versioned OpenAI/Anthropic/generic profiles, deterministic fake-provider matrix, privacy-safe JSON/JUnit reports, compare mode, explicit fixtures, capability declarations/gates, and operator conformance summary.
 - [x] P1.9 Session-scoped token vault and re-identification controls: verified session bindings, opaque MACed placeholders, scope/AAD authorization, Redis/memory atomic retrieval and revocation, bounded TTL/quota, key rotation, trusted delivery paths, privacy-safe status, and vaulttool operations.
+- [x] P1.10 Release quality, performance, and supply-chain gates: one evidence-producing verification entrypoint, pinned Docker race/fuzz/static tooling, Go load/soak probe, robust benchmark lane, Compose E2E/chaos/restart checks, 24-case conformance validation, coverage/security/license/SBOM/image/reproducibility gates, and release checklist.
 
 ## P2 — expanded coverage
 
@@ -48,10 +49,10 @@ the normal request pipeline, and OpenAI Chat/Responses, Anthropic Messages,
 and generic SSE responses use bounded parsing plus a 4096-byte production
 minimum rolling holdback. Production validation rejects smaller windows.
 
-Verification note: the first full-suite run observed the existing deterministic
-scan p95 target above 10 ms under host load; the isolated
-`TestDeterministicScanLatencyTarget` rerun passed at 6.527 ms without changing
-the threshold.
+Verification note: the former wall-clock gateway p95 unit assertion is replaced
+by the warm-up/multi-sample benchmark and load gate. The documented 25 ms
+gateway security SLO remains a release criterion; shared-host measurements are
+advisory and pinned CI is the blocking lane.
 # P1.5 signed policy distribution
 
 Implemented on `feature/production-readiness-roadmap`: deterministic bundle

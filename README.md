@@ -17,6 +17,16 @@ Read [docs/spec.md](docs/spec.md) (requirements), [docs/architecture.md](docs/ar
 P1.9 vault scope, rotation, revocation, and runbook semantics are documented in
 [docs/token-vault.md](docs/token-vault.md).
 
+## Release verification (P1.10)
+
+Run `make verify-release` for the documented, fail-fast release gate. It runs
+the serialized full suite, Docker/GCC race suite, all registered fuzz smoke
+targets, robust benchmark/load and fake Compose E2E gates, 24-case conformance,
+chaos/restart checks, reproducible-build hashes, secret scan, SBOM, and pinned
+static/license/image scans. Evidence is machine-readable under ignored
+`build/release/`; external vulnerability-database outages are recorded as a
+blocker and fail the gate. See [docs/release-verification.md](docs/release-verification.md).
+
 ## Quick start (local)
 
 ```bash

@@ -1,10 +1,6 @@
 package detectors
 
-import (
-	"sort"
-	"testing"
-	"time"
-)
+import "testing"
 
 // Synthetic checksum-valid fixtures (T-007: never use real citizen IDs).
 // "123456789012" + computed check digit 1 => "1234567890121"
@@ -186,10 +182,10 @@ func TestHighEntropySecretWithAndWithoutContext(t *testing.T) {
 	}
 }
 
-// NFR-PERF-001: deterministic scanning target p95 <= 10 ms for typical text
-// payloads, measured in the test harness. "Typical" here: ~2 KB of mixed
-// prose containing several candidates, full detector set.
-func TestDeterministicScanLatencyTarget(t *testing.T) {
+// Performance is measured by scripts/release/benchmark-gate.sh. This unit test
+// deliberately asserts stable detector correctness only; host wall-clock
+// timing does not belong in the normal or race suite.
+func TestDeterministicScanFindsExpectedCategories(t *testing.T) {
 	registry := NewRegistry(nil)
 	for _, d := range SecretDetectors("") {
 		registry.Register(d)
@@ -207,20 +203,8 @@ func TestDeterministicScanLatencyTarget(t *testing.T) {
 	}
 	env := envelopeWith(string(payload))
 
-	var durations []time.Duration
-	for i := 0; i < 30; i++ {
-		start := time.Now()
-		findings := registry.RunAll(env)
-		d := time.Since(start)
-		durations = append(durations, d)
-		if i == 0 && len(findings) < 5 {
-			t.Fatalf("payload should produce findings, got %d", len(findings))
-		}
+	findings := registry.RunAll(env)
+	if len(findings) < 5 {
+		t.Fatalf("payload should produce findings, got %d", len(findings))
 	}
-	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
-	p95 := durations[(len(durations)*95)/100]
-	if p95 > 10*time.Millisecond {
-		t.Fatalf("p95 scan latency %v exceeds 10ms target", p95)
-	}
-	t.Logf("p95 deterministic scan: %v", p95)
 }

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -861,37 +860,6 @@ func TestLayaOutageLowRiskDeterministicOnly(t *testing.T) {
 	if !strings.Contains(sink.String(), `"action":"ALLOW"`) {
 		t.Fatalf("deterministic decision must stand: %s", sink.String())
 	}
-}
-
-// NFR-PERF-002: the gateway path excluding Laya targets p95 <= 25 ms for a
-// typical non-streaming request; measured through the full pipeline.
-func TestGatewayLatencyExcludingLaya(t *testing.T) {
-	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"m","choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
-	})
-	pipe, _ := newRealPipeline(t)
-	attachVault(t, pipe)
-	srv.SetPipeline(pipe)
-
-	payload := `{"model":"m","messages":[{"role":"user","content":"` + strings.Repeat("ประโยคภาษาไทยและ english words. ", 20) + `"}]}`
-	var durations []time.Duration
-	for i := 0; i < 30; i++ {
-		start := time.Now()
-		resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(payload))
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-		durations = append(durations, time.Since(start))
-	}
-	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
-	p95 := durations[(len(durations)*95)/100]
-	if p95 > 25*time.Millisecond {
-		t.Fatalf("p95 gateway latency %v exceeds 25ms target (excluding Laya)", p95)
-	}
-	t.Logf("p95 gateway latency excluding Laya: %v", p95)
 }
 
 // --- ticket 11: bounded semantic enforcement (AS-003) ---

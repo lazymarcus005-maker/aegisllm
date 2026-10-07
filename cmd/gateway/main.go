@@ -31,6 +31,14 @@ import (
 	"github.com/aegisllm/gateway/internal/tokenization"
 )
 
+// Injected by the reproducible release build. Developer builds remain
+// explicit about their provenance rather than inheriting local VCS state.
+var (
+	buildVersion = "dev"
+	buildCommit  = "unknown"
+	buildDate    = "unknown"
+)
+
 type distributionObserver struct {
 	metrics *observability.Metrics
 	sink    audit.Sink
@@ -140,6 +148,10 @@ func loadVaultCipher(cfg gateway.Config, metrics securetransport.Metrics, logger
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--healthcheck" {
+		healthcheck()
+		return
+	}
 	logger := newLogger()
 	cfg := gateway.LoadConfig()
 	if err := gateway.ValidateConfig(cfg); err != nil {
@@ -547,6 +559,25 @@ func main() {
 	}
 	if err := serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server exited", "error", err)
+		os.Exit(1)
+	}
+}
+
+func healthcheck() {
+	addr := os.Getenv("LISTEN_ADDR")
+	if addr == "" {
+		addr = ":8080"
+	}
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
+	}
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + addr + "/health")
+	if err != nil {
+		os.Exit(1)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
 		os.Exit(1)
 	}
 }

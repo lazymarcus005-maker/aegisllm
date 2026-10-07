@@ -74,6 +74,14 @@ This follows the OWASP recommendation that strict security controls should be en
 
 ## 3. External Context
 
+### P1.10 release boundary
+
+Release evidence is produced outside the request path by `make verify-release`.
+The gate separates correctness, concurrency/fuzz, robust performance,
+dependency-failure recovery, conformance, reproducible build, SBOM, and final
+image checks. Reports are metadata-only and live under ignored build output;
+fixture mutation and signing require explicit operator action.
+
 Laya is a local, non-autoregressive System 1 decision engine that supports typed decisions such as:
 
 - `choice`

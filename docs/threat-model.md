@@ -98,6 +98,16 @@ not treat the dashboard as the durable audit source.
 
 # P1.8 conformance-lab threats
 
+# P1.10 release and supply-chain threats
+
+The release boundary treats tool/database outages as blockers, not passes. A
+pinned Debian Go image supplies the race compiler; reproducible hash comparison,
+CycloneDX SBOM, final-image vulnerability scan, secret scan, least-privilege
+CI, and evidence hashes reduce substitution and omission risk. The scratch
+runtime has no shell/package manager and runs non-root with only an explicit
+audit writable mount. Shared-host performance data is advisory so host noise
+cannot silently weaken the 25 ms SLO.
+
 Conformance traffic is synthetic by contract. The runner accepts credentials
 only through environment/file descriptors, uses TLS/mTLS file material, and
 stores only hashes, byte counts, bounded semantic shapes, and allowlisted

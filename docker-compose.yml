@@ -48,6 +48,8 @@ services:
       - mock-upstream
       - fake-mcp
       - redis-token-store
+    tmpfs:
+      - /tmp:rw,mode=1777
 
   mock-upstream:
     build:

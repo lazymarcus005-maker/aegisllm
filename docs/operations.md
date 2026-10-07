@@ -1,5 +1,17 @@
 # Operations Guide — Laya LLM Security Gateway
 
+## Release evidence and promotion gate
+
+Run `make verify-release` from a clean checkout before promotion. The command
+writes only to the ignored `build/release/` directory and produces an evidence
+manifest with command lines, pinned tool versions, report hashes, and explicit
+pass/fail/block reasons. A required skipped gate is a release failure; a
+scanner database outage is never recorded as a vulnerability pass. Attach the
+manifest, checksums, reproducibility report, SBOM, conformance report, and
+image-policy report to the release record. Artifact signing is optional until a
+real keyless identity or managed signing key is available; never substitute a
+synthetic signature.
+
 ## Running
 
 ```bash
