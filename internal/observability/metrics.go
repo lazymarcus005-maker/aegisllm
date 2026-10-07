@@ -9,6 +9,7 @@ import (
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // Recorder receives pipeline observability events. Implementations must
@@ -46,6 +47,25 @@ type Metrics struct {
 	fallbackTotal       prometheus.Counter
 	transformations     *prometheus.CounterVec
 	registry            *prometheus.Registry
+}
+
+// MetricSnapshot is the dashboard-safe projection of the Prometheus registry.
+// It contains counts and metric labels only; it never contains inspected
+// request content.
+type MetricSnapshot struct {
+	Blocked   uint64
+	Tokenized uint64
+	Redacted  uint64
+	Review    uint64
+	Allowed   uint64
+	Findings  []FindingSnapshot
+}
+
+// FindingSnapshot is one findings_total{category,subtype} sample.
+type FindingSnapshot struct {
+	Category string
+	Subtype  string
+	Count    uint64
 }
 
 // New builds the metric set and registers it on a private registry.
@@ -114,7 +134,84 @@ func New() *Metrics {
 
 // Handler serves the Prometheus exposition format on /metrics.
 func (m *Metrics) Handler() http.Handler {
-	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
+	return metricsHandler{metrics: m, next: promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})}
+}
+
+type metricsHandler struct {
+	metrics *Metrics
+	next    http.Handler
+}
+
+func (h metricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.next.ServeHTTP(w, r)
+}
+
+// ProtectionMetrics exposes the owning recorder to the gateway wiring without
+// exposing the private Prometheus registry.
+func (h metricsHandler) ProtectionMetrics() *Metrics { return h.metrics }
+
+// Snapshot gathers the private registry and returns only the counters needed
+// by the protection dashboard. Registry gathering is safe while counters are
+// being updated by request handlers.
+func (m *Metrics) Snapshot() MetricSnapshot {
+	if m == nil || m.registry == nil {
+		return MetricSnapshot{}
+	}
+	families, err := m.registry.Gather()
+	if err != nil {
+		return MetricSnapshot{}
+	}
+
+	var snapshot MetricSnapshot
+	for _, family := range families {
+		switch family.GetName() {
+		case "requests_total":
+			for _, metric := range family.GetMetric() {
+				if labelValue(metric, "action") != string(core.ActionAllow) {
+					continue
+				}
+				snapshot.Allowed += counterValue(metric)
+			}
+		case "blocked_total":
+			snapshot.Blocked = familyValue(family)
+		case "tokenized_total":
+			snapshot.Tokenized = familyValue(family)
+		case "redacted_total":
+			snapshot.Redacted = familyValue(family)
+		case "review_total":
+			snapshot.Review = familyValue(family)
+		case "findings_total":
+			for _, metric := range family.GetMetric() {
+				snapshot.Findings = append(snapshot.Findings, FindingSnapshot{
+					Category: labelValue(metric, "category"),
+					Subtype:  labelValue(metric, "subtype"),
+					Count:    counterValue(metric),
+				})
+			}
+		}
+	}
+	return snapshot
+}
+
+func familyValue(family *dto.MetricFamily) uint64 {
+	metrics := family.GetMetric()
+	if len(metrics) == 0 {
+		return 0
+	}
+	return counterValue(metrics[0])
+}
+
+func counterValue(metric *dto.Metric) uint64 {
+	return uint64(metric.GetCounter().GetValue())
+}
+
+func labelValue(metric *dto.Metric, name string) string {
+	for _, label := range metric.GetLabel() {
+		if label.GetName() == name {
+			return label.GetValue()
+		}
+	}
+	return ""
 }
 
 func (m *Metrics) ObserveRequest(action core.Action, mode string) {

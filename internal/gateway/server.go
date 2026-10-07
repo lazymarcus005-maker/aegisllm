@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/aegisllm/gateway/internal/core"
+	"github.com/aegisllm/gateway/internal/dashboard"
+	"github.com/aegisllm/gateway/web/leaderboard"
 )
 
 // RequestDecision is the pipeline outcome for one request.
@@ -41,6 +43,7 @@ type Server struct {
 	readyFns   map[string]func() string
 	readyOrder []string
 	metrics    http.Handler
+	dashboard  *dashboard.Dashboard
 }
 
 // NewServer validates configuration and builds the server.
@@ -68,8 +71,19 @@ func (s *Server) SetPipeline(p Pipeline) {
 	p.SetSecurityMode(s.cfg.SecurityMode)
 }
 
-// SetMetricsHandler mounts a handler at GET /metrics (spec §15).
-func (s *Server) SetMetricsHandler(h http.Handler) { s.metrics = h }
+// SetMetricsHandler mounts a handler at GET /metrics (spec §15). The
+// production observability handler also provides the metrics source used by
+// the protection dashboard, keeping dashboard wiring in the server boundary.
+func (s *Server) SetMetricsHandler(h http.Handler) {
+	s.metrics = h
+	if provider, ok := h.(dashboard.MetricsProvider); ok {
+		s.dashboard = dashboard.New(provider.ProtectionMetrics())
+	}
+}
+
+// SetProtectionDashboard mounts the content-free protection statistics source
+// used by /api/protection-stats.
+func (s *Server) SetProtectionDashboard(d *dashboard.Dashboard) { s.dashboard = d }
 
 // AddReadinessCheck registers a named readiness probe; a non-empty return
 // string is the failure reason surfaced by /ready (FR-020).
@@ -86,10 +100,32 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /ready", s.handleReady)
+	mux.HandleFunc("GET /api/protection-stats", s.handleProtectionStats)
+	mux.HandleFunc("GET /dashboard", s.handleDashboard)
+	mux.Handle("GET /dashboard/", http.StripPrefix("/dashboard/", http.FileServer(http.FS(leaderboard.Files))))
 	if s.metrics != nil {
 		mux.Handle("GET /metrics", s.metrics)
 	}
 	return mux
+}
+
+func (s *Server) handleProtectionStats(w http.ResponseWriter, _ *http.Request) {
+	if s.dashboard == nil {
+		writeJSON(w, http.StatusOK, dashboard.Snapshot(nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, s.dashboard.Snapshot())
+}
+
+func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
+	data, err := leaderboard.Files.ReadFile("index.html")
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

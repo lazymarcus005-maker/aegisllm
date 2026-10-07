@@ -86,6 +86,20 @@ docs/                 spec, architecture, handoff, threat model, ADRs
 Docker Compose includes a Prometheus scraping the gateway; see
 [docs/operations.md](docs/operations.md) for runbook guidance.
 
+## Protection Leaderboard
+
+Open [http://localhost:8080/dashboard](http://localhost:8080/dashboard) while
+the gateway is running to see a live leaderboard of prevented sensitive sends.
+The headline count is `blocked + tokenized + redacted + review`; the rows are
+sanitized finding categories and subtypes, with no raw request content.
+
+```bash
+curl -s http://localhost:8080/api/protection-stats
+```
+
+The dashboard polls the JSON endpoint every two seconds and supports Thai and
+English labels, responsive light/dark styling, and reduced-motion preferences.
+
 ## Documentation
 
 - [docs/spec.md](docs/spec.md) — requirements (FR/NFR/UC/AS)

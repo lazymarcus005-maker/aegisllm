@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>AegisLLM Protection Leaderboard</title>
+    <link rel="stylesheet" href="/dashboard/style.css">
+  </head>
+  <body>
+    <canvas id="ambient-canvas" aria-hidden="true"></canvas>
+    <main class="shell">
+      <header class="hero">
+        <div class="brand-row">
+          <div class="shield-mark" aria-hidden="true">🛡️</div>
+          <div>
+            <p class="eyebrow">AEGISLLM SECURITY GATEWAY</p>
+            <h1>Protection Leaderboard</h1>
+            <p class="subtitle">จำนวนครั้งที่ป้องกัน sensitive sends to LLM</p>
+          </div>
+        </div>
+        <div class="total-card" id="total-card">
+          <span class="total-label">Prevented sensitive sends / ป้องกันข้อมูลสำเร็จ</span>
+          <strong id="total-counter" aria-live="polite">0</strong>
+          <span class="updated" id="updated-at">กำลังเชื่อมต่อ…</span>
+        </div>
+      </header>
+
+      <section class="summary-grid" aria-label="Protection summary">
+        <article class="summary-card"><span>Blocked / บล็อก</span><strong id="blocked">0</strong></article>
+        <article class="summary-card"><span>Tokenized / แทนค่า</span><strong id="tokenized">0</strong></article>
+        <article class="summary-card"><span>Redacted / ลบข้อมูล</span><strong id="redacted">0</strong></article>
+        <article class="summary-card"><span>Review / ตรวจสอบ</span><strong id="review">0</strong></article>
+        <article class="summary-card allowed"><span>Allowed / อนุญาต</span><strong id="allowed">0</strong></article>
+      </section>
+
+      <section class="leaderboard-card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">LIVE SIGNALS</p>
+            <h2>What we protected / สิ่งที่ป้องกัน</h2>
+          </div>
+          <span class="live-pill"><i></i> Polling 2s</span>
+        </div>
+        <div id="leaderboard" class="leaderboard" aria-live="polite"></div>
+        <div id="empty-state" class="empty-state" hidden>
+          <span class="empty-icon">🛡️</span>
+          <p>ยังไม่มีการป้องกัน — ระบบพร้อมทำงาน</p>
+          <small>No protections yet — the gateway is ready.</small>
+        </div>
+      </section>
+
+      <footer>Metrics are sanitized counters only · ข้อมูลที่แสดงไม่มี raw content</footer>
+    </main>
+    <script src="/dashboard/app.js" defer></script>
+  </body>
+</html>
