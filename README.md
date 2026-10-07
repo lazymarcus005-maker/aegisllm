@@ -63,14 +63,25 @@ All configuration is environment-based; see [.env.example](.env.example).
 | `UPSTREAM_API_KEY` | — | Key for `bearer` mode (never a client-supplied value) |
 | `MAX_BODY_BYTES` | `1048576` | Request body limit (oversized → 413) |
 | `SECURITY_MODE` | `off` | `off`, `shadow`, `enforce` |
+| `AUTH_MODE` | `off` | `off` for development compatibility or `jwt` for authenticated ingress |
+| `JWT_PUBLIC_KEY_FILE` | — | PEM RSA (RS256) or P-256 EC (ES256) public key for JWT mode |
+| `JWT_HMAC_SECRET` | — | Development/test only HS256 secret; rejected in shadow/production |
+| `JWT_ISSUER` / `JWT_AUDIENCE` | — | Expected JWT issuer and audience; required in production |
+| `JWT_*_CLAIM` | see `.env.example` | Claim names for tenant, application, subject, roles, and provider |
+| `ALLOW_UNAUTHENTICATED_SHADOW` | `false` | Explicit local development waiver; carries spoofing risk |
 | `POLICY_FILE` / `QUESTIONS_FILE` / `THRESHOLDS_FILE` | versioned repo assets | Reviewed policy and semantic assets |
 | `TOKEN_VAULT_KEY` | ephemeral in development | Required as 64 hex chars in production |
 | `TOKEN_VAULT_REDIS_URL` | in-memory in development | Required in production |
 | `TELEMETRY_HMAC_KEY` | empty in development | Required in production |
 | `DEFAULT_TARGET_PROVIDER` | `cloud` | Provider class when `X-Target-Provider` absent |
 
-Identity/application/model metadata comes from trusted headers:
-`X-Application-Id`, `X-Tenant-Id`, `X-User-Id`, `X-Target-Provider`.
+With `AUTH_MODE=off`, development retains the compatibility headers
+`X-Application-Id`, `X-Tenant-Id`, `X-User-Id`, and `X-Target-Provider`. With
+`AUTH_MODE=jwt`, those headers are ignored and stripped; tenant, application,
+user, roles, and provider metadata come only from verified JWT claims. JWT
+defaults are `tenant_id`, `azp`, `sub`, `roles`, and `provider` respectively.
+LLM POST routes and `/v1/models` require `aegis.invoke` or `aegis.operator`;
+the dashboard, protection stats, and metrics require `aegis.operator`.
 
 ## Repository layout
 

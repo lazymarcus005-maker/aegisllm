@@ -5,10 +5,10 @@ Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
 
 ## Trust boundaries
 
-- **TB-1 Client → Gateway**: fully untrusted. Identity comes from trusted
-  headers (`X-Application-Id`, `X-Tenant-Id`, `X-User-Id`) and MUST be
-  enforced by an edge proxy / mTLS in production — the gateway alone trusts
-  these headers by design.
+- **TB-1 Client → Gateway**: fully untrusted. In protected deployments the
+  gateway verifies a bearer JWT and derives identity only from selected claims;
+  inbound identity and Authorization headers are stripped before proxying. The
+  development-only `AUTH_MODE=off` mode retains trusted-header compatibility.
 - **TB-2 Gateway → Laya**: local, non-internet-facing. Laya is a classifier,
   never an enforcement authority (INV-002).
 - **TB-3 Gateway → LLM Gateway**: only policy-approved or transformed content.
@@ -31,6 +31,8 @@ Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
 | Credential exfiltration intent | security-v1 question on request and tool_call directions; policy block/restrict | classifier false negatives — eval corpus emphasizes FNR |
 | Tool abuse | InspectToolCall / InspectToolResult reuse the full pipeline; RESTRICT_TOOLS strips tools physically (T-025) | full MCP proxy deferred |
 | Policy bypass | policy-as-code with strict schema validation; corruption fails startup (fail closed) | policy repo compromise = config poisoning; protect with review + CI |
+| Caller identity spoofing | RS256/ES256 JWT verification, strict algorithm/key matching, issuer/audience/time checks, and route RBAC; inbound identity headers are stripped | development/off mode and the explicit unauthenticated shadow waiver remain spoofable |
+| Client credential forwarding | proxy forwards only content negotiation headers and applies upstream credentials from gateway configuration | a compromised gateway host can access configured upstream credentials |
 | Laya outage | circuit breaker + risk-sensitive policy fallback; high-risk routes fail closed (AS-004, INV-008); never catch→ALLOW | availability impact on high-risk routes is deliberate (policy-controlled) |
 | Classifier false negatives/positives | eval harness with FNR-emphasized slices; regression CI gates promotion (§17) | thresholds are only as good as the labelled data |
 | Audit-log leakage | audit struct cannot carry raw content by construction (ticket 02 tests) | downstream log sinks must be access-controlled |

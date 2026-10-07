@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/policy"
 )
@@ -31,27 +32,38 @@ const (
 // Config holds all gateway runtime configuration, sourced from the
 // environment (see .env.example).
 type Config struct {
-	DeploymentProfile       DeploymentProfile
-	ListenAddr              string
-	UpstreamBaseURL         string
-	UpstreamAuthMode        string // none | bearer | header
-	UpstreamAPIKey          string
-	UpstreamAuthHeaderName  string
-	UpstreamAuthHeaderValue string
-	UpstreamChatPathPrefix  string
-	MaxBodyBytes            int64
-	SecurityMode            string // off | shadow | enforce
-	HeaderApplication       string
-	HeaderTenant            string
-	HeaderUser              string
-	HeaderTargetProvider    string
-	DefaultTargetProvider   string
-	PolicyFile              string
-	QuestionsFile           string
-	ThresholdsFile          string
-	TokenVaultKey           string
-	TokenVaultRedisURL      string
-	TelemetryHMACKey        string
+	DeploymentProfile          DeploymentProfile
+	ListenAddr                 string
+	UpstreamBaseURL            string
+	UpstreamAuthMode           string // none | bearer | header
+	UpstreamAPIKey             string
+	UpstreamAuthHeaderName     string
+	UpstreamAuthHeaderValue    string
+	UpstreamChatPathPrefix     string
+	MaxBodyBytes               int64
+	SecurityMode               string // off | shadow | enforce
+	HeaderApplication          string
+	HeaderTenant               string
+	HeaderUser                 string
+	HeaderTargetProvider       string
+	DefaultTargetProvider      string
+	PolicyFile                 string
+	QuestionsFile              string
+	ThresholdsFile             string
+	TokenVaultKey              string
+	TokenVaultRedisURL         string
+	TelemetryHMACKey           string
+	AuthMode                   string // off | jwt
+	JWTPublicKeyFile           string
+	JWTHMACSecret              string
+	JWTIssuer                  string
+	JWTAudience                string
+	JWTTenantClaim             string
+	JWTApplicationClaim        string
+	JWTSubjectClaim            string
+	JWTRolesClaim              string
+	JWTProviderClaim           string
+	AllowUnauthenticatedShadow bool
 }
 
 // LoadConfig reads configuration from the process environment.
@@ -67,27 +79,38 @@ func configFrom(get func(string) string) Config {
 		profile = DeploymentProfile(profileValue)
 	}
 	return Config{
-		DeploymentProfile:       profile,
-		ListenAddr:              getenvDefault(get, "LISTEN_ADDR", ":8080"),
-		UpstreamBaseURL:         get("UPSTREAM_BASE_URL"),
-		UpstreamAuthMode:        getenvDefault(get, "UPSTREAM_AUTH_MODE", "none"),
-		UpstreamAPIKey:          get("UPSTREAM_API_KEY"),
-		UpstreamAuthHeaderName:  getenvDefault(get, "UPSTREAM_AUTH_HEADER_NAME", "X-Upstream-Api-Key"),
-		UpstreamAuthHeaderValue: get("UPSTREAM_AUTH_HEADER_VALUE"),
-		UpstreamChatPathPrefix:  get("UPSTREAM_CHAT_PATH_PREFIX"),
-		MaxBodyBytes:            getenvInt64(get, "MAX_BODY_BYTES", 1<<20),
-		SecurityMode:            getenvDefault(get, "SECURITY_MODE", ModeOff),
-		HeaderApplication:       getenvDefault(get, "HEADER_APPLICATION", "X-Application-Id"),
-		HeaderTenant:            getenvDefault(get, "HEADER_TENANT", "X-Tenant-Id"),
-		HeaderUser:              getenvDefault(get, "HEADER_USER", "X-User-Id"),
-		HeaderTargetProvider:    getenvDefault(get, "HEADER_TARGET_PROVIDER", "X-Target-Provider"),
-		DefaultTargetProvider:   getenvDefault(get, "DEFAULT_TARGET_PROVIDER", "cloud"),
-		PolicyFile:              getenvDefault(get, "POLICY_FILE", "policies/enterprise-default.yaml"),
-		QuestionsFile:           getenvDefault(get, "QUESTIONS_FILE", "questions/security-v1.yaml"),
-		ThresholdsFile:          getenvDefault(get, "THRESHOLDS_FILE", "policies/thresholds-security-v1.yaml"),
-		TokenVaultKey:           get("TOKEN_VAULT_KEY"),
-		TokenVaultRedisURL:      get("TOKEN_VAULT_REDIS_URL"),
-		TelemetryHMACKey:        get("TELEMETRY_HMAC_KEY"),
+		DeploymentProfile:          profile,
+		ListenAddr:                 getenvDefault(get, "LISTEN_ADDR", ":8080"),
+		UpstreamBaseURL:            get("UPSTREAM_BASE_URL"),
+		UpstreamAuthMode:           getenvDefault(get, "UPSTREAM_AUTH_MODE", "none"),
+		UpstreamAPIKey:             get("UPSTREAM_API_KEY"),
+		UpstreamAuthHeaderName:     getenvDefault(get, "UPSTREAM_AUTH_HEADER_NAME", "X-Upstream-Api-Key"),
+		UpstreamAuthHeaderValue:    get("UPSTREAM_AUTH_HEADER_VALUE"),
+		UpstreamChatPathPrefix:     get("UPSTREAM_CHAT_PATH_PREFIX"),
+		MaxBodyBytes:               getenvInt64(get, "MAX_BODY_BYTES", 1<<20),
+		SecurityMode:               getenvDefault(get, "SECURITY_MODE", ModeOff),
+		HeaderApplication:          getenvDefault(get, "HEADER_APPLICATION", "X-Application-Id"),
+		HeaderTenant:               getenvDefault(get, "HEADER_TENANT", "X-Tenant-Id"),
+		HeaderUser:                 getenvDefault(get, "HEADER_USER", "X-User-Id"),
+		HeaderTargetProvider:       getenvDefault(get, "HEADER_TARGET_PROVIDER", "X-Target-Provider"),
+		DefaultTargetProvider:      getenvDefault(get, "DEFAULT_TARGET_PROVIDER", "cloud"),
+		PolicyFile:                 getenvDefault(get, "POLICY_FILE", "policies/enterprise-default.yaml"),
+		QuestionsFile:              getenvDefault(get, "QUESTIONS_FILE", "questions/security-v1.yaml"),
+		ThresholdsFile:             getenvDefault(get, "THRESHOLDS_FILE", "policies/thresholds-security-v1.yaml"),
+		TokenVaultKey:              get("TOKEN_VAULT_KEY"),
+		TokenVaultRedisURL:         get("TOKEN_VAULT_REDIS_URL"),
+		TelemetryHMACKey:           get("TELEMETRY_HMAC_KEY"),
+		AuthMode:                   getenvDefault(get, "AUTH_MODE", auth.ModeOff),
+		JWTPublicKeyFile:           get("JWT_PUBLIC_KEY_FILE"),
+		JWTHMACSecret:              get("JWT_HMAC_SECRET"),
+		JWTIssuer:                  get("JWT_ISSUER"),
+		JWTAudience:                get("JWT_AUDIENCE"),
+		JWTTenantClaim:             getenvDefault(get, "JWT_TENANT_CLAIM", "tenant_id"),
+		JWTApplicationClaim:        getenvDefault(get, "JWT_APPLICATION_CLAIM", "azp"),
+		JWTSubjectClaim:            getenvDefault(get, "JWT_SUBJECT_CLAIM", "sub"),
+		JWTRolesClaim:              getenvDefault(get, "JWT_ROLES_CLAIM", "roles"),
+		JWTProviderClaim:           getenvDefault(get, "JWT_PROVIDER_CLAIM", "provider"),
+		AllowUnauthenticatedShadow: strings.EqualFold(get("ALLOW_UNAUTHENTICATED_SHADOW"), "true"),
 	}
 }
 
@@ -126,11 +149,26 @@ func ValidateConfig(cfg Config) error {
 	if profile == ProfileShadow && cfg.SecurityMode != ModeShadow {
 		return errors.New("shadow deployment requires SECURITY_MODE=shadow")
 	}
+	if err := validateAuthConfig(cfg, profile); err != nil {
+		return err
+	}
 	if profile != ProfileProduction {
 		return nil
 	}
 	if cfg.SecurityMode != ModeEnforce {
 		return errors.New("production requires SECURITY_MODE=enforce")
+	}
+	if cfg.AuthMode != auth.ModeJWT {
+		return errors.New("production requires AUTH_MODE=jwt")
+	}
+	if strings.TrimSpace(cfg.JWTIssuer) == "" {
+		return errors.New("production requires JWT_ISSUER")
+	}
+	if strings.TrimSpace(cfg.JWTAudience) == "" {
+		return errors.New("production requires JWT_AUDIENCE")
+	}
+	if strings.TrimSpace(cfg.JWTPublicKeyFile) == "" || strings.TrimSpace(cfg.JWTHMACSecret) != "" {
+		return errors.New("production requires an asymmetric JWT_PUBLIC_KEY_FILE")
 	}
 	if len(cfg.TokenVaultKey) != 64 {
 		return errors.New("TOKEN_VAULT_KEY must be 64 hex chars")
@@ -165,6 +203,41 @@ func ValidateConfig(cfg Config) error {
 	}
 	if err := validateThresholdsFile(cfg.ThresholdsFile); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateAuthConfig(cfg Config, profile DeploymentProfile) error {
+	mode := strings.ToLower(strings.TrimSpace(cfg.AuthMode))
+	if mode == "" {
+		mode = auth.ModeOff
+	}
+	if mode != auth.ModeOff && mode != auth.ModeJWT {
+		return errors.New("AUTH_MODE must be one of: off, jwt")
+	}
+	if profile == ProfileProduction && mode == auth.ModeOff {
+		return errors.New("production rejects AUTH_MODE=off")
+	}
+	if profile == ProfileShadow && mode == auth.ModeOff && !cfg.AllowUnauthenticatedShadow {
+		return errors.New("shadow requires AUTH_MODE=jwt unless ALLOW_UNAUTHENTICATED_SHADOW=true")
+	}
+	if mode == auth.ModeOff {
+		return nil
+	}
+	if strings.TrimSpace(cfg.JWTIssuer) == "" {
+		return errors.New("AUTH_MODE=jwt requires JWT_ISSUER")
+	}
+	if strings.TrimSpace(cfg.JWTAudience) == "" {
+		return errors.New("AUTH_MODE=jwt requires JWT_AUDIENCE")
+	}
+	if strings.TrimSpace(cfg.JWTPublicKeyFile) != "" && strings.TrimSpace(cfg.JWTHMACSecret) != "" {
+		return errors.New("configure only one JWT verification key")
+	}
+	if strings.TrimSpace(cfg.JWTHMACSecret) != "" && profile != ProfileDevelopment {
+		return errors.New("JWT_HMAC_SECRET is allowed only in development or test")
+	}
+	if strings.TrimSpace(cfg.JWTPublicKeyFile) == "" && strings.TrimSpace(cfg.JWTHMACSecret) == "" {
+		return errors.New("AUTH_MODE=jwt requires JWT_PUBLIC_KEY_FILE or development-only JWT_HMAC_SECRET")
 	}
 	return nil
 }

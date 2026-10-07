@@ -61,6 +61,9 @@ func (p *Proxy) Forward(r *http.Request, body []byte) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Forward only protocol headers. In particular, client Authorization and
+	// identity headers never cross the trust boundary; upstream credentials are
+	// applied below from gateway configuration only.
 	for _, h := range []string{"Content-Type", "Accept"} {
 		if v := r.Header.Get(h); v != "" {
 			req.Header.Set(h, v)

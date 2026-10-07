@@ -19,8 +19,8 @@ profile requires `SECURITY_MODE=shadow` and is available locally with:
 docker compose -f docker-compose.yml -f docker-compose.shadow.yml up --build
 ```
 
-Production requires `DEPLOYMENT_PROFILE=production` and
-`SECURITY_MODE=enforce`. Startup fails before the listener opens unless all of
+Production requires `DEPLOYMENT_PROFILE=production`, `SECURITY_MODE=enforce`,
+and `AUTH_MODE=jwt`. Startup fails before the listener opens unless all of
 the following are present and valid: a 64-hex-character `TOKEN_VAULT_KEY`, a
 Redis `TOKEN_VAULT_REDIS_URL`, `TELEMETRY_HMAC_KEY`, `UPSTREAM_BASE_URL`, and
 the reviewed policy, question, and threshold files. Known mock-upstream
@@ -32,6 +32,22 @@ placeholder-only references.
 The production image contains the gateway binary, embedded dashboard, and
 versioned policy/question/threshold assets. It runs as a non-root user and its
 container healthcheck calls `/health`.
+
+### Authenticated ingress and RBAC
+
+JWT mode accepts bearer tokens signed with RS256 (RSA PEM) or ES256 (P-256 EC
+PEM). The gateway verifies the signature, algorithm, expiry, not-before,
+issuer, and audience, then retains only configured identity claims. It never
+logs the token or raw claims. `aegis.invoke` or `aegis.operator` is required
+for LLM POST routes and `/v1/models`; `aegis.operator` is required for
+`/dashboard`, `/api/protection-stats`, and `/metrics`.
+
+`AUTH_MODE=off` is a development-only compatibility mode. The shadow compose
+example sets `ALLOW_UNAUTHENTICATED_SHADOW=true` only because it targets the
+local mock upstream; this waiver leaves caller identity spoofable and must not
+be used with real traffic. Production requires an asymmetric public key and
+rejects HS256. Mount the public key at deploy time; never commit private keys
+or JWTs.
 
 ## Modes (FR-018)
 
@@ -49,7 +65,8 @@ container healthcheck calls `/health`.
   `deployment_profile`, `security_mode`, and sanitized dependency states. It
   checks upstream reachability, policy loaded, question schema loaded, token
   store (Redis ping when configured), and laya-serve (when `LAYA_URL` is
-  configured). It never returns credentials or inspected content. Non-200 →
+  configured). It never returns credentials, auth configuration values, or
+  inspected content. Non-200 →
   not ready.
 
 ## Metrics (spec §15)

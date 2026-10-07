@@ -98,6 +98,10 @@ func productionConfig(t *testing.T) Config {
 	return Config{
 		DeploymentProfile:  ProfileProduction,
 		SecurityMode:       ModeEnforce,
+		AuthMode:           "jwt",
+		JWTPublicKeyFile:   "/run/secrets/aegis-jwt-public.pem",
+		JWTIssuer:          "https://issuer.example.invalid",
+		JWTAudience:        "aegisllm",
 		UpstreamBaseURL:    "https://llm-gateway.example.invalid",
 		UpstreamAuthMode:   "none",
 		PolicyFile:         filepath.Join(root, "policies", "enterprise-default.yaml"),

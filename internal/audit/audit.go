@@ -38,6 +38,8 @@ type Event struct {
 	Application   string           `json:"application,omitempty"`
 	Tenant        string           `json:"tenant,omitempty"`
 	User          string           `json:"user,omitempty"`
+	Roles         []string         `json:"roles,omitempty"`
+	Provider      string           `json:"provider,omitempty"`
 	PolicyID      string           `json:"policy_id,omitempty"`
 	PolicyVersion int              `json:"policy_version,omitempty"`
 	Mode          string           `json:"mode"`

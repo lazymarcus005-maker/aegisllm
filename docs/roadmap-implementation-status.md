@@ -7,7 +7,7 @@ separate feature-roadmap file).
 ## P0 — production foundation
 
 - [x] P0.1 Secure production deployment profile: typed development/shadow/production profiles, fail-fast production validation, self-contained non-root image, readiness evidence, and CI container smoke gate.
-- [ ] P0.2 Deterministic inspection and policy enforcement hardening.
+- [x] P0.2 Authenticated ingress, verified identity claims, and operator RBAC.
 - [ ] P0.3 PII transformation, encrypted vault, and outbound protection hardening.
 
 ## P1 — semantic and operational maturity
@@ -24,6 +24,10 @@ separate feature-roadmap file).
 
 P0.1 is marked complete only after the repository acceptance commands and the
 container smoke test pass on this branch.
+
+P0.2 is marked complete after strict RS256/ES256 JWT validation, RBAC, proxy
+credential isolation, full Go verification, Docker image build, and an
+authenticated RS256 container smoke test pass on this branch.
 
 Verification note: the first full-suite run observed the existing deterministic
 scan p95 target above 10 ms under host load; the isolated

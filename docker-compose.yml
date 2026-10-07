@@ -9,6 +9,7 @@ services:
       UPSTREAM_BASE_URL: "http://mock-upstream:9090"
       UPSTREAM_AUTH_MODE: "none"
       SECURITY_MODE: "off"
+      AUTH_MODE: "off"
       LOG_LEVEL: "info"
       POLICY_FILE: "policies/enterprise-default.yaml"
       QUESTIONS_FILE: "questions/security-v1.yaml"

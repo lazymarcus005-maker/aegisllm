@@ -3,3 +3,7 @@ services:
     environment:
       DEPLOYMENT_PROFILE: "shadow"
       SECURITY_MODE: "shadow"
+      # Local mock-only waiver; shadow deployments with real traffic must use
+      # AUTH_MODE=jwt and an asymmetric public key.
+      AUTH_MODE: "off"
+      ALLOW_UNAUTHENTICATED_SHADOW: "true"

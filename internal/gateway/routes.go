@@ -12,17 +12,21 @@ import (
 // one handler so every supported wire format crosses the same security gate.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /", s.handleLLMRequest)
-	mux.HandleFunc("GET /v1/models", s.handleModels)
+	mux.Handle("POST /", s.protect(http.HandlerFunc(s.handleLLMRequest), "aegis.invoke", "aegis.operator"))
+	mux.Handle("GET /v1/models", s.protect(http.HandlerFunc(s.handleModels), "aegis.invoke", "aegis.operator"))
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /ready", s.handleReady)
-	mux.HandleFunc("GET /api/protection-stats", s.handleProtectionStats)
-	mux.HandleFunc("GET /dashboard", s.handleDashboard)
-	mux.Handle("GET /dashboard/", http.StripPrefix("/dashboard/", http.FileServer(http.FS(leaderboard.Files))))
+	mux.Handle("GET /api/protection-stats", s.protect(http.HandlerFunc(s.handleProtectionStats), "aegis.operator"))
+	mux.Handle("GET /dashboard", s.protect(http.HandlerFunc(s.handleDashboard), "aegis.operator"))
+	mux.Handle("GET /dashboard/", s.protect(http.StripPrefix("/dashboard/", http.FileServer(http.FS(leaderboard.Files))), "aegis.operator"))
 	if s.metrics != nil {
-		mux.Handle("GET /metrics", s.metrics)
+		mux.Handle("GET /metrics", s.protect(s.metrics, "aegis.operator"))
 	}
 	return mux
+}
+
+func (s *Server) protect(next http.Handler, roles ...string) http.Handler {
+	return s.authn.Middleware(next, roles...)
 }
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {

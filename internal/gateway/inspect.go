@@ -81,6 +81,7 @@ func (p *SecurityPipeline) auditEvent(ins *inspection) audit.Event {
 	return audit.Event{
 		RequestID: ins.env.RequestID, Timestamp: time.Now().UTC(), Direction: ins.env.Direction,
 		Application: ins.env.Application, Tenant: ins.env.Tenant, User: ins.env.User.Subject,
+		Roles: append([]string(nil), ins.env.User.Roles...), Provider: ins.env.Target.Provider,
 		PolicyID: ins.dec.PolicyID, PolicyVersion: ins.dec.PolicyVersion, Mode: p.mode,
 		Action: ins.dec.Action, Code: ins.dec.Code, MatchedRule: ins.dec.MatchedRule,
 		FindingTypes: audit.FindingTypes(ins.findings), FindingCount: len(ins.findings),

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/dashboard"
 	"github.com/aegisllm/gateway/internal/pii"
@@ -46,6 +47,7 @@ type Server struct {
 	readyOrder []string
 	metrics    http.Handler
 	dashboard  *dashboard.Dashboard
+	authn      *auth.Authenticator
 }
 
 // NewServer validates configuration and builds the server.
@@ -63,7 +65,34 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	if cfg.DeploymentProfile == "" {
 		cfg.DeploymentProfile = ProfileDevelopment
 	}
-	return &Server{cfg: cfg, proxy: proxy, logger: logger, readyFns: map[string]func() string{}}, nil
+	if cfg.JWTTenantClaim == "" {
+		cfg.JWTTenantClaim = "tenant_id"
+	}
+	if cfg.JWTApplicationClaim == "" {
+		cfg.JWTApplicationClaim = "azp"
+	}
+	if cfg.JWTSubjectClaim == "" {
+		cfg.JWTSubjectClaim = "sub"
+	}
+	if cfg.JWTRolesClaim == "" {
+		cfg.JWTRolesClaim = "roles"
+	}
+	if cfg.JWTProviderClaim == "" {
+		cfg.JWTProviderClaim = "provider"
+	}
+	authn, err := auth.New(auth.Config{
+		Mode: cfg.AuthMode, DeploymentProfile: string(cfg.profile()),
+		AllowUnauthenticated: cfg.AllowUnauthenticatedShadow,
+		PublicKeyFile:        cfg.JWTPublicKeyFile, HMACSecret: cfg.JWTHMACSecret,
+		Issuer: cfg.JWTIssuer, Audience: cfg.JWTAudience,
+		TenantClaim: cfg.JWTTenantClaim, ApplicationClaim: cfg.JWTApplicationClaim,
+		SubjectClaim: cfg.JWTSubjectClaim, RolesClaim: cfg.JWTRolesClaim,
+		ProviderClaim: cfg.JWTProviderClaim,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Server{cfg: cfg, proxy: proxy, logger: logger, readyFns: map[string]func() string{}, authn: authn}, nil
 }
 
 // SetPipeline attaches the security pipeline and propagates the security
@@ -359,6 +388,23 @@ func (s *Server) applyDecision(w http.ResponseWriter, env *core.InspectionEnvelo
 }
 
 func (s *Server) enrich(env *core.InspectionEnvelope, r *http.Request) {
+	if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
+		for _, header := range []string{s.cfg.HeaderApplication, s.cfg.HeaderTenant, s.cfg.HeaderUser, s.cfg.HeaderTargetProvider,
+			"X-Tenant-Id", "X-Application-Id", "X-User-Id", "X-Target-Provider", "Authorization"} {
+			if header != "" {
+				r.Header.Del(header)
+			}
+		}
+		env.Application = principal.Application
+		env.Tenant = principal.Tenant
+		env.User.Subject = principal.Subject
+		env.User.Roles = append([]string(nil), principal.Roles...)
+		env.Target.Provider = principal.Provider
+		if env.Target.Provider == "" {
+			env.Target.Provider = s.cfg.DefaultTargetProvider
+		}
+		return
+	}
 	env.Application = headerOr(r, s.cfg.HeaderApplication, "unknown")
 	env.Tenant = r.Header.Get(s.cfg.HeaderTenant)
 	env.User.Subject = r.Header.Get(s.cfg.HeaderUser)
