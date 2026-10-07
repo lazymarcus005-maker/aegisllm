@@ -33,6 +33,20 @@ func NewRegistry(hook TimingHook) *Registry {
 	return &Registry{timing: hook}
 }
 
+// ProductionRegistry returns the detector set used by the gateway runtime.
+// Keeping this constructor shared prevents simulators and runtime from
+// silently drifting in subtype coverage.
+func ProductionRegistry(telemetryKey string, hook TimingHook) *Registry {
+	r := NewRegistry(hook)
+	for _, d := range SecretDetectors(telemetryKey) {
+		r.Register(d)
+	}
+	for _, d := range PiiDetectors(telemetryKey) {
+		r.Register(d)
+	}
+	return r
+}
+
 // Register appends a detector; order defines evaluation order.
 func (r *Registry) Register(d Detector) {
 	r.detectors = append(r.detectors, d)

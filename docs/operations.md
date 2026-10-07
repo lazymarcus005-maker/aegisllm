@@ -126,6 +126,9 @@ path (if ever enabled) separately governed (PRIV-004).
 
 - `POLICY_FILE` (default `policies/enterprise-default.yaml`) — invalid
   policy fails startup.
+- `GET /api/effective-policy` — operator-only sanitized policy identity and
+  effective rule summary. It never returns YAML values, credentials, request
+  content, or finding hashes.
 - `THRESHOLDS_FILE` (default `policies/thresholds-security-v1.yaml`) —
   required for semantic enforcement; `evaluated: true` records are the
   enforcement permission slip (INV-010).
@@ -135,7 +138,9 @@ path (if ever enabled) separately governed (PRIV-004).
 ### Secret handling: hard mask vs block
 
 `secrets.<SUBTYPE>.action` accepts `redact` (hard mask) or `block`.
-`enterprise-default.yaml` (version 7) ships `redact` for all secret subtypes:
+`enterprise-default.yaml` (version 7) declares high-risk secret subtypes as
+`block`, with lower-risk secret subtypes using `redact` and a declarative
+high-confidence escalation:
 
 - **`redact` (hard mask)** — the matched span is replaced with
   `[REDACTED:SUBTYPE]` and the request/response/tool call proceeds; the raw
@@ -146,6 +151,9 @@ path (if ever enabled) separately governed (PRIV-004).
 - **`block`** — the whole request/response is rejected with
   `security_policy_violation` / `SECRET_DETECTED`. Set per-subtype when a
   category is too sensitive to forward even masked.
+
+See [policy-authoring.md](policy-authoring.md) for the v7 migration contract,
+reviewed profiles, and `policytool` examples.
 
 Note: when a REDACT decision covers a request, every detected span in it
 (secrets and PII alike) is masked with `[REDACTED:…]` for that request —

@@ -13,13 +13,14 @@ import (
 // inspection is the shared result of one request, response, tool-call, or
 // tool-result boundary inspection.
 type inspection struct {
-	env      *core.InspectionEnvelope
-	findings []core.SecurityFinding
-	dec      policy.Decision
-	laya     *audit.LayaInfo
-	layaMS   int64
-	detMS    int64
-	start    time.Time
+	env         *core.InspectionEnvelope
+	findings    []core.SecurityFinding
+	dec         policy.Decision
+	explanation policy.Explanation
+	laya        *audit.LayaInfo
+	layaMS      int64
+	detMS       int64
+	start       time.Time
 }
 
 // inspect is the single four-boundary inspection routine: deterministic scan,
@@ -42,16 +43,20 @@ func (p *SecurityPipeline) inspectContext(ctx context.Context, env *core.Inspect
 			p.recorder.ObserveFindings(string(f.Category), f.Subtype)
 		}
 	}
-	ins.dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: ins.findings})
+	ins.explanation = p.engine.Explain(policy.Context{Envelope: env, Findings: ins.findings})
+	ins.dec = ins.explanation.Decision
 	if env.Metadata["passthrough"] == "true" || env.Metadata["skipped_stream"] == "true" {
 		ins.dec.Action = core.ActionAllow
 		ins.dec.Code = ""
 		ins.dec.MatchedRule = "passthrough"
+		ins.dec.PrecedenceStage = "system_passthrough"
+		ins.dec.Reason = "body-free endpoint or stream inspection was explicitly bypassed"
 		if env.Metadata["skipped_stream"] == "true" {
 			ins.dec.Code = "SKIPPED_STREAM"
 			ins.dec.MatchedRule = "skipped_stream"
 		}
 	}
+	ins.explanation.Decision = ins.dec
 	ins.detMS = time.Since(ins.start).Milliseconds()
 	if p.provider != nil && p.planner != nil && ins.dec.Action != core.ActionBlock {
 		p.semanticStage(ctx, ins)
@@ -89,7 +94,8 @@ func (p *SecurityPipeline) auditEvent(ins *inspection) audit.Event {
 		Roles: append([]string(nil), ins.env.User.Roles...), Provider: ins.env.Target.Provider,
 		PolicyID: ins.dec.PolicyID, PolicyVersion: ins.dec.PolicyVersion, Mode: p.mode,
 		Action: ins.dec.Action, Code: ins.dec.Code, MatchedRule: ins.dec.MatchedRule,
-		FindingTypes: audit.FindingTypes(ins.findings), FindingCount: len(ins.findings),
+		PrecedenceStage: string(ins.dec.PrecedenceStage), Reason: ins.dec.Reason,
+		FindingTypes: audit.FindingTypes(ins.findings), FindingCount: len(ins.findings), FindingSummary: ins.explanation.Findings,
 		LatencyMS: latency, Laya: ins.laya,
 	}
 }

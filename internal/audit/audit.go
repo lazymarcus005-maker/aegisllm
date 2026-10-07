@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aegisllm/gateway/internal/core"
+	"github.com/aegisllm/gateway/internal/policy"
 )
 
 // LayaDecision is one sanitized semantic answer.
@@ -32,24 +33,27 @@ type LayaInfo struct {
 // Event is the sanitized audit record. Only whitelisted fields exist by
 // construction; there is no field that could accidentally carry raw content.
 type Event struct {
-	RequestID     string           `json:"request_id"`
-	Timestamp     time.Time        `json:"timestamp"`
-	Direction     core.Direction   `json:"direction"`
-	Application   string           `json:"application,omitempty"`
-	Tenant        string           `json:"tenant,omitempty"`
-	User          string           `json:"user,omitempty"`
-	Roles         []string         `json:"roles,omitempty"`
-	Provider      string           `json:"provider,omitempty"`
-	PolicyID      string           `json:"policy_id,omitempty"`
-	PolicyVersion int              `json:"policy_version,omitempty"`
-	Mode          string           `json:"mode"`
-	Action        core.Action      `json:"action"`
-	Code          string           `json:"code,omitempty"`
-	MatchedRule   string           `json:"matched_rule,omitempty"`
-	FindingTypes  []string         `json:"finding_types,omitempty"`
-	FindingCount  int              `json:"finding_count,omitempty"`
-	LatencyMS     map[string]int64 `json:"latency_ms,omitempty"`
-	Laya          *LayaInfo        `json:"laya,omitempty"`
+	RequestID       string                  `json:"request_id"`
+	Timestamp       time.Time               `json:"timestamp"`
+	Direction       core.Direction          `json:"direction"`
+	Application     string                  `json:"application,omitempty"`
+	Tenant          string                  `json:"tenant,omitempty"`
+	User            string                  `json:"user,omitempty"`
+	Roles           []string                `json:"roles,omitempty"`
+	Provider        string                  `json:"provider,omitempty"`
+	PolicyID        string                  `json:"policy_id,omitempty"`
+	PolicyVersion   int                     `json:"policy_version,omitempty"`
+	Mode            string                  `json:"mode"`
+	Action          core.Action             `json:"action"`
+	Code            string                  `json:"code,omitempty"`
+	MatchedRule     string                  `json:"matched_rule,omitempty"`
+	PrecedenceStage string                  `json:"precedence_stage,omitempty"`
+	Reason          string                  `json:"reason,omitempty"`
+	FindingTypes    []string                `json:"finding_types,omitempty"`
+	FindingCount    int                     `json:"finding_count,omitempty"`
+	FindingSummary  []policy.FindingSummary `json:"finding_summary,omitempty"`
+	LatencyMS       map[string]int64        `json:"latency_ms,omitempty"`
+	Laya            *LayaInfo               `json:"laya,omitempty"`
 }
 
 // Sink receives audit events.

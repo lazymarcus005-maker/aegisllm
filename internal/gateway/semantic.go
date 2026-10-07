@@ -100,6 +100,7 @@ func (p *SecurityPipeline) semanticStage(ctx context.Context, ins *inspection) {
 		if plan.Ask && plan.MaxRisk == "high" {
 			if fb, ok := p.engine.LayaUnavailableFallback(); ok {
 				ins.dec = fb
+				ins.explanation.Decision = fb
 				p.recorder.ObserveFallback()
 			}
 		}
@@ -111,10 +112,12 @@ func (p *SecurityPipeline) semanticStage(ctx context.Context, ins *inspection) {
 	ins.laya = layaAuditInfo(evidence)
 	switch {
 	case p.mode == ModeShadow:
-		ins.dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: ins.findings, Semantic: signals})
+		ins.explanation = p.engine.Explain(policy.Context{Envelope: env, Findings: ins.findings, Semantic: signals})
+		ins.dec = ins.explanation.Decision
 	case p.semanticEnforce:
 		if gated := p.gateSignals(env, signals, *evidence); len(gated) > 0 {
-			ins.dec = p.engine.Evaluate(policy.Context{Envelope: env, Findings: ins.findings, Semantic: gated})
+			ins.explanation = p.engine.Explain(policy.Context{Envelope: env, Findings: ins.findings, Semantic: gated})
+			ins.dec = ins.explanation.Decision
 		}
 	}
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/aegisllm/gateway/internal/dashboard"
 	"github.com/aegisllm/gateway/internal/observability"
+	"github.com/aegisllm/gateway/internal/policy"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -84,6 +85,11 @@ func TestJWTRouteRBAC(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
+	pol, err := policy.LoadFile("../../policies/enterprise-default.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetPolicy(pol)
 	metrics := observability.New()
 	srv.SetProtectionDashboard(dashboard.New(metrics))
 	srv.SetMetricsHandler(metrics.Handler())
@@ -114,6 +120,15 @@ func TestJWTRouteRBAC(t *testing.T) {
 	}
 	if got := get("/api/protection-stats", operator); got != http.StatusOK {
 		t.Fatalf("operator stats status=%d", got)
+	}
+	if got := get("/api/effective-policy", ""); got != http.StatusUnauthorized {
+		t.Fatalf("missing effective-policy auth status=%d", got)
+	}
+	if got := get("/api/effective-policy", invoke); got != http.StatusForbidden {
+		t.Fatalf("invoke effective-policy status=%d", got)
+	}
+	if got := get("/api/effective-policy", operator); got != http.StatusOK {
+		t.Fatalf("operator effective-policy status=%d", got)
 	}
 	for _, tc := range []struct {
 		name  string

@@ -19,6 +19,7 @@ import (
 	"github.com/aegisllm/gateway/internal/limiter"
 	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
+	"github.com/aegisllm/gateway/internal/policy"
 	"github.com/aegisllm/gateway/web/leaderboard"
 )
 
@@ -57,6 +58,7 @@ type Server struct {
 	limiter        *limiter.Limiter
 	dashboard      *dashboard.Dashboard
 	authn          *auth.Authenticator
+	policy         *policy.Policy
 }
 
 // NewServer validates configuration and builds the server.
@@ -118,6 +120,10 @@ func (s *Server) SetPipeline(p Pipeline) {
 	p.SetSecurityMode(s.cfg.SecurityMode)
 }
 
+// SetPolicy attaches the already validated policy for the operator-only
+// effective-policy endpoint. The endpoint exposes only Policy.Summary().
+func (s *Server) SetPolicy(p *policy.Policy) { s.policy = p }
+
 // SetMetricsHandler mounts a handler at GET /metrics (spec §15). The
 // production observability handler also provides the metrics source used by
 // the protection dashboard, keeping dashboard wiring in the server boundary.
@@ -153,6 +159,18 @@ func (s *Server) handleProtectionStats(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.dashboard.Snapshot())
+}
+
+func (s *Server) handleEffectivePolicy(w http.ResponseWriter, _ *http.Request) {
+	if s.policy == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "policy unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"policy_id": s.policy.ID, "policy_version": s.policy.Version,
+		"owner": s.policy.Owner, "effective_date": s.policy.EffectiveDate,
+		"rules": s.policy.Summary(),
+	})
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {

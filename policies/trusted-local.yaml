@@ -1,0 +1,64 @@
+# Trusted local deployment: local inference is governed and may receive PII,
+# but credentials and secrets are still blocked. Keep this profile limited to
+# an authenticated, isolated local provider boundary.
+id: trusted-local
+version: 8
+owner: security-team
+effective_date: "2026-10-07"
+
+default:
+  action: allow
+safe_default:
+  action: block
+
+category_actions:
+  SECRET: {action: block}
+  PII: {action: allow}
+
+provider_overrides:
+  cloud:
+    categories:
+      PII: {action: tokenize}
+  local:
+    categories:
+      PII: {action: allow}
+
+subtype_actions:
+  SECRET:
+    GITLAB_PAT: block
+    GITHUB_TOKEN: block
+    PEM_PRIVATE_KEY: block
+    JWT: block
+    BEARER_TOKEN: block
+    AWS_ACCESS_KEY: block
+    AWS_SECRET_ACCESS_KEY: block
+    OPENAI_API_KEY: block
+    ANTHROPIC_API_KEY: block
+    SLACK_TOKEN: block
+    GOOGLE_API_KEY: block
+    GENERIC_API_KEY: block
+    CONNECTION_STRING: block
+    HIGH_ENTROPY_SECRET: block
+  PII:
+    TH_CITIZEN_ID: allow
+    PHONE_NUMBER: allow
+    EMAIL: allow
+    CREDIT_CARD: allow
+    IP_ADDRESS: allow
+
+confidence_escalation:
+  - id: high-confidence-secret
+    category: SECRET
+    min_confidence: 0.90
+    action: block
+finding_count_escalation:
+  - id: multiple-pii-review
+    category: PII
+    min_count: 3
+    action: review
+
+fallback:
+  laya_unavailable:
+    high_risk: block
+    low_risk: deterministic_only
+

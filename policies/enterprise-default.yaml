@@ -7,6 +7,15 @@ effective_date: "2026-10-05"
 default:
   action: allow
 
+# P0.6 compatibility declarations. The v7 sections below are normalized into
+# the same effective contract, preserving their stable rule IDs.
+safe_default:
+  action: block
+confidence_escalation:
+  - id: high-confidence-secret
+    category: SECRET
+    min_confidence: 0.90
+    action: block
 # Provider-boundary baseline for confidential data (precedence level 5).
 targets:
   cloud:
@@ -20,11 +29,11 @@ targets:
 # entry). Use action: block to reject the whole request/response instead.
 secrets:
   GITLAB_PAT:
-    action: redact
+    action: block
   GITHUB_TOKEN:
-    action: redact
+    action: block
   PEM_PRIVATE_KEY:
-    action: redact
+    action: block
   JWT:
     action: redact
   BEARER_TOKEN:
@@ -32,9 +41,9 @@ secrets:
   AWS_ACCESS_KEY:
     action: redact
   AWS_SECRET_ACCESS_KEY:
-    action: redact
+    action: block
   OPENAI_API_KEY:
-    action: redact
+    action: block
   ANTHROPIC_API_KEY:
     action: redact
   SLACK_TOKEN:

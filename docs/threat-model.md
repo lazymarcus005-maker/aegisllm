@@ -36,7 +36,7 @@ Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
 | Laya outage | circuit breaker + risk-sensitive policy fallback; high-risk routes fail closed (AS-004, INV-008); never catch→ALLOW | availability impact on high-risk routes is deliberate (policy-controlled) |
 | Classifier false negatives/positives | eval harness with FNR-emphasized slices; regression CI gates promotion (§17) | thresholds are only as good as the labelled data |
 | Audit-log leakage | audit struct cannot carry raw content by construction (ticket 02 tests) | downstream log sinks must be access-controlled |
-| Configuration poisoning | KnownFields-strict YAML loaders; policy/threshold/question files are versioned code | supply chain of those files — protect the repo |
+| Configuration poisoning | KnownFields-strict YAML loaders; validated declarative actions, thresholds, count rules, operator-only effective-policy summary, and versioned policy files | supply chain of those files — protect the repo and require policy review |
 | Supply-chain dependency risk | small dependency surface: yaml.v3, go-redis, miniredis (test), prometheus client | pin versions in go.sum; review updates |
 | Oversized request / DoS | MaxBytesReader → 413 before inspection; read-header timeout; Laya circuit breaker | volumetric DDoS protection belongs to the edge |
 | Tenant/application abuse and cost amplification | verified-identity token bucket and concurrency semaphore, normalized prompt budget, bounded response/stream lifetime, global Laya semaphore, bounded key cleanup | process-local limits do not enforce a global budget across instances; distributed limiter is deferred |

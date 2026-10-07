@@ -10,6 +10,7 @@ separate feature-roadmap file).
 - [x] P0.2 Authenticated ingress, verified identity claims, and operator RBAC.
 - [ ] P0.3 PII transformation, encrypted vault, outbound protection hardening, and streaming content inspection.
 - [x] P0.4 Runtime resilience, rate limits, cost controls, bounded upstream transport, and stream lifetime protection.
+- [x] P0.6 Declarative effective policy contract, reviewed profiles, shared explanations, sanitized simulator, and operator policy summary endpoint.
 
 ## P1 — semantic and operational maturity
 

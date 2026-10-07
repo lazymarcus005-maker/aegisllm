@@ -1,0 +1,64 @@
+# Balanced cloud deployment: credentials remain protected, while ordinary
+# PII is tokenized and dense PII is sent to review. Suitable for a governed
+# cloud tenant after shadow-mode validation.
+id: balanced-cloud
+version: 8
+owner: security-team
+effective_date: "2026-10-07"
+
+default:
+  action: allow
+safe_default:
+  action: block
+
+category_actions:
+  SECRET: {action: redact}
+  PII: {action: redact}
+
+provider_overrides:
+  cloud:
+    categories:
+      PII: {action: tokenize}
+  local:
+    categories:
+      PII: {action: allow}
+
+subtype_actions:
+  SECRET:
+    GITLAB_PAT: block
+    GITHUB_TOKEN: block
+    PEM_PRIVATE_KEY: block
+    JWT: redact
+    BEARER_TOKEN: redact
+    AWS_ACCESS_KEY: redact
+    AWS_SECRET_ACCESS_KEY: block
+    OPENAI_API_KEY: block
+    ANTHROPIC_API_KEY: redact
+    SLACK_TOKEN: redact
+    GOOGLE_API_KEY: redact
+    GENERIC_API_KEY: redact
+    CONNECTION_STRING: redact
+    HIGH_ENTROPY_SECRET: redact
+  PII:
+    TH_CITIZEN_ID: redact
+    PHONE_NUMBER: redact
+    EMAIL: redact
+    CREDIT_CARD: redact
+    IP_ADDRESS: redact
+
+confidence_escalation:
+  - id: high-confidence-secret
+    category: SECRET
+    min_confidence: 0.90
+    action: block
+finding_count_escalation:
+  - id: multiple-pii-review
+    category: PII
+    min_count: 3
+    action: review
+
+fallback:
+  laya_unavailable:
+    high_risk: block
+    low_risk: deterministic_only
+

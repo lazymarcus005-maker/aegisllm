@@ -162,6 +162,7 @@ English labels, responsive light/dark styling, and reduced-motion preferences.
 - [docs/implement.handoff.md](docs/implement.handoff.md) — delivery plan
 - [docs/threat-model.md](docs/threat-model.md) — threats, controls, residual risk
 - [docs/operations.md](docs/operations.md) — runbook
+- [docs/policy-authoring.md](docs/policy-authoring.md) — policy contract, profiles, and simulator
 - [docs/mvp-dod-checklist.md](docs/mvp-dod-checklist.md) — DoD audit with evidence
 - [docs/adr/](docs/adr/) — architecture decision records
 

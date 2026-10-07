@@ -71,13 +71,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	registry := detectors.NewRegistry(nil)
-	for _, d := range detectors.SecretDetectors(cfg.TelemetryHMACKey) {
-		registry.Register(d)
-	}
-	for _, d := range detectors.PiiDetectors(cfg.TelemetryHMACKey) {
-		registry.Register(d)
-	}
+	registry := detectors.ProductionRegistry(cfg.TelemetryHMACKey, nil)
 	sink := audit.NewWriterSink(os.Stdout)
 	// Security mode is not stated here: Server.SetPipeline propagates
 	// cfg.SecurityMode into the pipeline — the server owns the mode.
@@ -168,6 +162,7 @@ func main() {
 	srv.SetMetricsHandler(metrics.Handler())
 
 	srv.SetPipeline(pipe)
+	srv.SetPolicy(pol)
 	srv.AddReadinessCheck("policy_loaded", func() string { return "" })
 	srv.AddReadinessCheck("questions_loaded", func() string { return "" })
 	if cfg.TokenVaultRedisURL == "" {
