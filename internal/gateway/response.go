@@ -23,8 +23,9 @@ func applyPlanToResponseBody(raw []byte, plan []pii.Transformation) ([]byte, err
 	return (openAIChatNormalizer{}).RewriteResponse(raw, plan)
 }
 
-// placeholderRe matches <TYPE_NNN> token placeholders the model may echo.
-var placeholderRe = regexp.MustCompile(`<([A-Z][A-Z0-9_]*_[0-9]{3})>`)
+// placeholderRe matches both the legacy development label and the P1.9
+// opaque label. The resolver still performs the cryptographic validation.
+var placeholderRe = regexp.MustCompile(`<((?:[A-Z][A-Z0-9_]*_[0-9]{3})|(?:v1(?:\.[A-Za-z0-9:_-]+){3,4}))>`)
 
 // replacePlaceholdersInBody rewrites every token placeholder in response
 // content for which the resolver returns a value. Placeholders that do not

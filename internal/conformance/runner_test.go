@@ -2,10 +2,10 @@ package conformance
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -60,13 +60,31 @@ func TestReasonIDsBounded(t *testing.T) {
 func TestAuthDescriptorUsesOnlyFileAndEnvironmentReferences(t *testing.T) {
 	dir := t.TempDir()
 	secretPath := filepath.Join(dir, "credential")
-	if err := os.WriteFile(secretPath, []byte("test-only-secret"), 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(secretPath, []byte("test-only-secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	descriptor := filepath.Join(dir, "auth.json")
 	data := []byte(`{"schema_version":"aegisllm.conformance.auth/v1","headers":[{"name":"X-Test","value_file":"` + secretPath + `"}]}`)
-	if err := os.WriteFile(descriptor, data, 0600); err != nil { t.Fatal(err) }
-	h, err := LoadAuth(descriptor); if err != nil { t.Fatal(err) }
-	if h.Get("X-Test") != "test-only-secret" { t.Fatalf("descriptor did not load mounted value") }
-	if _, err := LoadAuth(writeAuthDescriptor(t, `{"schema_version":"aegisllm.conformance.auth/v1","headers":[{"name":"X-Test","value":"inline-secret"}]}`)); err == nil { t.Fatal("inline credential was accepted") }
+	if err := os.WriteFile(descriptor, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	h, err := LoadAuth(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Get("X-Test") != "test-only-secret" {
+		t.Fatalf("descriptor did not load mounted value")
+	}
+	if _, err := LoadAuth(writeAuthDescriptor(t, `{"schema_version":"aegisllm.conformance.auth/v1","headers":[{"name":"X-Test","value":"inline-secret"}]}`)); err == nil {
+		t.Fatal("inline credential was accepted")
+	}
 }
 
-func writeAuthDescriptor(t *testing.T, data string) string { t.Helper(); path := filepath.Join(t.TempDir(), "auth.json"); if err := os.WriteFile(path, []byte(data), 0600); err != nil { t.Fatal(err) }; return path }
+func writeAuthDescriptor(t *testing.T, data string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}

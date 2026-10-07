@@ -5,7 +5,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -30,29 +32,33 @@ const (
 // Config contains the authentication settings needed by the HTTP boundary.
 // HMAC secrets are intentionally accepted only for development and tests.
 type Config struct {
-	Mode                 string
-	DeploymentProfile    string
-	AllowUnauthenticated bool
-	PublicKeyFile        string
-	HMACSecret           string
-	Issuer               string
-	Audience             string
-	TenantClaim          string
-	ApplicationClaim     string
-	SubjectClaim         string
-	RolesClaim           string
-	ProviderClaim        string
-	ClientCertIdentity   bool
+	Mode                  string
+	DeploymentProfile     string
+	AllowUnauthenticated  bool
+	PublicKeyFile         string
+	HMACSecret            string
+	Issuer                string
+	Audience              string
+	TenantClaim           string
+	ApplicationClaim      string
+	SubjectClaim          string
+	RolesClaim            string
+	ProviderClaim         string
+	SessionClaim          string
+	RequireSessionBinding bool
+	ClientCertIdentity    bool
 }
 
 // Principal is the identity verified by the gateway. It contains selected
 // claim values only; raw JWT claims are never retained in request context.
 type Principal struct {
-	Tenant      string
-	Application string
-	Subject     string
-	Roles       []string
-	Provider    string
+	Tenant       string
+	Application  string
+	Subject      string
+	Roles        []string
+	Provider     string
+	SessionID    string
+	SessionBound bool
 }
 
 type contextKey struct{}
@@ -110,6 +116,9 @@ func New(cfg Config) (*Authenticator, error) {
 	}
 	if cfg.ProviderClaim == "" {
 		cfg.ProviderClaim = "provider"
+	}
+	if cfg.SessionClaim == "" {
+		cfg.SessionClaim = "sid"
 	}
 	if cfg.Mode != ModeOff && cfg.Mode != ModeJWT && cfg.Mode != ModeMTLS {
 		return nil, errors.New("AUTH_MODE must be off, jwt, or mtls")
@@ -256,8 +265,13 @@ func (a *Authenticator) authenticate(r *http.Request) (Principal, error) {
 		Application: claimString(claims, a.cfg.ApplicationClaim),
 		Subject:     claimString(claims, a.cfg.SubjectClaim),
 		Provider:    claimString(claims, a.cfg.ProviderClaim),
+		SessionID:   claimString(claims, a.cfg.SessionClaim),
 		Roles:       claimRoles(claims, a.cfg.RolesClaim),
 	}
+	if a.cfg.RequireSessionBinding && p.SessionID == "" {
+		return Principal{}, errors.New("verified session binding required")
+	}
+	p.SessionBound = p.SessionID != ""
 	return p, nil
 }
 
@@ -277,7 +291,12 @@ func (a *Authenticator) authenticateCertificate(r *http.Request) (Principal, err
 			roles = append(roles, value[len("role:"):])
 		}
 	}
-	return Principal{Tenant: tenant, Application: application, Subject: cert.Subject.CommonName, Roles: roles}, nil
+	// Bind mTLS records to the verified public key rather than a client header.
+	// The digest is stable for the certificate/key binding and contains no
+	// certificate material.
+	digest := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return Principal{Tenant: tenant, Application: application, Subject: cert.Subject.CommonName, Roles: roles,
+		SessionID: "mtls-" + hex.EncodeToString(digest[:16]), SessionBound: true}, nil
 }
 
 func first(values []string) string {

@@ -3,11 +3,15 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aegisllm/gateway/internal/audit"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/pii"
+	"github.com/aegisllm/gateway/internal/policy"
 	"github.com/aegisllm/gateway/internal/tokenization"
 )
 
@@ -32,8 +36,8 @@ func (p *SecurityPipeline) ProcessRequestContext(ctx context.Context, env *core.
 			namer = pii.TokenNamer
 		}
 		plan := pii.Plan(ins.findings, namer)
-		if ins.dec.Action == core.ActionTokenize && p.vault != nil && p.crypto != nil {
-			if err := p.storeTokenMappings(env, plan); err != nil {
+		if ins.dec.Action == core.ActionTokenize && ((p.vault != nil && p.crypto != nil) || p.scopedVault != nil) {
+			if err := p.storeTokenMappings(env, plan, ins.dec); err != nil {
 				return RequestDecision{}, err
 			}
 		}
@@ -59,7 +63,26 @@ func (p *SecurityPipeline) ProcessRequestContext(ctx context.Context, env *core.
 	return RequestDecision{Action: ins.dec.Action, Code: ins.dec.Code, TransformedBody: transformed}, nil
 }
 
-func (p *SecurityPipeline) storeTokenMappings(env *core.InspectionEnvelope, plan []pii.Transformation) error {
+func (p *SecurityPipeline) storeTokenMappings(env *core.InspectionEnvelope, plan []pii.Transformation, dec policy.Decision) error {
+	if p.scopedVault != nil {
+		for i := range plan {
+			category := "PII:" + plan[i].Subtype
+			scope, err := p.tokenScope(env, dec, category)
+			if err != nil {
+				return err
+			}
+			value, ok := valueForTransformation(env, plan[i])
+			if !ok {
+				continue
+			}
+			label, err := p.scopedVault.Issue(context.Background(), scope, value)
+			if err != nil {
+				return err
+			}
+			plan[i].Replacement = label
+		}
+		return nil
+	}
 	texts := map[string]string{}
 	for _, lt := range env.TextParts() {
 		texts[fmt.Sprintf("%d/%d", lt.MessageIndex, lt.PartIndex)] = lt.Text
@@ -85,6 +108,56 @@ func (p *SecurityPipeline) storeTokenMappings(env *core.InspectionEnvelope, plan
 		}
 	}
 	return nil
+}
+
+func valueForTransformation(env *core.InspectionEnvelope, t pii.Transformation) (string, bool) {
+	for _, lt := range env.TextParts() {
+		if lt.MessageIndex != t.MessageIndex || lt.PartIndex != t.PartIndex || t.Start < 0 || t.End > len(lt.Text) || t.Start >= t.End {
+			continue
+		}
+		return lt.Text[t.Start:t.End], true
+	}
+	return "", false
+}
+
+func (p *SecurityPipeline) tokenScope(env *core.InspectionEnvelope, dec policy.Decision, category string) (tokenization.Scope, error) {
+	policyID := dec.PolicyID
+	policyVersion := dec.PolicyVersion
+	if env.Metadata == nil {
+		env.Metadata = map[string]string{}
+	}
+	if env.Metadata["vault_policy_id"] == "" {
+		env.Metadata["vault_policy_id"] = policyID
+	}
+	if env.Metadata["vault_policy_version"] == "" {
+		env.Metadata["vault_policy_version"] = strconv.Itoa(policyVersion)
+	}
+	if env.Metadata != nil {
+		if env.Metadata["vault_policy_id"] != "" {
+			policyID = env.Metadata["vault_policy_id"]
+		}
+		if env.Metadata["vault_policy_version"] != "" {
+			if parsed, err := strconv.Atoi(env.Metadata["vault_policy_version"]); err == nil {
+				policyVersion = parsed
+			}
+		}
+	}
+	purpose := tokenization.PurposeResponse
+	if env.Metadata != nil && env.Metadata["mcp_server"] != "" {
+		purpose = "tool_return:" + env.Metadata["mcp_server"]
+	}
+	if env.Metadata == nil || env.Metadata["session_binding"] == "" {
+		return tokenization.Scope{}, tokenization.ErrScopeRequired
+	}
+	return tokenization.NewScope(tokenization.ScopeInput{Tenant: env.Tenant, Application: env.Application, Subject: env.User.Subject,
+		SessionID: env.Metadata["session_binding"], PolicyID: policyID, PolicyVersion: policyVersion,
+		Purpose: purpose, DataCategory: category}, p.scopedVaultMACKey())
+}
+
+func (p *SecurityPipeline) scopedVaultMACKey() []byte {
+	// ScopedVault owns the key. The pipeline only needs a matching scope
+	// derivation; expose a process-local key through the narrow helper below.
+	return p.scopedVault.MACKey()
 }
 
 // ResponseOutcome is the pipeline outcome for the outbound direction.
@@ -139,12 +212,15 @@ func (p *SecurityPipeline) ProcessStreamText(reqEnv *core.InspectionEnvelope, te
 				namer = pii.TokenNamer
 			}
 			plan := pii.Plan(ins.findings, namer)
-			if ins.dec.Action == core.ActionTokenize && p.vault != nil && p.crypto != nil {
-				if err := p.storeTokenMappings(env, plan); err != nil {
+			if ins.dec.Action == core.ActionTokenize && ((p.vault != nil && p.crypto != nil) || p.scopedVault != nil) {
+				if err := p.storeTokenMappings(env, plan, ins.dec); err != nil {
 					return StreamTextOutcome{}, err
 				}
 			}
 			out.Text = pii.ApplyToText(text, plan)
+		}
+		if p.scopedVault != nil && kind != "tool_arguments" {
+			out.Text = p.restoreScopedText(reqEnv, ins.dec, out.Text)
 		}
 	}
 	if err := p.recordAudit(context.Background(), p.auditEvent(ins)); err != nil {
@@ -160,6 +236,22 @@ func (p *SecurityPipeline) ProcessStreamText(reqEnv *core.InspectionEnvelope, te
 		recorder.ObserveStream(core.DirectionResponse, reqEnv.Metadata["endpoint_family"], out.Predicted, recorded, p.mode, int64(len(text)), 1)
 	}
 	return out, nil
+}
+
+var scopedPlaceholderPattern = regexp.MustCompile(`<v1(?:\.[A-Za-z0-9:_-]+){3,4}>`)
+
+func (p *SecurityPipeline) restoreScopedText(env *core.InspectionEnvelope, dec policy.Decision, text string) string {
+	return scopedPlaceholderPattern.ReplaceAllStringFunc(text, func(label string) string {
+		scope, err := p.tokenScope(env, dec, "unknown")
+		if err != nil {
+			return label
+		}
+		value, err := p.scopedVault.Retrieve(context.Background(), scope, label)
+		if err != nil {
+			return label
+		}
+		return value
+	})
 }
 
 // AuditPassthrough records a body-free ALLOW event for endpoints such as
@@ -216,7 +308,27 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 		plan := pii.Plan(ins.findings, pii.RedactNamer)
 		outcome.Transformations = plan
 	}
-	if ins.dec.Action != core.ActionBlock && ins.dec.Action != core.ActionReview && p.vault != nil && p.crypto != nil {
+	if ins.dec.Action != core.ActionBlock && ins.dec.Action != core.ActionReview && p.scopedVault != nil && responseRestoreAllowed(raw) {
+		body, changed, rerr := replacePlaceholdersInNormalizerBody(raw, normalizer, func(label string) (string, bool) {
+			dec := ins.dec
+			category := "unknown"
+			scope, err := p.tokenScope(reqEnv, dec, category)
+			if err != nil {
+				return "", false
+			}
+			value, err := p.scopedVault.Retrieve(context.Background(), scope, label)
+			if err != nil {
+				return "", false
+			}
+			return value, true
+		})
+		if rerr != nil {
+			return ResponseOutcome{}, rerr
+		}
+		if changed {
+			outcome.TransformedBody = body
+		}
+	} else if ins.dec.Action != core.ActionBlock && ins.dec.Action != core.ActionReview && p.vault != nil && p.crypto != nil {
 		reid := tokenization.NewReidentifier(p.vault, p.crypto)
 		body, changed, rerr := replacePlaceholdersInNormalizerBody(raw, normalizer, func(label string) (string, bool) {
 			value, rerr := reid.Reidentify(context.Background(), reqEnv.RequestID, label,
@@ -237,6 +349,18 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 		return ResponseOutcome{}, err
 	}
 	return outcome, nil
+}
+
+func responseRestoreAllowed(raw []byte) bool {
+	// Assistant tool calls are an untrusted execution boundary. Leaving an
+	// opaque placeholder there is safer than restoring data into a tool call.
+	text := string(raw)
+	for _, marker := range []string{"\"tool_calls\"", "\"function_call\"", "\"tool_use\"", "\"tool_result\""} {
+		if strings.Contains(text, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 func deriveResponseEnvelope(respEnv, reqEnv *core.InspectionEnvelope) {

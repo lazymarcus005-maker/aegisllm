@@ -14,6 +14,8 @@ raw value never leaves the gateway; per-subtype `block` is also available.
 
 Read [docs/spec.md](docs/spec.md) (requirements), [docs/architecture.md](docs/architecture.md)
 (design), and [docs/implement.handoff.md](docs/implement.handoff.md) (delivery plan).
+P1.9 vault scope, rotation, revocation, and runbook semantics are documented in
+[docs/token-vault.md](docs/token-vault.md).
 
 ## Quick start (local)
 
@@ -105,12 +107,15 @@ All configuration is environment-based; see [.env.example](.env.example).
 | `JWT_PUBLIC_KEY_FILE` | — | PEM RSA (RS256) or P-256 EC (ES256) public key for JWT mode |
 | `JWT_HMAC_SECRET` | — | Development/test only HS256 secret; rejected in shadow/production |
 | `JWT_ISSUER` / `JWT_AUDIENCE` | — | Expected JWT issuer and audience; required in production |
-| `JWT_*_CLAIM` | see `.env.example` | Claim names for tenant, application, subject, roles, and provider |
+| `JWT_*_CLAIM` | see `.env.example` | Claim names for tenant, application, subject, roles, provider, and the verified session `sid` |
 | `ALLOW_UNAUTHENTICATED_SHADOW` | `false` | Explicit local development waiver; carries spoofing risk |
 | `POLICY_FILE` / `QUESTIONS_FILE` / `THRESHOLDS_FILE` | versioned repo assets | Reviewed policy and semantic assets |
 | `TOKEN_VAULT_KEYRING_FILE` / `TOKEN_VAULT_KEY_FILE` | ephemeral in development | Reloadable versioned keyring or legacy key file; production requires a file |
 | `TOKEN_VAULT_REDIS_URL` | in-memory in development | Required as verified `rediss://` in production |
 | `TOKEN_VAULT_REDIS_CA_FILE` / `TOKEN_VAULT_REDIS_CERT_FILE` / `TOKEN_VAULT_REDIS_KEY_FILE` | — | Redis-specific trust and optional mTLS material |
+| `TOKEN_VAULT_TTL` / `TOKEN_VAULT_IDLE_TTL` | `24h` / disabled | Mandatory absolute retention bound and optional shorter idle bound |
+| `TOKEN_VAULT_MAX_VALUE_BYTES` / `TOKEN_VAULT_MAX_RETRIEVALS` | `65536` / `10` | Value and read limits; single-use can be enabled with `TOKEN_VAULT_SINGLE_USE=true` |
+| `TOKEN_VAULT_MAX_RECORDS_PER_*` | bounded defaults | Tenant, user, session, and scope record quotas |
 | `TELEMETRY_HMAC_KEY_FILE` | empty in development | Reloadable mounted secret; production requires the file |
 | `DEFAULT_TARGET_PROVIDER` | `cloud` | Provider class when `X-Target-Provider` absent |
 | `CONFORMANCE_CAPABILITY_GATE` | `false` | Require a verified report declaration before advanced route features |

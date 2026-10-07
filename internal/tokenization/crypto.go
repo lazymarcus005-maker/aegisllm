@@ -19,6 +19,8 @@ import (
 const (
 	blobVersion        byte = 1
 	keyringBlobVersion byte = 2
+	aadBlobVersion     byte = 3
+	aadKeyringVersion  byte = 4
 	dekSize                 = 32
 )
 
@@ -37,6 +39,27 @@ type Cipher interface {
 	Seal([]byte) ([]byte, error)
 	Open([]byte) ([]byte, error)
 }
+
+// AADCipher authenticates metadata without putting it in the plaintext. The
+// scoped vault requires this interface; legacy Cipher implementations remain
+// usable only by the compatibility path.
+type AADCipher interface {
+	Cipher
+	SealAAD([]byte, []byte) ([]byte, error)
+	OpenAAD([]byte, []byte) ([]byte, error)
+}
+
+// PlaceholderKeyProvider supplies retained HMAC keys for placeholder reads
+// during key rotation. Implementations return copies and never expose them in
+// logs or serialized records.
+type PlaceholderKeyProvider interface {
+	PlaceholderKeys() (active []byte, retained [][]byte)
+}
+
+// ScopeKeyProvider supplies a stable derivation key. Keyrings select the
+// lexically first retained key so rotation remains compatible while that key
+// is retained; removal is safe only after dependent records expire.
+type ScopeKeyProvider interface{ ScopeKey() []byte }
 
 // ReloadingCipher preserves the legacy single-key envelope format while
 // allowing a mounted 64-hex key file to rotate atomically.
@@ -63,12 +86,40 @@ func (c *ReloadingCipher) Seal(plaintext []byte) ([]byte, error) {
 	}
 	return crypto.Seal(plaintext)
 }
+func (c *ReloadingCipher) SealAAD(plaintext, aad []byte) ([]byte, error) {
+	crypto, err := c.current()
+	if err != nil {
+		return nil, err
+	}
+	return crypto.SealAAD(plaintext, aad)
+}
 func (c *ReloadingCipher) Open(blob []byte) ([]byte, error) {
 	crypto, err := c.current()
 	if err != nil {
 		return nil, err
 	}
 	return crypto.Open(blob)
+}
+func (c *ReloadingCipher) OpenAAD(blob, aad []byte) ([]byte, error) {
+	crypto, err := c.current()
+	if err != nil {
+		return nil, err
+	}
+	return crypto.OpenAAD(blob, aad)
+}
+func (c *ReloadingCipher) PlaceholderKeys() ([]byte, [][]byte) {
+	crypto, err := c.current()
+	if err != nil {
+		return nil, nil
+	}
+	return crypto.PlaceholderKeys()
+}
+func (c *ReloadingCipher) ScopeKey() []byte {
+	crypto, err := c.current()
+	if err != nil {
+		return nil
+	}
+	return crypto.ScopeKey()
 }
 func (c *ReloadingCipher) Status() securetransport.Status { return c.file.Status() }
 
@@ -137,6 +188,14 @@ func (k *Keyring) KeyIDs() []string {
 }
 
 func (k *Keyring) Seal(plaintext []byte) ([]byte, error) {
+	return k.seal(plaintext, nil, keyringBlobVersion)
+}
+
+func (k *Keyring) SealAAD(plaintext, aad []byte) ([]byte, error) {
+	return k.seal(plaintext, aad, aadKeyringVersion)
+}
+
+func (k *Keyring) seal(plaintext, aad []byte, version byte) ([]byte, error) {
 	k.mu.RLock()
 	activeID := k.activeID
 	key := append([]byte(nil), k.keys[activeID]...)
@@ -162,12 +221,12 @@ func (k *Keyring) Seal(plaintext []byte) ([]byte, error) {
 	if _, err := rand.Read(dataNonce); err != nil {
 		return nil, err
 	}
-	ct := dataGCM.Seal(nil, dataNonce, plaintext, nil)
+	ct := dataGCM.Seal(nil, dataNonce, plaintext, aad)
 	if len(activeID) > 255 {
 		return nil, errors.New("key id too long")
 	}
 	out := make([]byte, 0, 2+len(activeID)+12+len(encDEK)+12+len(ct))
-	out = append(out, keyringBlobVersion, byte(len(activeID)))
+	out = append(out, version, byte(len(activeID)))
 	out = append(out, activeID...)
 	out = append(out, dekNonce...)
 	out = append(out, encDEK...)
@@ -177,6 +236,14 @@ func (k *Keyring) Seal(plaintext []byte) ([]byte, error) {
 }
 
 func (k *Keyring) Open(blob []byte) ([]byte, error) {
+	return k.open(blob, nil)
+}
+
+func (k *Keyring) OpenAAD(blob, aad []byte) ([]byte, error) {
+	return k.open(blob, aad)
+}
+
+func (k *Keyring) open(blob, aad []byte) ([]byte, error) {
 	if len(blob) > 0 && blob[0] == blobVersion {
 		// Backward-compatible v1 records did not carry a key id, so try every
 		// retained key without revealing which candidates were present.
@@ -196,7 +263,7 @@ func (k *Keyring) Open(blob []byte) ([]byte, error) {
 		}
 		return nil, errors.New("record decryption failed")
 	}
-	if len(blob) < 2 || blob[0] != keyringBlobVersion {
+	if len(blob) < 2 || (blob[0] != keyringBlobVersion && blob[0] != aadKeyringVersion) {
 		return nil, errors.New("unknown ciphertext version")
 	}
 	idLen := int(blob[1])
@@ -228,11 +295,38 @@ func (k *Keyring) Open(blob []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	pt, err := dataGCM.Open(nil, dataNonce, ct, nil)
+	if blob[0] == keyringBlobVersion && len(aad) != 0 {
+		return nil, errors.New("record authentication failed")
+	}
+	pt, err := dataGCM.Open(nil, dataNonce, ct, aad)
 	if err != nil {
 		return nil, errors.New("record decryption failed")
 	}
 	return pt, nil
+}
+
+func (k *Keyring) PlaceholderKeys() ([]byte, [][]byte) {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	active := append([]byte(nil), k.keys[k.activeID]...)
+	retained := make([][]byte, 0, len(k.keys))
+	for _, key := range k.keys {
+		retained = append(retained, append([]byte(nil), key...))
+	}
+	return active, retained
+}
+
+func (k *Keyring) ScopeKey() []byte {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	var selected []byte
+	selectedID := ""
+	for id, key := range k.keys {
+		if selected == nil || id < selectedID {
+			selectedID, selected = id, key
+		}
+	}
+	return append([]byte(nil), selected...)
 }
 
 // NewCrypto validates and wraps a 32-byte master key.
@@ -255,6 +349,14 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 
 // Seal encrypts plaintext under a fresh data key.
 func (c *Crypto) Seal(plaintext []byte) ([]byte, error) {
+	return c.seal(plaintext, nil, blobVersion)
+}
+
+func (c *Crypto) SealAAD(plaintext, aad []byte) ([]byte, error) {
+	return c.seal(plaintext, aad, aadBlobVersion)
+}
+
+func (c *Crypto) seal(plaintext, aad []byte, version byte) ([]byte, error) {
 	dek := make([]byte, dekSize)
 	if _, err := rand.Read(dek); err != nil {
 		return nil, err
@@ -277,10 +379,10 @@ func (c *Crypto) Seal(plaintext []byte) ([]byte, error) {
 	if _, err := rand.Read(dataNonce); err != nil {
 		return nil, err
 	}
-	ct := dataGCM.Seal(nil, dataNonce, plaintext, nil)
+	ct := dataGCM.Seal(nil, dataNonce, plaintext, aad)
 
 	out := make([]byte, 0, 1+12+len(encDEK)+12+len(ct))
-	out = append(out, blobVersion)
+	out = append(out, version)
 	out = append(out, dekNonce...)
 	out = append(out, encDEK...)
 	out = append(out, dataNonce...)
@@ -290,10 +392,18 @@ func (c *Crypto) Seal(plaintext []byte) ([]byte, error) {
 
 // Open decrypts a blob produced by Seal.
 func (c *Crypto) Open(blob []byte) ([]byte, error) {
+	return c.open(blob, nil)
+}
+
+func (c *Crypto) OpenAAD(blob, aad []byte) ([]byte, error) {
+	return c.open(blob, aad)
+}
+
+func (c *Crypto) open(blob, aad []byte) ([]byte, error) {
 	if len(blob) < 1+12+48+12 {
 		return nil, errors.New("ciphertext too short")
 	}
-	if blob[0] != blobVersion {
+	if blob[0] != blobVersion && blob[0] != aadBlobVersion {
 		return nil, fmt.Errorf("unknown ciphertext version %d", blob[0])
 	}
 	dekNonce := blob[1:13]
@@ -313,9 +423,18 @@ func (c *Crypto) Open(blob []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	pt, err := dataGCM.Open(nil, dataNonce, ct, nil)
+	if blob[0] == blobVersion && len(aad) != 0 {
+		return nil, errors.New("record authentication failed")
+	}
+	pt, err := dataGCM.Open(nil, dataNonce, ct, aad)
 	if err != nil {
 		return nil, errors.New("record decryption failed")
 	}
 	return pt, nil
 }
+
+func (c *Crypto) PlaceholderKeys() ([]byte, [][]byte) {
+	return append([]byte(nil), c.kek...), [][]byte{append([]byte(nil), c.kek...)}
+}
+
+func (c *Crypto) ScopeKey() []byte { return append([]byte(nil), c.kek...) }

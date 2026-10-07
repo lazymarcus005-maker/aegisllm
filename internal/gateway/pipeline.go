@@ -28,6 +28,7 @@ type SecurityPipeline struct {
 	audit           audit.Sink
 	mode            string
 	vault           tokenization.Vault
+	scopedVault     *tokenization.ScopedVault
 	crypto          tokenization.Cipher
 	vaultTTL        time.Duration
 	provider        decision.DecisionProvider
@@ -155,6 +156,27 @@ func (p *SecurityPipeline) Close() {
 // SetTokenStore attaches the encrypted vault used by TOKENIZE.
 func (p *SecurityPipeline) SetTokenStore(vault tokenization.Vault, crypto tokenization.Cipher, ttl time.Duration) {
 	p.vault, p.crypto, p.vaultTTL = vault, crypto, ttl
+}
+
+// SetScopedTokenStore mounts the P1.9 runtime. It is intentionally separate
+// from SetTokenStore so legacy development fixtures cannot accidentally opt a
+// production pipeline into unscoped records.
+func (p *SecurityPipeline) SetScopedTokenStore(vault *tokenization.ScopedVault) {
+	p.scopedVault = vault
+}
+
+func (p *SecurityPipeline) RevokeTokenSession(ctx context.Context, tenant, application, subject, session string) error {
+	if p.scopedVault == nil {
+		return tokenization.ErrVaultUnavailable
+	}
+	return p.scopedVault.RevokeSession(ctx, tenant, application, subject, session)
+}
+
+func (p *SecurityPipeline) TokenVaultStatus() tokenization.VaultStatus {
+	if p.scopedVault == nil {
+		return tokenization.VaultStatus{}
+	}
+	return p.scopedVault.Status()
 }
 
 // SetDecisionProvider attaches semantic classification and its question schema.

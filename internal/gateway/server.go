@@ -141,6 +141,9 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	if cfg.JWTProviderClaim == "" {
 		cfg.JWTProviderClaim = "provider"
 	}
+	if cfg.JWTSessionClaim == "" {
+		cfg.JWTSessionClaim = "sid"
+	}
 	authn, err := auth.New(auth.Config{
 		Mode: cfg.AuthMode, DeploymentProfile: string(cfg.profile()),
 		AllowUnauthenticated: cfg.AllowUnauthenticatedShadow,
@@ -148,7 +151,9 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 		Issuer: cfg.JWTIssuer, Audience: cfg.JWTAudience,
 		TenantClaim: cfg.JWTTenantClaim, ApplicationClaim: cfg.JWTApplicationClaim,
 		SubjectClaim: cfg.JWTSubjectClaim, RolesClaim: cfg.JWTRolesClaim,
-		ProviderClaim: cfg.JWTProviderClaim, ClientCertIdentity: cfg.AuthMode == auth.ModeMTLS,
+		ProviderClaim: cfg.JWTProviderClaim, SessionClaim: cfg.JWTSessionClaim,
+		RequireSessionBinding: cfg.profile() == ProfileProduction,
+		ClientCertIdentity:    cfg.AuthMode == auth.ModeMTLS,
 	})
 	if err != nil {
 		return nil, err
@@ -987,6 +992,9 @@ func (s *Server) enrich(env *core.InspectionEnvelope, r *http.Request) {
 		env.Tenant = principal.Tenant
 		env.User.Subject = principal.Subject
 		env.User.Roles = append([]string(nil), principal.Roles...)
+		if principal.SessionBound {
+			env.Metadata["session_binding"] = principal.SessionID
+		}
 		env.Target.Provider = principal.Provider
 		if env.Target.Provider == "" {
 			env.Target.Provider = s.cfg.DefaultTargetProvider

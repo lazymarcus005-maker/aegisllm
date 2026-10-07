@@ -135,11 +135,21 @@ type Config struct {
 	TokenVaultKeyFile              string
 	TokenVaultKeyringFile          string
 	TokenVaultAllowKeyRemoval      bool
+	TokenVaultTTL                  time.Duration
 	TokenVaultRedisURL             string
 	TokenVaultRedisCAFile          string
 	TokenVaultRedisCertFile        string
 	TokenVaultRedisKeyFile         string
 	TokenVaultRedisServerName      string
+	TokenVaultIdleTTL              time.Duration
+	TokenVaultMaxValueBytes        int
+	TokenVaultMaxRecordsPerScope   int
+	TokenVaultMaxRecordsPerTenant  int
+	TokenVaultMaxRecordsPerUser    int
+	TokenVaultMaxRecordsPerSession int
+	TokenVaultMaxRetrievals        int
+	TokenVaultSingleUse            bool
+	TokenVaultVisibleCategory      bool
 	TelemetryHMACKey               string
 	TelemetryHMACKeyFile           string
 	AuditDir                       string
@@ -171,6 +181,7 @@ type Config struct {
 	JWTSubjectClaim                string
 	JWTRolesClaim                  string
 	JWTProviderClaim               string
+	JWTSessionClaim                string
 	AllowUnauthenticatedShadow     bool
 	ConformanceCapabilityGate      bool
 }
@@ -286,11 +297,21 @@ func configFrom(get func(string) string) Config {
 		TokenVaultKeyFile:              get("TOKEN_VAULT_KEY_FILE"),
 		TokenVaultKeyringFile:          get("TOKEN_VAULT_KEYRING_FILE"),
 		TokenVaultAllowKeyRemoval:      getenvBool(get, "TOKEN_VAULT_ALLOW_KEY_REMOVAL", false),
+		TokenVaultTTL:                  getenvDuration(get, "TOKEN_VAULT_TTL", 24*time.Hour),
 		TokenVaultRedisURL:             get("TOKEN_VAULT_REDIS_URL"),
 		TokenVaultRedisCAFile:          get("TOKEN_VAULT_REDIS_CA_FILE"),
 		TokenVaultRedisCertFile:        get("TOKEN_VAULT_REDIS_CERT_FILE"),
 		TokenVaultRedisKeyFile:         get("TOKEN_VAULT_REDIS_KEY_FILE"),
 		TokenVaultRedisServerName:      get("TOKEN_VAULT_REDIS_SERVER_NAME"),
+		TokenVaultIdleTTL:              getenvDuration(get, "TOKEN_VAULT_IDLE_TTL", 0),
+		TokenVaultMaxValueBytes:        getenvInt(get, "TOKEN_VAULT_MAX_VALUE_BYTES", 64*1024),
+		TokenVaultMaxRecordsPerScope:   getenvInt(get, "TOKEN_VAULT_MAX_RECORDS_PER_SCOPE", 1000),
+		TokenVaultMaxRecordsPerTenant:  getenvInt(get, "TOKEN_VAULT_MAX_RECORDS_PER_TENANT", 10000),
+		TokenVaultMaxRecordsPerUser:    getenvInt(get, "TOKEN_VAULT_MAX_RECORDS_PER_USER", 1000),
+		TokenVaultMaxRecordsPerSession: getenvInt(get, "TOKEN_VAULT_MAX_RECORDS_PER_SESSION", 1000),
+		TokenVaultMaxRetrievals:        getenvInt(get, "TOKEN_VAULT_MAX_RETRIEVALS", 10),
+		TokenVaultSingleUse:            getenvBool(get, "TOKEN_VAULT_SINGLE_USE", false),
+		TokenVaultVisibleCategory:      getenvBool(get, "TOKEN_VAULT_VISIBLE_CATEGORY", false),
 		TelemetryHMACKey:               get("TELEMETRY_HMAC_KEY"),
 		TelemetryHMACKeyFile:           get("TELEMETRY_HMAC_KEY_FILE"),
 		AuditDir:                       getenvDefault(get, "AUDIT_WAL_DIR", "/tmp/aegisllm-audit"),
@@ -322,6 +343,7 @@ func configFrom(get func(string) string) Config {
 		JWTSubjectClaim:                getenvDefault(get, "JWT_SUBJECT_CLAIM", "sub"),
 		JWTRolesClaim:                  getenvDefault(get, "JWT_ROLES_CLAIM", "roles"),
 		JWTProviderClaim:               getenvDefault(get, "JWT_PROVIDER_CLAIM", "provider"),
+		JWTSessionClaim:                getenvDefault(get, "JWT_SESSION_CLAIM", "sid"),
 		AllowUnauthenticatedShadow:     strings.EqualFold(get("ALLOW_UNAUTHENTICATED_SHADOW"), "true"),
 		ConformanceCapabilityGate:      getenvBool(get, "CONFORMANCE_CAPABILITY_GATE", false),
 	}
@@ -397,6 +419,15 @@ func ValidateConfig(cfg Config) error {
 	if err != nil {
 		return err
 	}
+	if cfg.JWTSessionClaim == "" {
+		cfg.JWTSessionClaim = "sid"
+	}
+	if cfg.TokenVaultTTL == 0 {
+		cfg.TokenVaultTTL = 24 * time.Hour
+	}
+	if cfg.TokenVaultMaxValueBytes == 0 {
+		cfg.TokenVaultMaxValueBytes = 64 * 1024
+	}
 	if cfg.AuditDir == "" || cfg.AuditSegmentBytes <= 0 || cfg.AuditMaxBytes < cfg.AuditSegmentBytes {
 		return errors.New("audit WAL capacity configuration is invalid")
 	}
@@ -462,6 +493,15 @@ func ValidateConfig(cfg Config) error {
 		if strings.TrimSpace(cfg.JWTPublicKeyFile) == "" || strings.TrimSpace(cfg.JWTHMACSecret) != "" {
 			return errors.New("production requires an asymmetric JWT_PUBLIC_KEY_FILE")
 		}
+		if strings.TrimSpace(cfg.JWTSessionClaim) == "" {
+			return errors.New("production requires JWT_SESSION_CLAIM for session binding")
+		}
+	}
+	if cfg.TokenVaultTTL <= 0 || cfg.TokenVaultMaxValueBytes <= 0 || cfg.TokenVaultMaxRetrievals < 0 || cfg.TokenVaultMaxRecordsPerScope < 0 || cfg.TokenVaultMaxRecordsPerTenant < 0 || cfg.TokenVaultMaxRecordsPerUser < 0 || cfg.TokenVaultMaxRecordsPerSession < 0 {
+		return errors.New("token vault TTL, value, and retrieval limits are invalid")
+	}
+	if cfg.TokenVaultIdleTTL < 0 || (cfg.TokenVaultIdleTTL > 0 && cfg.TokenVaultIdleTTL >= cfg.TokenVaultTTL) {
+		return errors.New("token vault idle TTL must be bounded by absolute TTL")
 	}
 	if strings.TrimSpace(cfg.TokenVaultKey) != "" {
 		return errors.New("production requires TOKEN_VAULT_KEY_FILE or TOKEN_VAULT_KEYRING_FILE; inline TOKEN_VAULT_KEY is rejected")

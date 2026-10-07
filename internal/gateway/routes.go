@@ -17,6 +17,7 @@ import (
 	"github.com/aegisllm/gateway/internal/limiter"
 	"github.com/aegisllm/gateway/internal/policydistribution"
 	"github.com/aegisllm/gateway/internal/routing"
+	"github.com/aegisllm/gateway/internal/tokenization"
 	"github.com/aegisllm/gateway/internal/trace"
 	"github.com/aegisllm/gateway/web/leaderboard"
 )
@@ -45,6 +46,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/pii/providers", s.protect(http.HandlerFunc(s.handlePIIProviders), "aegis.operator"))
 	mux.Handle("GET /api/audit/status", s.protect(http.HandlerFunc(s.handleAuditStatus), auth.RoleOperator))
 	mux.Handle("POST /api/audit/verify", s.protect(http.HandlerFunc(s.handleAuditVerify), auth.RoleOperator))
+	mux.Handle("POST /v1/session/logout", s.protect(http.HandlerFunc(s.handleSessionLogout), auth.RoleInvoke, auth.RoleOperator))
+	mux.Handle("GET /api/token-vault/status", s.protect(http.HandlerFunc(s.handleTokenVaultStatus), auth.RoleOperator))
 	if s.mcp != nil {
 		mux.Handle("POST /mcp/{server}", s.protectLimited(http.HandlerFunc(s.mcp.handler), auth.RoleToolInvoke, auth.RoleOperator))
 		mux.Handle("GET /mcp/{server}", s.protect(http.HandlerFunc(s.mcp.handler), auth.RoleToolInvoke, auth.RoleOperator))
@@ -59,6 +62,37 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /metrics", s.protect(s.metrics, "aegis.operator"))
 	}
 	return securityHeaders(mux)
+}
+
+func (s *Server) handleSessionLogout(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.PrincipalFromContext(r.Context())
+	if !ok || !p.SessionBound {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "verified session binding required"})
+		return
+	}
+	revoker, ok := s.pipeline.(interface {
+		RevokeTokenSession(context.Context, string, string, string, string) error
+	})
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "token vault unavailable"})
+		return
+	}
+	if err := revoker.RevokeTokenSession(r.Context(), p.Tenant, p.Application, p.Subject, p.SessionID); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "session revocation unavailable"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleTokenVaultStatus(w http.ResponseWriter, _ *http.Request) {
+	status, ok := s.pipeline.(interface {
+		TokenVaultStatus() tokenization.VaultStatus
+	})
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "token vault unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, status.TokenVaultStatus())
 }
 
 func (s *Server) handleAuditStatus(w http.ResponseWriter, _ *http.Request) {

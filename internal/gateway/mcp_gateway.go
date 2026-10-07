@@ -686,6 +686,9 @@ func (g *mcpGateway) requestEnvelope(r *http.Request, server string) *core.Inspe
 	env := &core.InspectionEnvelope{RequestID: newRequestID(), Direction: core.DirectionToolCall, Target: core.Target{Provider: server}, Metadata: map[string]string{"mcp_server": server}}
 	if p, ok := auth.PrincipalFromContext(r.Context()); ok {
 		env.Tenant, env.Application, env.User = p.Tenant, p.Application, core.User{Subject: p.Subject, Roles: p.Roles}
+		if p.SessionBound {
+			env.Metadata["session_binding"] = p.SessionID
+		}
 	}
 	return env
 }
@@ -776,6 +779,16 @@ func (g *mcpGateway) handleDelete(w http.ResponseWriter, r *http.Request, cfg MC
 	if sid == "" || !g.deleteSession(sid, r) {
 		writeMCPError(w, nil, http.StatusNotFound, -32001, "MCP session is invalid")
 		return
+	}
+	if p, ok := auth.PrincipalFromContext(r.Context()); ok {
+		if revoker, ok := g.server.pipeline.(interface {
+			RevokeTokenSession(context.Context, string, string, string, string) error
+		}); ok {
+			if err := revoker.RevokeTokenSession(r.Context(), p.Tenant, p.Application, p.Subject, p.SessionID); err != nil {
+				writeMCPError(w, nil, http.StatusServiceUnavailable, -32001, "MCP session revocation unavailable")
+				return
+			}
+		}
 	}
 	resp, err := g.doUpstreamMethod(r.Context(), cfg, r, nil, true, http.MethodDelete)
 	if err == nil {

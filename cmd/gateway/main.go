@@ -292,12 +292,7 @@ func main() {
 	if provider, ok := vaultCipher.(interface{ Status() securetransport.Status }); ok {
 		srv.AddMaterialReadiness("token_vault_key", provider.Status)
 	}
-	vaultTTL := 24 * time.Hour
-	if v := os.Getenv("TOKEN_VAULT_TTL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			vaultTTL = d
-		}
-	}
+	vaultTTL := cfg.TokenVaultTTL
 	var vault tokenization.Vault
 	if redisURL := cfg.TokenVaultRedisURL; redisURL != "" {
 		opts, err := redis.ParseURL(redisURL)
@@ -349,6 +344,20 @@ func main() {
 		logger.Warn("TOKEN_VAULT_REDIS_URL not set; using in-memory token vault (mappings are lost on restart)")
 	}
 	pipe.SetTokenStore(vault, vaultCipher, vaultTTL)
+	if cfg.DeploymentProfile == gateway.ProfileProduction {
+		scoped, scopedErr := tokenization.NewScopedVault(vault, vaultCipher, tokenization.SecureVaultOptions{
+			RequireSession: true, TTL: vaultTTL, IdleTTL: cfg.TokenVaultIdleTTL,
+			MaxValueBytes: cfg.TokenVaultMaxValueBytes, MaxRetrievals: cfg.TokenVaultMaxRetrievals,
+			MaxRecordsPerScope: cfg.TokenVaultMaxRecordsPerScope, MaxRecordsPerTenant: cfg.TokenVaultMaxRecordsPerTenant,
+			MaxRecordsPerUser: cfg.TokenVaultMaxRecordsPerUser, MaxRecordsPerSession: cfg.TokenVaultMaxRecordsPerSession,
+			SingleUse: cfg.TokenVaultSingleUse, VisibleCategory: cfg.TokenVaultVisibleCategory,
+		})
+		if scopedErr != nil {
+			logger.Error("scoped token vault unavailable")
+			os.Exit(1)
+		}
+		pipe.SetScopedTokenStore(scoped)
+	}
 
 	// Semantic decision provider (ticket 08): local laya-serve when
 	// configured, otherwise a noop provider and no semantic calls.
