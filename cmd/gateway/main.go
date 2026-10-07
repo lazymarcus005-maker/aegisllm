@@ -128,6 +128,7 @@ func main() {
 		logger.Error("configuration error", "error", err)
 		os.Exit(1)
 	}
+	defer srv.Close()
 
 	// Versioned question schema (FR-009); invalid schema fails startup.
 	questionSchema, err := decision.LoadQuestionsFile(cfg.QuestionsFile)

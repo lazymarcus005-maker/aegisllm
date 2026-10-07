@@ -22,8 +22,9 @@ const (
 	ModeJWT  = "jwt"
 	ModeMTLS = "mtls"
 
-	RoleInvoke   = "aegis.invoke"
-	RoleOperator = "aegis.operator"
+	RoleInvoke     = "aegis.invoke"
+	RoleToolInvoke = "aegis.tools.invoke"
+	RoleOperator   = "aegis.operator"
 )
 
 // Config contains the authentication settings needed by the HTTP boundary.

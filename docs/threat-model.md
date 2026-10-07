@@ -29,7 +29,7 @@ Scope: the MVP gateway as implemented (tickets 01–13). Trust boundaries follow
 | Prompt injection / jailbreak | Laya semantic evidence + calibrated policy slices; deterministic fast path unaffected | pattern-based deterministic detection only for known phrases; semantic enforcement requires calibration evidence (INV-010) |
 | System-prompt extraction | security-v1 question + semantic policy | same calibration gate |
 | Credential exfiltration intent | security-v1 question on request and tool_call directions; policy block/restrict | classifier false negatives — eval corpus emphasizes FNR |
-| Tool abuse | InspectToolCall / InspectToolResult reuse the full pipeline; RESTRICT_TOOLS strips tools physically (T-025) | full MCP proxy deferred |
+| Tool abuse | InspectToolCall / InspectToolResult reuse the full pipeline; RESTRICT_TOOLS strips tools physically; the MCP proxy applies registry allowlists and schema validation before execution | upstream tool descriptions remain untrusted |
 | Policy bypass | policy-as-code with strict schema validation; corruption fails startup (fail closed) | policy repo compromise = config poisoning; protect with review + CI |
 | Caller identity spoofing | RS256/ES256 JWT verification, strict algorithm/key matching, issuer/audience/time checks, and route RBAC; inbound identity headers are stripped | development/off mode and the explicit unauthenticated shadow waiver remain spoofable |
 | Client credential forwarding | proxy forwards only content negotiation headers and applies upstream credentials from gateway configuration | a compromised gateway host can access configured upstream credentials |

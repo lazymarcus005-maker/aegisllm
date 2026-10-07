@@ -65,6 +65,9 @@ All configuration is environment-based; see [.env.example](.env.example).
 | `LISTEN_ADDR` | `:8080` | Gateway listen address |
 | `DEPLOYMENT_PROFILE` | `development` | `development`, `shadow`, or `production` |
 | `UPSTREAM_REGISTRY_FILE` | — | Strict versioned local/cloud route registry; required in production |
+| `MCP_REGISTRY_FILE` / `MCP_CREDENTIALS_FILE` | — | Versioned MCP trust registry and separate opaque credential profiles |
+| `MCP_SESSION_TTL` / `MCP_TOOL_SCHEMA_TTL` | `15m` / `5m` | Bounded session and sanitized tool-schema cache lifetimes |
+| `MCP_MAX_BODY_BYTES` / `MCP_MAX_EVENT_BYTES` | `1048576` / `65536` | MCP JSON and SSE limits |
 | `UPSTREAM_BASE_URL` | — | Legacy single-upstream compatibility, development only |
 | `UPSTREAM_CHAT_PATH_PREFIX` | — | Optional inbound path prefix to strip before forwarding (for example `/generic`) |
 | `UPSTREAM_AUTH_MODE` | `none` | `none`, `bearer`, or `header` |
@@ -115,6 +118,25 @@ The registry format and rollout/failover rules are documented in
 [examples/upstream-registry.yaml](examples/upstream-registry.yaml). Production
 route auth uses only `auth.secret_file` and route TLS reuses securetransport.
 
+## MCP tool gateway
+
+Set `MCP_REGISTRY_FILE` to enable `POST`, `GET` (SSE/session), and `DELETE`
+at `/mcp/{server}`. The gateway authenticates the verified JWT/mTLS principal,
+filters the upstream catalog by registry patterns and policy restrictions,
+validates arguments against cached JSON Schemas, and inspects both tool calls
+and results. Client `Authorization` and identity headers are never forwarded.
+`MCP_CREDENTIALS_FILE` contains only file-backed header/bearer profiles or
+OAuth2 client-credentials profiles; the referenced secret is resolved
+immediately before the outbound tool request and is never logged or returned.
+Operators can inspect only bounded metadata through
+`GET /api/mcp/servers`, `/api/mcp/audit`, and `/api/mcp/metrics`.
+
+The local compose stack includes `fake-mcp` and
+[`examples/mcp-registry.yaml`](examples/mcp-registry.yaml). Its HTTP URL is
+accepted only for development; production registry validation requires HTTPS,
+rejects URL userinfo/inline credential query parameters, and uses configured
+securetransport CA/mTLS files.
+
 Semantic enforcement is fail-closed at startup: `SECURITY_SEMANTIC_ENFORCE=true`
 requires `LAYA_URL`, a non-noop provider, matching question-schema and
 checkpoint provenance, complete language/risk coverage, passing metrics, and
@@ -129,7 +151,9 @@ With `AUTH_MODE=off`, development retains the compatibility headers
 user, roles, and provider metadata come only from verified JWT claims. JWT
 defaults are `tenant_id`, `azp`, `sub`, `roles`, and `provider` respectively.
 LLM POST routes and `/v1/models` require `aegis.invoke` or `aegis.operator`;
-the dashboard, protection stats, and metrics require `aegis.operator`.
+MCP tool routes require `aegis.tools.invoke` or `aegis.operator`; the
+dashboard, protection stats, MCP status/audit/metrics, and metrics require
+`aegis.operator`.
 
 Direct `AUTH_MODE=mtls` requires `INBOUND_MTLS_MODE=require`; the verified
 client certificate supplies subject/application identity and headers cannot

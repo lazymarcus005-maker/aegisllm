@@ -27,12 +27,44 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/protection-stats", s.protect(http.HandlerFunc(s.handleProtectionStats), "aegis.operator"))
 	mux.Handle("GET /api/effective-policy", s.protect(http.HandlerFunc(s.handleEffectivePolicy), "aegis.operator"))
 	mux.Handle("GET /api/routes", s.protect(http.HandlerFunc(s.handleRoutes), "aegis.operator"))
+	if s.mcp != nil {
+		mux.Handle("POST /mcp/{server}", s.protectLimited(http.HandlerFunc(s.mcp.handler), auth.RoleToolInvoke, auth.RoleOperator))
+		mux.Handle("GET /mcp/{server}", s.protect(http.HandlerFunc(s.mcp.handler), auth.RoleToolInvoke, auth.RoleOperator))
+		mux.Handle("DELETE /mcp/{server}", s.protect(http.HandlerFunc(s.mcp.handler), auth.RoleToolInvoke, auth.RoleOperator))
+		mux.Handle("GET /api/mcp/servers", s.protect(http.HandlerFunc(s.handleMCPServers), auth.RoleOperator))
+		mux.Handle("GET /api/mcp/audit", s.protect(http.HandlerFunc(s.handleMCPAudit), auth.RoleOperator))
+		mux.Handle("GET /api/mcp/metrics", s.protect(http.HandlerFunc(s.handleMCPMetrics), auth.RoleOperator))
+	}
 	mux.Handle("GET /dashboard", s.protect(http.HandlerFunc(s.handleDashboard), "aegis.operator"))
 	mux.Handle("GET /dashboard/", s.protect(http.StripPrefix("/dashboard/", http.FileServer(http.FS(leaderboard.Files))), "aegis.operator"))
 	if s.metrics != nil {
 		mux.Handle("GET /metrics", s.protect(s.metrics, "aegis.operator"))
 	}
 	return mux
+}
+
+func (s *Server) handleMCPServers(w http.ResponseWriter, _ *http.Request) {
+	if s.mcp == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "MCP unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": 1, "servers": s.mcp.status()})
+}
+
+func (s *Server) handleMCPAudit(w http.ResponseWriter, _ *http.Request) {
+	if s.mcp == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "MCP unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": 1, "events": s.mcp.auditSnapshot()})
+}
+
+func (s *Server) handleMCPMetrics(w http.ResponseWriter, _ *http.Request) {
+	if s.mcp == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "MCP unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": 1, "metrics": s.mcp.metricsSnapshot()})
 }
 
 func (s *Server) protect(next http.Handler, roles ...string) http.Handler {

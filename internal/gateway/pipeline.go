@@ -65,3 +65,13 @@ func (p *SecurityPipeline) EnableSemanticEnforce() { p.semanticEnforce = true }
 
 // SetSemanticThresholds attaches the calibrated semantic threshold policy.
 func (p *SecurityPipeline) SetSemanticThresholds(t *policy.SemanticThresholds) { p.thresholds = t }
+
+// RestrictedTools returns the policy's deterministic tool deny set to the MCP
+// transport. The transport applies this before schema validation or network
+// execution, so guessed tool names cannot bypass RESTRICT_TOOLS.
+func (p *SecurityPipeline) RestrictedTools() []string {
+	if p == nil || p.engine == nil {
+		return nil
+	}
+	return p.engine.RestrictedTools()
+}

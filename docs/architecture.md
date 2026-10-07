@@ -1099,3 +1099,15 @@ envelopes carry an opaque key ID and version; the active key seals new values
 while retained previous keys decrypt existing values. The default keyring
 reload policy refuses removal of a retained key until an operator explicitly
 proves expiry and enables the controlled removal flag.
+
+## MCP gateway boundary
+
+MCP requests enter through the authenticated `/mcp/{server}` route. A strict
+versioned registry selects the HTTPS endpoint, allowed methods/tools, schema
+limits, transport TLS, and opaque credential profile. The gateway fetches and
+sanitizes `tools/list`, removes policy-restricted tools, validates arguments,
+then calls `InspectToolCall` before acquiring credentials and opening the tool
+execution request. Results, including bounded SSE data, pass through
+`InspectToolResult` before re-entry. Sessions are keyed by an opaque random ID
+but bound in memory to the verified tenant/application/subject and server.
+Registry and secure-material reloads publish only validated candidates.

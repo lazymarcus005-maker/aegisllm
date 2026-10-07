@@ -62,6 +62,7 @@ type Server struct {
 	dashboard      *dashboard.Dashboard
 	authn          *auth.Authenticator
 	policy         *policy.Policy
+	mcp            *mcpGateway
 	semanticStatus func() SemanticReadiness
 	materials      map[string]func() securetransport.Status
 }
@@ -165,6 +166,20 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	if cfg.JWTPublicKeyFile != "" {
 		srv.AddMaterialReadiness("jwt_verification_key", authn.KeyStatus)
 	}
+	if cfg.MCPRegistryFile != "" {
+		mcp, mcpErr := newMCPGateway(srv, cfg.MCPRegistryFile, cfg.MCPCredentialsFile)
+		if mcpErr != nil {
+			if proxy != nil {
+				proxy.Close()
+			}
+			if routed != nil {
+				routed.Close()
+			}
+			return nil, mcpErr
+		}
+		srv.mcp = mcp
+		srv.AddMaterialReadiness("mcp_registry", mcp.registry.status)
+	}
 	return srv, nil
 }
 
@@ -174,6 +189,23 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 func (s *Server) SetPipeline(p Pipeline) {
 	s.pipeline = p
 	p.SetSecurityMode(s.cfg.SecurityMode)
+}
+
+// Close releases reload watchers and pooled dependency transports owned by
+// the gateway. It is safe to call during graceful process shutdown.
+func (s *Server) Close() {
+	if s == nil {
+		return
+	}
+	if s.mcp != nil {
+		s.mcp.close()
+	}
+	if s.proxy != nil {
+		s.proxy.Close()
+	}
+	if s.routed != nil {
+		s.routed.Close()
+	}
 }
 
 // SetPolicy attaches the already validated policy for the operator-only
@@ -301,6 +333,9 @@ func (s *Server) SetSecureMaterialMetrics(metrics securetransport.Metrics) {
 	}
 	if s.authn != nil {
 		s.authn.SetSecureMaterialMetrics(metrics)
+	}
+	if s.mcp != nil {
+		s.mcp.setMetrics(metrics)
 	}
 }
 

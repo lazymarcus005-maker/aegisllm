@@ -47,6 +47,7 @@ func newTestGateway(t *testing.T, mutate func(*Config), upstream http.HandlerFun
 	}
 	gw := httptest.NewServer(srv.Handler())
 	t.Cleanup(gw.Close)
+	t.Cleanup(srv.Close)
 	return srv, gw, up
 }
 

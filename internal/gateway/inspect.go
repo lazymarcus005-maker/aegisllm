@@ -153,6 +153,9 @@ type ToolResult struct {
 type ToolDecision struct {
 	Action             core.Action
 	Code               string
+	PolicyID           string
+	PolicyVersion      int
+	PrecedenceStage    string
 	MatchedRule        string
 	Reason             string
 	TransformedContent string
@@ -165,7 +168,7 @@ func (p *SecurityPipeline) InspectToolCall(reqEnv *core.InspectionEnvelope, call
 	}
 	env := toolEnvelope(reqEnv, core.DirectionToolCall, call.Name, call.Arguments)
 	ins := p.inspect(env)
-	out := ToolDecision{Action: ins.dec.Action, Code: ins.dec.Code, MatchedRule: ins.dec.MatchedRule, Reason: ins.dec.Reason}
+	out := ToolDecision{Action: ins.dec.Action, Code: ins.dec.Code, PolicyID: ins.dec.PolicyID, PolicyVersion: ins.dec.PolicyVersion, PrecedenceStage: string(ins.dec.PrecedenceStage), MatchedRule: ins.dec.MatchedRule, Reason: ins.dec.Reason}
 	if ins.dec.Action == core.ActionRedact || ins.dec.Action == core.ActionTokenize {
 		out.TransformedContent = pii.ApplyToText(call.Arguments, pii.Plan(ins.findings, pii.RedactNamer))
 	}
@@ -180,7 +183,7 @@ func (p *SecurityPipeline) InspectToolResult(reqEnv *core.InspectionEnvelope, re
 	}
 	env := toolEnvelope(reqEnv, core.DirectionToolResult, result.Name, result.Content)
 	ins := p.inspect(env)
-	out := ToolDecision{Action: ins.dec.Action, Code: ins.dec.Code, MatchedRule: ins.dec.MatchedRule, Reason: ins.dec.Reason}
+	out := ToolDecision{Action: ins.dec.Action, Code: ins.dec.Code, PolicyID: ins.dec.PolicyID, PolicyVersion: ins.dec.PolicyVersion, PrecedenceStage: string(ins.dec.PrecedenceStage), MatchedRule: ins.dec.MatchedRule, Reason: ins.dec.Reason}
 	if ins.dec.Action == core.ActionRedact || ins.dec.Action == core.ActionTokenize {
 		out.TransformedContent = pii.ApplyToText(result.Content, pii.Plan(ins.findings, pii.RedactNamer))
 	}

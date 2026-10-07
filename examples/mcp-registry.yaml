@@ -1,0 +1,16 @@
+# Development-only MCP registry. Production entries must use HTTPS and
+# verified CA/mTLS material. Credentials are opaque profile references.
+schema: aegisllm.mcp/v1
+version: 1
+servers:
+  - id: fake-local
+    url: http://fake-mcp:9100/mcp
+    enabled: true
+    capabilities: {tools: true, streaming: true}
+    allowed_tool_patterns: ["echo", "shell"]
+    allowed_methods: ["initialize", "notifications/initialized", "ping", "tools/list", "tools/call"]
+    tool_schema_policy: {max_bytes: 262144, max_depth: 16, ttl: 5m}
+    timeout: 5s
+    concurrency: 8
+    breaker: {threshold: 3, open_interval: 30s}
+    health: {endpoint: /health, interval: 10s, timeout: 2s}

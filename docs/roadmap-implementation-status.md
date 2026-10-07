@@ -18,7 +18,7 @@ separate feature-roadmap file).
 - [x] P1.1 Policy-aware local/cloud routing: strict registry, local-only force routing, model/capability constraints, health/breakers, explicit failover, atomic reload, sanitized route API/audit/metrics, and development compatibility.
 - [x] P0.5 Fail-closed semantic calibration gate: typed enablement contract, provenance-bound threshold artifacts, runtime evidence binding, policy fallback matrix, sanitized readiness, bounded metrics, and explicit evaltool verify/promote workflow. Semantic enforcement remains disabled until a real Laya artifact is promoted.
 - [x] P1.1-semantic Laya shadow integration and failure fallback; semantic enforcement is implemented but intentionally not production-enabled by the committed synthetic artifact.
-- [ ] P1.2 Tool/MCP inspection and restricted-tool enforcement.
+- [x] P1.2 Tool/MCP inspection and restricted-tool enforcement: authenticated Streamable HTTP proxy, atomic registry reload, schema/stream bounds, session isolation, server-side credential brokering, sanitized operator surfaces, and fake-MCP integration coverage.
 - [x] P1.3 Sanitized audit, metrics, evaluation datasets, and deterministic regression/promotion gates.
 
 ## P2 — expanded coverage

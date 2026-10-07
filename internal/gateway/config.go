@@ -49,6 +49,14 @@ type Config struct {
 	PlaintextDependencyDevWaiver  bool
 	UpstreamBaseURL               string
 	UpstreamRegistryFile          string
+	MCPRegistryFile               string
+	MCPCredentialsFile            string
+	MCPSessionTTL                 time.Duration
+	MCPToolSchemaTTL              time.Duration
+	MCPMaxBodyBytes               int64
+	MCPMaxEventBytes              int64
+	MCPMaxStreamDuration          time.Duration
+	MCPMaxSessionCount            int
 	UpstreamAuthMode              string // none | bearer | header
 	UpstreamAPIKey                string
 	UpstreamAPIKeyFile            string
@@ -154,6 +162,14 @@ func configFrom(get func(string) string) Config {
 		PlaintextDependencyDevWaiver:  getenvBool(get, "PLAINTEXT_DEPENDENCY_DEVELOPMENT_WAIVER", false),
 		UpstreamBaseURL:               get("UPSTREAM_BASE_URL"),
 		UpstreamRegistryFile:          get("UPSTREAM_REGISTRY_FILE"),
+		MCPRegistryFile:               get("MCP_REGISTRY_FILE"),
+		MCPCredentialsFile:            get("MCP_CREDENTIALS_FILE"),
+		MCPSessionTTL:                 getenvDuration(get, "MCP_SESSION_TTL", 15*time.Minute),
+		MCPToolSchemaTTL:              getenvDuration(get, "MCP_TOOL_SCHEMA_TTL", 5*time.Minute),
+		MCPMaxBodyBytes:               getenvInt64(get, "MCP_MAX_BODY_BYTES", 1<<20),
+		MCPMaxEventBytes:              getenvInt64(get, "MCP_MAX_EVENT_BYTES", 64<<10),
+		MCPMaxStreamDuration:          getenvDuration(get, "MCP_MAX_STREAM_DURATION", 5*time.Minute),
+		MCPMaxSessionCount:            getenvInt(get, "MCP_MAX_SESSION_COUNT", 10000),
 		UpstreamAuthMode:              getenvDefault(get, "UPSTREAM_AUTH_MODE", "none"),
 		UpstreamAPIKey:                get("UPSTREAM_API_KEY"),
 		UpstreamAPIKeyFile:            get("UPSTREAM_API_KEY_FILE"),
@@ -533,6 +549,24 @@ func (c Config) withRuntimeDefaults() Config {
 	}
 	if c.UpstreamMaxIdleConns <= 0 {
 		c.UpstreamMaxIdleConns = defaults.UpstreamMaxIdleConns
+	}
+	if c.MCPSessionTTL <= 0 {
+		c.MCPSessionTTL = defaults.MCPSessionTTL
+	}
+	if c.MCPToolSchemaTTL <= 0 {
+		c.MCPToolSchemaTTL = defaults.MCPToolSchemaTTL
+	}
+	if c.MCPMaxBodyBytes <= 0 {
+		c.MCPMaxBodyBytes = defaults.MCPMaxBodyBytes
+	}
+	if c.MCPMaxEventBytes <= 0 {
+		c.MCPMaxEventBytes = defaults.MCPMaxEventBytes
+	}
+	if c.MCPMaxStreamDuration <= 0 {
+		c.MCPMaxStreamDuration = defaults.MCPMaxStreamDuration
+	}
+	if c.MCPMaxSessionCount <= 0 {
+		c.MCPMaxSessionCount = defaults.MCPMaxSessionCount
 	}
 	if c.MaxBodyBytes <= 0 {
 		c.MaxBodyBytes = defaults.MaxBodyBytes

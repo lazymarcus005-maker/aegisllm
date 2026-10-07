@@ -319,3 +319,12 @@ BenchmarkParser -benchmem -count=1`) measured 206,493 ns/op and 87,328 B/op
 for a 1,632-byte, 32-event OpenAI-shaped input on the verification host.
 Treat this as a baseline; production capacity planning must include detector and
 policy latency in addition to framing overhead.
+
+## MCP operations
+
+Development compose includes a fake MCP server for smoke testing. Configure
+`MCP_REGISTRY_FILE` and, when needed, `MCP_CREDENTIALS_FILE`; do not put
+secrets in registry URLs or YAML values. Use the operator-only MCP endpoints
+to verify enabled state, capabilities, bounded action counts, and sanitized
+audit events. A registry edit that fails validation remains on the prior
+last-known-good snapshot and increments secure-material reload failure state.

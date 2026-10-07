@@ -108,6 +108,10 @@ func TestRegistryRejectsSecretsInBaseURLAndUnknownFields(t *testing.T) {
 
 func TestCommittedExampleRegistryLoads(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "examples", "upstream-registry.yaml"))
-	if err != nil { t.Fatal(err) }
-	if _, err := Load(data); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(data); err != nil {
+		t.Fatal(err)
+	}
 }

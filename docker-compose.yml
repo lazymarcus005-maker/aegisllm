@@ -7,6 +7,7 @@ services:
       DEPLOYMENT_PROFILE: "development"
       LISTEN_ADDR: ":8080"
       UPSTREAM_BASE_URL: "http://mock-upstream:9090"
+      MCP_REGISTRY_FILE: "/app/examples/mcp-registry.yaml"
       UPSTREAM_AUTH_MODE: "none"
       SECURITY_MODE: "off"
       AUTH_MODE: "off"
@@ -45,6 +46,7 @@ services:
       LIMITER_KEY_IDLE_TIMEOUT: "10m"
     depends_on:
       - mock-upstream
+      - fake-mcp
       - redis-token-store
 
   mock-upstream:
@@ -53,6 +55,13 @@ services:
       dockerfile: Dockerfile.mock-upstream
     ports:
       - "9090:9090"
+
+  fake-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.fake-mcp
+    expose:
+      - "9100"
 
   redis-token-store:
     image: redis:7-alpine
