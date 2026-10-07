@@ -44,6 +44,7 @@ All configuration is environment-based; see [.env.example](.env.example).
 | --- | --- | --- |
 | `LISTEN_ADDR` | `:8080` | Gateway listen address |
 | `UPSTREAM_BASE_URL` | — (required) | Upstream LLM Gateway base URL |
+| `UPSTREAM_CHAT_PATH_PREFIX` | — | Optional inbound path prefix to strip before forwarding (for example `/generic`) |
 | `UPSTREAM_AUTH_MODE` | `none` | `none`, `bearer`, or `header` |
 | `UPSTREAM_API_KEY` | — | Key for `bearer` mode (never a client-supplied value) |
 | `MAX_BODY_BYTES` | `1048576` | Request body limit (oversized → 413) |
@@ -121,7 +122,9 @@ go test ./...
 gofmt -l .
 ```
 
-`/v1/responses` support is deferred per FR-001 (the MVP may implement one
-endpoint first; the normalizer abstraction supports both). Streaming requests
-are forwarded verbatim in `off` mode; security behavior for streaming follows
-the staged plan in architecture §13.
+The gateway accepts OpenAI-compatible chat/responses/completions/embeddings and
+Anthropic-compatible messages/complete endpoints, plus generic aliases such as
+`/message`, `/chatcompletion`, and `/response`. All supported POST formats use
+the same normalized security pipeline. `GET /v1/models` is a body-free
+passthrough with audit/metrics coverage. Streaming requests are inspected for
+audit evidence but forwarded verbatim and are never blocked or rewritten.

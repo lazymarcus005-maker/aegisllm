@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/aegisllm/gateway/internal/core"
@@ -18,6 +17,13 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 		return RequestDecision{Action: core.ActionAllow}, nil
 	}
 	ins := p.inspect(env)
+	if env.Metadata["skipped_stream"] == "true" {
+		ins.dec.Action = core.ActionAllow
+		ins.dec.Code = "SKIPPED_STREAM"
+		ins.dec.MatchedRule = "skipped_stream"
+		p.audit.Record(p.auditEvent(ins))
+		return RequestDecision{Action: core.ActionAllow, Code: "SKIPPED_STREAM"}, nil
+	}
 	var transformed []byte
 	switch ins.dec.Action {
 	case core.ActionRedact, core.ActionTokenize:
@@ -31,16 +37,13 @@ func (p *SecurityPipeline) ProcessRequest(env *core.InspectionEnvelope, raw []by
 				return RequestDecision{}, err
 			}
 		}
-		body, err := applyTransformationsToBody(raw, plan)
-		if err != nil {
-			return RequestDecision{}, err
-		}
-		transformed = body
 		if ins.dec.Action == core.ActionTokenize {
-			p.recorder.ObserveTokens(strings.Count(string(transformed), "<"), "tokenize")
+			p.recorder.ObserveTokens(len(plan), "tokenize")
 		} else {
-			p.recorder.ObserveTokens(strings.Count(string(transformed), "[REDACTED:"), "redact")
+			p.recorder.ObserveTokens(len(plan), "redact")
 		}
+		p.audit.Record(p.auditEvent(ins))
+		return RequestDecision{Action: ins.dec.Action, Code: ins.dec.Code, Transformations: plan}, nil
 	case core.ActionRestrictTools:
 		body, err := stripRestrictedTools(raw, p.engine.RestrictedTools())
 		if err != nil {
@@ -85,6 +88,20 @@ type ResponseOutcome struct {
 	Action          core.Action
 	Code            string
 	TransformedBody []byte
+	Transformations []pii.Transformation
+}
+
+// AuditPassthrough records a body-free ALLOW event for endpoints such as
+// GET /v1/models. It deliberately never runs a content detector over a body.
+func (p *SecurityPipeline) AuditPassthrough(env *core.InspectionEnvelope) {
+	if env.Metadata == nil {
+		env.Metadata = map[string]string{}
+	}
+	env.Metadata["passthrough"] = "true"
+	ins := p.inspect(env)
+	if p.audit != nil {
+		p.audit.Record(p.auditEvent(ins))
+	}
 }
 
 // ProcessResponse scans and transforms an upstream response before delivery.
@@ -92,7 +109,11 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 	if p.mode == ModeOff {
 		return ResponseOutcome{Action: core.ActionAllow}, nil
 	}
-	respEnv, err := ParseChatCompletionsResponse(raw)
+	normalizer := NormalizerFor(reqEnv.Metadata["endpoint_path"])
+	if normalizer == nil {
+		normalizer = openAIChatNormalizer{}
+	}
+	respEnv, err := normalizer.ParseResponse(raw)
 	if err != nil {
 		return ResponseOutcome{}, err
 	}
@@ -103,15 +124,11 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 	case core.ActionBlock, core.ActionReview:
 	case core.ActionRedact, core.ActionTokenize:
 		plan := pii.Plan(ins.findings, pii.RedactNamer)
-		body, terr := applyPlanToResponseBody(raw, plan)
-		if terr != nil {
-			return ResponseOutcome{}, terr
-		}
-		outcome.TransformedBody, raw = body, body
+		outcome.Transformations = plan
 	}
 	if ins.dec.Action != core.ActionBlock && ins.dec.Action != core.ActionReview && p.vault != nil && p.crypto != nil {
 		reid := tokenization.NewReidentifier(p.vault, p.crypto)
-		body, changed, rerr := replacePlaceholdersInBody(raw, func(label string) (string, bool) {
+		body, changed, rerr := replacePlaceholdersInNormalizerBody(raw, normalizer, func(label string) (string, bool) {
 			value, rerr := reid.Reidentify(context.Background(), reqEnv.RequestID, label,
 				tokenization.Caller{Application: reqEnv.Application, Subject: reqEnv.User.Subject})
 			if rerr != nil {

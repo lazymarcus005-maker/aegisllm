@@ -21,6 +21,7 @@ type Config struct {
 	UpstreamAPIKey          string
 	UpstreamAuthHeaderName  string
 	UpstreamAuthHeaderValue string
+	UpstreamChatPathPrefix  string
 	MaxBodyBytes            int64
 	SecurityMode            string // off | shadow | enforce
 	HeaderApplication       string
@@ -43,6 +44,7 @@ func configFrom(get func(string) string) Config {
 		UpstreamAPIKey:          get("UPSTREAM_API_KEY"),
 		UpstreamAuthHeaderName:  getenvDefault(get, "UPSTREAM_AUTH_HEADER_NAME", "X-Upstream-Api-Key"),
 		UpstreamAuthHeaderValue: get("UPSTREAM_AUTH_HEADER_VALUE"),
+		UpstreamChatPathPrefix:  get("UPSTREAM_CHAT_PATH_PREFIX"),
 		MaxBodyBytes:            getenvInt64(get, "MAX_BODY_BYTES", 1<<20),
 		SecurityMode:            getenvDefault(get, "SECURITY_MODE", ModeOff),
 		HeaderApplication:       getenvDefault(get, "HEADER_APPLICATION", "X-Application-Id"),

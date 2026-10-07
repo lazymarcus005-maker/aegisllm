@@ -102,6 +102,202 @@ func TestMalformedRequestReturns400(t *testing.T) {
 	}
 }
 
+func TestUniversalEndpointRoutes(t *testing.T) {
+	routes := []struct {
+		path string
+		body string
+	}{
+		{"/v1/chat/completions", `{"model":"m","messages":[{"role":"user","content":"hello"}]}`},
+		{"/v1/responses", `{"model":"m","input":"hello"}`},
+		{"/v1/completions", `{"model":"m","prompt":"hello"}`},
+		{"/v1/embeddings", `{"model":"m","input":"hello"}`},
+		{"/v1/messages", `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"hello"}]}`},
+		{"/v1/complete", `{"model":"m","prompt":"hello"}`},
+		{"/anthropic/v1/messages", `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"hello"}]}`},
+		{"/message", `{"model":"m","messages":[{"role":"user","content":"hello"}]}`},
+		{"/messages", `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"hello"}]}`},
+		{"/chatcompletion", `{"prompt":"hello"}`},
+		{"/chat/completions", `{"input":"hello"}`},
+		{"/response", `{"text":"hello"}`},
+		{"/responses", `{"content":"hello"}`},
+		{"/v1/message", `{"prompt":"hello"}`},
+		{"/v1/response", `{"input":"hello"}`},
+	}
+	_, gw, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	for _, tc := range routes {
+		t.Run(tc.path, func(t *testing.T) {
+			resp, err := http.Post(gw.URL+tc.path, "application/json", strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status: %d", resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestModelsPassthrough(t *testing.T) {
+	_, gw, _ := newTestGateway(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
+			t.Fatalf("upstream request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	})
+	resp, err := http.Get(gw.URL + "/v1/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+}
+
+func TestModelsPassthroughAuditsAllow(t *testing.T) {
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	})
+	pipe, sink := newRealPipeline(t)
+	srv.SetPipeline(pipe)
+	resp, err := http.Get(gw.URL + "/v1/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(sink.String(), `"action":"ALLOW"`) {
+		t.Fatalf("models audit: status=%d audit=%s", resp.StatusCode, sink.String())
+	}
+}
+
+func TestUniversalBadBodyAndSecretBlock(t *testing.T) {
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("blocked request reached upstream")
+	})
+	pipe, _ := newRealPipeline(t)
+	srv.SetPipeline(pipe)
+	bad, err := http.Post(gw.URL+"/v1/responses", "application/json", strings.NewReader(`{"model":`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad body status: %d", bad.StatusCode)
+	}
+	secret := `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"use sk-abcdefghijklmnopqrstuvwxyz123456"}]}`
+	blocked, err := http.Post(gw.URL+"/v1/messages", "application/json", strings.NewReader(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked.Body.Close()
+	if blocked.StatusCode != http.StatusForbidden {
+		t.Fatalf("blocked status: %d", blocked.StatusCode)
+	}
+}
+
+func TestStreamingIsForwardedVerbatim(t *testing.T) {
+	called := false
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != `{"model":"m","stream":true,"messages":[{"role":"user","content":"sk-abcdefghijklmnopqrstuvwxyz123456"}]}` {
+			t.Fatalf("stream body changed: %s", body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	})
+	srv.SetPipeline(stubPipeline{dec: RequestDecision{Action: core.ActionBlock, Code: "SECRET_DETECTED"}})
+	body := `{"model":"m","stream":true,"messages":[{"role":"user","content":"sk-abcdefghijklmnopqrstuvwxyz123456"}]}`
+	req, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !called {
+		t.Fatalf("stream was not forwarded: status=%d called=%v", resp.StatusCode, called)
+	}
+}
+
+func TestUniversalPIITransformationUsesEndpointNormalizer(t *testing.T) {
+	cases := []struct {
+		path string
+		body string
+	}{
+		{"/v1/responses", `{"model":"m","input":"call 0812345678"}`},
+		{"/v1/completions", `{"model":"m","prompt":"call 0812345678"}`},
+		{"/v1/messages", `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"call 0812345678"}]}`},
+		{"/message", `{"prompt":"call 0812345678"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			var upstreamBody string
+			srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				upstreamBody = string(b)
+				w.WriteHeader(http.StatusOK)
+			})
+			pipe, _ := newRealPipeline(t)
+			srv.SetPipeline(pipe)
+			resp, err := http.Post(gw.URL+tc.path, "application/json", strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status: %d", resp.StatusCode)
+			}
+			if strings.Contains(upstreamBody, "0812345678") || !strings.Contains(upstreamBody, "PHONE_NUMBER_001") {
+				t.Fatalf("PII not transformed: %s", upstreamBody)
+			}
+		})
+	}
+}
+
+func TestUniversalSecretSmokeMatrix(t *testing.T) {
+	requests := []struct {
+		path string
+		body string
+	}{
+		{"/v1/messages", `{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"sk-abcdefghijklmnopqrstuvwxyz123456"}]}`},
+		{"/v1/responses", `{"model":"m","input":"sk-abcdefghijklmnopqrstuvwxyz123456"}`},
+		{"/v1/completions", `{"model":"m","prompt":"sk-abcdefghijklmnopqrstuvwxyz123456"}`},
+		{"/message", `{"prompt":"sk-abcdefghijklmnopqrstuvwxyz123456"}`},
+		{"/chatcompletion", `{"prompt":"sk-abcdefghijklmnopqrstuvwxyz123456"}`},
+		{"/response", `{"prompt":"sk-abcdefghijklmnopqrstuvwxyz123456"}`},
+	}
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("secret reached upstream")
+	})
+	pipe, _ := newRealPipeline(t)
+	srv.SetPipeline(pipe)
+	for _, tc := range requests {
+		t.Run(tc.path, func(t *testing.T) {
+			resp, err := http.Post(gw.URL+tc.path, "application/json", strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("secret status: %d", resp.StatusCode)
+			}
+		})
+	}
+}
+
 func TestOversizedRequestReturns413(t *testing.T) {
 	_, gw, _ := newTestGateway(t, func(c *Config) { c.MaxBodyBytes = 64 }, func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("upstream must not be called for oversized requests")

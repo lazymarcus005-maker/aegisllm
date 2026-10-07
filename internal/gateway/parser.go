@@ -124,8 +124,13 @@ func parseContent(raw json.RawMessage) ([]core.ContentPart, error) {
 		return []core.ContentPart{{Type: core.PartText, Text: s}}, nil
 	}
 	var arr []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type       string          `json:"type"`
+		Text       string          `json:"text"`
+		InputText  string          `json:"input_text"`
+		OutputText string          `json:"output_text"`
+		Name       string          `json:"name"`
+		Arguments  json.RawMessage `json:"arguments"`
+		Content    json.RawMessage `json:"content"`
 	}
 	if err := json.Unmarshal(raw, &arr); err != nil {
 		return nil, fmt.Errorf("unsupported content shape")
@@ -133,8 +138,27 @@ func parseContent(raw json.RawMessage) ([]core.ContentPart, error) {
 	parts := make([]core.ContentPart, 0, len(arr))
 	for _, p := range arr {
 		switch p.Type {
-		case "text":
-			parts = append(parts, core.ContentPart{Type: core.PartText, Text: p.Text})
+		case "text", "input_text", "output_text":
+			text := p.Text
+			if text == "" {
+				text = p.InputText
+			}
+			if text == "" {
+				text = p.OutputText
+			}
+			parts = append(parts, core.ContentPart{Type: core.PartText, Text: text})
+		case "tool_use":
+			parts = append(parts, core.ContentPart{Type: core.PartToolCall, ToolName: p.Name, Arguments: p.Arguments, Text: string(p.Arguments)})
+		case "tool_result":
+			resultParts, err := parseContent(p.Content)
+			if err == nil && len(resultParts) > 0 {
+				for _, part := range resultParts {
+					part.Type = core.PartToolResult
+					parts = append(parts, part)
+				}
+			} else {
+				parts = append(parts, core.ContentPart{Type: core.PartToolResult})
+			}
 		case "image_url":
 			parts = append(parts, core.ContentPart{Type: core.PartImageRef})
 		default:

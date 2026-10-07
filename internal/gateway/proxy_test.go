@@ -77,6 +77,29 @@ func TestForwardBearerAuthMode(t *testing.T) {
 	}
 }
 
+func TestForwardStripsConfiguredPathPrefix(t *testing.T) {
+	var gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	p, err := NewProxy(Config{UpstreamBaseURL: upstream.URL, UpstreamAuthMode: "none", UpstreamChatPathPrefix: "/generic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "http://gateway.local/generic/v1/messages", nil)
+	resp, err := p.Forward(req, []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if gotPath != "/v1/messages" {
+		t.Fatalf("path: %s", gotPath)
+	}
+}
+
 func TestNewProxyValidation(t *testing.T) {
 	cases := []struct {
 		name string

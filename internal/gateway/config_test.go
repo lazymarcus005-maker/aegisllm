@@ -24,14 +24,18 @@ func TestConfigDefaults(t *testing.T) {
 	if cfg.HeaderApplication != "X-Application-Id" {
 		t.Fatalf("app header: %s", cfg.HeaderApplication)
 	}
+	if cfg.UpstreamChatPathPrefix != "" {
+		t.Fatalf("path prefix default: %q", cfg.UpstreamChatPathPrefix)
+	}
 }
 
 func TestConfigOverrides(t *testing.T) {
 	env := map[string]string{
-		"LISTEN_ADDR":             ":9090",
-		"MAX_BODY_BYTES":          "2048",
-		"SECURITY_MODE":           "enforce",
-		"DEFAULT_TARGET_PROVIDER": "local",
+		"LISTEN_ADDR":               ":9090",
+		"MAX_BODY_BYTES":            "2048",
+		"SECURITY_MODE":             "enforce",
+		"DEFAULT_TARGET_PROVIDER":   "local",
+		"UPSTREAM_CHAT_PATH_PREFIX": "/generic",
 	}
 	cfg := configFrom(func(k string) string { return env[k] })
 	if cfg.ListenAddr != ":9090" || cfg.MaxBodyBytes != 2048 || cfg.SecurityMode != ModeEnforce {
@@ -39,6 +43,9 @@ func TestConfigOverrides(t *testing.T) {
 	}
 	if cfg.DefaultTargetProvider != "local" {
 		t.Fatalf("provider override: %s", cfg.DefaultTargetProvider)
+	}
+	if cfg.UpstreamChatPathPrefix != "/generic" {
+		t.Fatalf("path prefix override: %s", cfg.UpstreamChatPathPrefix)
 	}
 }
 
