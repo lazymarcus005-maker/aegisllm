@@ -63,6 +63,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/rag/status", s.protect(http.HandlerFunc(s.handleRAGStatus), auth.RoleOperator))
 	mux.Handle("GET /api/audit/status", s.protect(http.HandlerFunc(s.handleAuditStatus), auth.RoleOperator))
 	mux.Handle("POST /api/audit/verify", s.protect(http.HandlerFunc(s.handleAuditVerify), auth.RoleOperator))
+	mux.Handle("GET /api/fleet/status", s.protect(http.HandlerFunc(s.handleFleetStatus), auth.RoleOperator))
 	mux.Handle("POST /v1/session/logout", s.protect(http.HandlerFunc(s.handleSessionLogout), auth.RoleInvoke, auth.RoleOperator))
 	mux.Handle("GET /api/token-vault/status", s.protect(http.HandlerFunc(s.handleTokenVaultStatus), auth.RoleOperator))
 	mux.Handle("GET /api/quarantine", s.protect(http.HandlerFunc(s.handleQuarantineList), auth.RoleOperator))
@@ -120,6 +121,15 @@ func (s *Server) handleTokenVaultStatus(w http.ResponseWriter, _ *http.Request) 
 
 func (s *Server) handleAuditStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.AuditStatus())
+}
+
+func (s *Server) handleFleetStatus(w http.ResponseWriter, _ *http.Request) {
+	status, ok := s.FleetStatus()
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "fleet agent unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *Server) handleAuditVerify(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +243,10 @@ func (s *Server) protect(next http.Handler, roles ...string) http.Handler {
 
 func (s *Server) protectLimited(next http.Handler, roles ...string) http.Handler {
 	return s.authn.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.FleetRequiredState && s.fleetAgent != nil && !s.fleetAgent.RequestAllowed(time.Now().UTC()) {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "gateway_error", "FLEET_STATE_STALE", "Required fleet state is unavailable.", "")
+			return
+		}
 		key := s.admissionKey(r)
 		release, result := s.limiter.Allow(key)
 		if result.Reason != nil {

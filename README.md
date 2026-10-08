@@ -337,3 +337,13 @@ atomic policy/question/threshold activation, deterministic canaries, and
 operator-authorized rollback. See [docs/policy-bundles.md](docs/policy-bundles.md),
 the [runbook](docs/policy-distribution-runbook.md), and the
 [control-plane contract](docs/control-plane-contract.md).
+## Enterprise fleet control plane (P2.5)
+
+The gateway-side fleet agent supports immutable enrollment scope, signed
+digest-only desired state, identity-based staged rollouts, bounded offline
+grace, privacy-safe heartbeats, and declarative operator actions. This is a
+contract/fake integration boundary, not a hosted SaaS control plane. See
+[the fleet contract](docs/fleet-control-plane-contract.md) and
+[the fleet runbook](docs/fleet-runbook.md). No real credentials, certificates,
+signer keys, HSM, IdP, attestation service, or production multi-region claims
+are included.

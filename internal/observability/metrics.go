@@ -135,6 +135,8 @@ type Metrics struct {
 	auditExporterState  *prometheus.GaugeVec
 	quarantineEvents    *prometheus.CounterVec
 	quarantineDecisions *prometheus.CounterVec
+	fleetEvents         *prometheus.CounterVec
+	fleetState          *prometheus.GaugeVec
 	registry            *prometheus.Registry
 	dashboardMu         sync.RWMutex
 	dashboardObserver   DashboardObserver
@@ -283,6 +285,8 @@ func New() *Metrics {
 		auditExporterState:  prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "audit_exporter_state", Help: "Current audit exporter state."}, []string{"state"}),
 		quarantineEvents:    prometheus.NewCounterVec(prometheus.CounterOpts{Name: "quarantine_events_total", Help: "Automated quarantine events by bounded reason, level, and scope."}, []string{"reason", "level", "scope"}),
 		quarantineDecisions: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "quarantine_decisions_total", Help: "Requests affected by quarantine by bounded outcome."}, []string{"outcome"}),
+		fleetEvents:         prometheus.NewCounterVec(prometheus.CounterOpts{Name: "fleet_agent_events_total", Help: "Fleet agent outcomes by bounded event and outcome."}, []string{"event", "outcome"}),
+		fleetState:          prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "fleet_agent_state", Help: "Current fleet agent state by bounded state."}, []string{"state"}),
 		registry:            reg,
 	}
 	reg.MustRegister(m.requestsTotal, m.blockedTotal, m.tokenizedTotal, m.redactedTotal,
@@ -293,7 +297,7 @@ func New() *Metrics {
 		m.breakerOpen, m.activeRequests, m.activeLaya, m.calibrationInfo, m.semanticDriftEvents, m.semanticRejected,
 		m.schemaMismatch, m.checkpointMismatch, m.missingDecisions, m.fallbackReasons, m.distribution,
 		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring, m.routeSelected, m.routeFailover, m.routeHealth, m.routeRejected, m.routeUnavailable, m.nerCalls, m.nerLatency, m.evasion,
-		m.attachments, m.ragDecisions, m.auditEnqueued, m.auditDurable, m.auditExported, m.auditRetried, m.auditDeadLetter, m.auditCorruption, m.auditDropped, m.auditQueueBytes, m.auditOldestAge, m.auditExporterState, m.quarantineEvents, m.quarantineDecisions)
+		m.attachments, m.ragDecisions, m.auditEnqueued, m.auditDurable, m.auditExported, m.auditRetried, m.auditDeadLetter, m.auditCorruption, m.auditDropped, m.auditQueueBytes, m.auditOldestAge, m.auditExporterState, m.quarantineEvents, m.quarantineDecisions, m.fleetEvents, m.fleetState)
 	return m
 }
 
@@ -418,6 +422,14 @@ func (m *Metrics) ObserveAuditExporterState(state string) {
 // exposing bundle contents or unbounded error strings.
 func (m *Metrics) RecordDistribution(event, reason, keyID string) {
 	m.distribution.WithLabelValues(boundedMetadata(event), boundedReason(reason), boundedMetadata(keyID)).Inc()
+}
+
+func (m *Metrics) ObserveFleetEvent(event, outcome string) {
+	m.fleetEvents.WithLabelValues(boundedMetadata(event), boundedReason(outcome)).Inc()
+}
+func (m *Metrics) SetFleetState(state string) {
+	m.fleetState.Reset()
+	m.fleetState.WithLabelValues(boundedMetadata(state)).Set(1)
 }
 
 // Handler serves the Prometheus exposition format on /metrics.

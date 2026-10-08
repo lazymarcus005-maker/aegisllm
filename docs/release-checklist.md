@@ -28,3 +28,8 @@
       atomicity, stale revision/concurrency, cohort isolation, low-volume and
       sustained drift guardrails, tenant corroboration, safe rollback target,
       restart recovery, audit privacy, and metric cardinality.
+- [ ] P2.5 fleet checks pass: mTLS/bootstrap enrollment, immutable scope,
+      replay/downgrade/trust rotation, bounded desired state, last-known-good
+      restart/offline grace, staged cohort isolation, rollback/revocation,
+      heartbeat privacy/compliance claims, action allowlist, operator RBAC,
+      audit privacy, metric cardinality, fuzz/race, and fake Compose smoke.

@@ -1,0 +1,14 @@
+# Contract/integration fixture only. It has an ephemeral process signer and
+# plain HTTP; production requires managed PKI, mTLS, HSM/KMS, and IdP policy.
+services:
+  fake-fleet-control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile.fake-fleet-control-plane
+    command: ["-addr", ":8092"]
+    ports:
+      - "18092:8092"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]

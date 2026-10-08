@@ -210,3 +210,22 @@ from causing fleet rollback. Durable audit/SIEM and metrics contain bounded
 references/action classes only. Fixtures are contract/fake evidence; real model
 quality, production distributions, label trust, signer governance, and Laya
 connectivity remain external promotion dependencies.
+# P2.5 fleet control-plane threats
+
+Enrollment treats gateway identity, scope, certificate, bootstrap nonce, and
+trust domain as hostile inputs. Verified mTLS plus signed one-time bootstrap
+material rejects self-asserted scope, duplicate identity, replay, expiry,
+downgrade, and cross-fleet enrollment. Desired state is signed,
+digest-referenced, selector-bound, bounded, and monotonic; ETag is only a
+transport optimization. Last-known-good state, atomic callbacks, bounded
+offline grace, and fail-closed expiry contain outage, partial apply, oversized
+response, and restart failures.
+
+Rollouts derive cohorts from verified immutable identity, not client or
+gateway selection. Operator transitions use existing RBAC/audit boundaries,
+optimistic revisions, confirmation, and health/readiness/evidence gates.
+Heartbeats are fixed-shape aggregates and claims: prompts, documents,
+credentials, tokens, raw audit, embeddings, user IDs, and attacker-controlled
+high-cardinality labels are not representable. Fakes prove contracts only;
+real PKI/HSM/IdP, external attestation, signer governance, and multi-region
+consistency/scale remain promotion dependencies.

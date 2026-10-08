@@ -86,3 +86,14 @@ shadow comparison, operator promotion/rollback endpoints, retention, and a
 non-production fake control plane. Remaining deployment-specific work is
 operator provisioning of real CA/client certificates and production signer
 governance.
+## P2.5 enterprise fleet control plane
+
+Implemented: immutable mTLS/bootstrap enrollment, signed canonical desired
+state, trust rotation/anti-replay, bounded gateway agent with last-known-good
+and offline grace, identity-derived staged rollout contracts, privacy-safe
+heartbeat/compliance projections, allowlisted signed actions, operator API/
+`fleetctl`, deterministic fake control plane and Compose smoke, gateway
+readiness/status integration, and fuzz/race seams. Evidence is contract,
+deterministic fake, unit/adversarial, and gateway integration only. Real
+PKI/HSM/IdP, external attestation, signer governance, multi-region consistency
+and scale, and production rollout validation remain promotion dependencies.

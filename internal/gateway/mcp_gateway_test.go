@@ -213,7 +213,10 @@ servers:
 		c.JWTIssuer = "issuer"
 		c.JWTAudience = "aud"
 		c.MCPRegistryFile = registryPath
-		c.MCPSessionTTL = 40 * time.Millisecond
+		// Keep the pre-expiry assertion independent of host scheduling. Expiry
+		// semantics are asserted below by moving the test session past its
+		// deadline under the gateway's own synchronization.
+		c.MCPSessionTTL = 10 * time.Minute
 	}, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	pipe, _ := newRealPipeline(t)
 	srv.SetPipeline(pipe)
@@ -265,7 +268,12 @@ servers:
 	if got.StatusCode != http.StatusOK || strings.Contains(string(data), "0812345678") {
 		t.Fatalf("split SSE was not protected: %d %s", got.StatusCode, data)
 	}
-	time.Sleep(60 * time.Millisecond)
+	srv.mcp.mu.Lock()
+	if session, ok := srv.mcp.sessions["split-session"]; ok {
+		session.Expires = time.Now().Add(-time.Second)
+		srv.mcp.sessions["split-session"] = session
+	}
+	srv.mcp.mu.Unlock()
 	expiredReq, _ := http.NewRequest(http.MethodGet, gw.URL+"/mcp/cloud?session_id=split-session", nil)
 	expiredReq.Header.Set("Authorization", "Bearer "+token)
 	expiredResp, err := http.DefaultClient.Do(expiredReq)

@@ -1247,3 +1247,13 @@ execution request. Results, including bounded SSE data, pass through
 `InspectToolResult` before re-entry. Sessions are keyed by an opaque random ID
 but bound in memory to the verified tenant/application/subject and server.
 Registry and secure-material reloads publish only validated candidates.
+## Fleet control-plane boundary (P2.5)
+
+Fleet transport is untrusted even when TLS/mTLS authenticates the peer.
+Signed canonical desired state, rotating trust references, validity windows,
+monotonic revisions, authority-derived selectors, atomic application, and
+last-known-good persistence protect the gateway. The agent accepts only
+declarative state transitions; it has no shell, plugin, file-read,
+secret-export, prompt, or log-scraping operation. Control-plane outage is
+decoupled from request latency. Required state expiry follows bounded offline
+grace and fail-closed policy.

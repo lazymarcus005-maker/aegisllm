@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/detectors"
+	"github.com/aegisllm/gateway/internal/fleet"
 	"github.com/aegisllm/gateway/internal/gateway"
 	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
@@ -341,6 +343,22 @@ func main() {
 	}
 	var sink audit.Sink = durableSink
 	srv.SetAudit(wal, exporter, durableSink)
+	var fleetAgent *fleet.Agent
+	if cfg.FleetControlPlaneURL != "" {
+		buildDigest := releaseDigest(buildVersion + "\x00" + buildCommit + "\x00" + buildDate)
+		identity := fleet.Identity{GatewayID: cfg.GatewayInstanceID, Tenant: cfg.FleetTenant, Environment: cfg.DeploymentEnvironment, Region: cfg.FleetRegion, SoftwareVersion: cfg.GatewayVersion, BuildDigest: buildDigest, SBOMDigest: releaseDigest("sbom:" + buildDigest), Provenance: releaseDigest("provenance:" + buildDigest), Capabilities: cfg.FleetCapabilities, TrustDomain: cfg.FleetTrustDomain, EnrollmentState: "enrolled", CertificateID: cfg.FleetCertificateID, KeyID: cfg.FleetKeyID, Revision: 1}
+		fleetAgent, err = fleet.NewAgent(fleet.AgentConfig{Identity: identity, ControlPlaneURL: cfg.FleetControlPlaneURL, TrustStorePath: cfg.FleetTrustStoreFile, StatePath: cfg.FleetStateFile, PollInterval: cfg.FleetPollInterval, Timeout: cfg.FleetTimeout, OfflineGrace: cfg.FleetOfflineGrace, RequireState: cfg.FleetRequiredState, TLS: securetransport.ClientTLSOptions{CAFile: cfg.FleetTLSCAFile, CertificateFile: cfg.FleetTLSCertFile, KeyFile: cfg.FleetTLSKeyFile, ServerName: cfg.FleetTLSServerName, MinVersion: cfg.TLSMinVersion, MaxVersion: cfg.TLSMaxVersion, PollInterval: cfg.TLSReloadInterval, Metrics: metrics}, Apply: func(desired fleet.DesiredState) error {
+			if distribution == nil || distribution.Current() == nil || !strings.EqualFold(distribution.Current().Bundle.Manifest.PolicySHA256, desired.Policy.Digest) {
+				return errors.New("fleet policy reference is not an already verified local policy artifact")
+			}
+			return nil
+		}, Audit: fleetAuditAdapter{sink: sink, metrics: metrics}})
+		if err != nil {
+			logger.Error("fleet agent configuration failed", "error", err)
+			os.Exit(1)
+		}
+		srv.SetFleetAgent(fleetAgent)
+	}
 	if distribution != nil {
 		distribution.SetObserver(distributionObserver{metrics: metrics, sink: sink})
 	}
@@ -733,6 +751,11 @@ func main() {
 			}
 		}()
 	}
+	if fleetAgent != nil {
+		go func() {
+			fleetAgent.Run(ctx)
+		}()
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -788,4 +811,24 @@ func newLogger() *slog.Logger {
 		level = slog.LevelError
 	}
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+}
+
+func releaseDigest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+type fleetAuditAdapter struct {
+	sink    audit.Sink
+	metrics *observability.Metrics
+}
+
+func (a fleetAuditAdapter) RecordFleet(e fleet.AuditEvent) {
+	if a.metrics != nil {
+		a.metrics.ObserveFleetEvent(e.Action, e.Outcome)
+	}
+	if a.sink == nil {
+		return
+	}
+	a.sink.Record(audit.Event{RequestID: "fleet-" + e.Action, Timestamp: time.Now().UTC(), Component: "fleet", Mode: "control-plane", Action: core.ActionReview, Code: boundedDistributionValue(e.Action), Tenant: boundedDistributionValue(e.Tenant), DistributionEvent: boundedDistributionValue(e.Outcome), DistributionKeyID: boundedDistributionValue(e.Digest)})
 }

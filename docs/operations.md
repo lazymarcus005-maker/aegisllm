@@ -439,3 +439,18 @@ a new idempotency key and expected registry revision. `promoted`, `revoked`,
 and rollback actions require explicit confirmation. See
 `docs/semantic-lifecycle-drift-runbook.md` for the review checklist and
 synthetic-evidence boundary.
+### Enterprise fleet control plane (P2.5)
+
+Configure `FLEET_CONTROL_PLANE_URL`, immutable gateway scope references,
+`FLEET_STATE_FILE`, `FLEET_TRUST_STORE_FILE`, bounded poll/timeout/grace
+values, and production CA/client certificate/key files. The gateway agent
+polls and heartbeats asynchronously; an outage cannot add control-plane wait
+to an LLM request. `/api/fleet/status` and `/ready` expose sanitized state.
+With `FLEET_REQUIRED_STATE=true`, missing, revoked, invalid, or expired state
+fails closed after the signed bundle's offline grace. `fleetctl` provides
+bounded inventory/compliance and confirmed rollout/revocation actions.
+
+Use `scripts/fleet-compose-smoke.sh` for fake contract evidence only. Do not
+promote its ephemeral signer or plaintext link. Production enrollment and
+promotion depend on external CA/HSM/KMS, IdP/RBAC, attestation, signer
+governance, and multi-region control-plane validation.

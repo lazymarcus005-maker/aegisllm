@@ -18,6 +18,7 @@ import (
 	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/dashboard"
+	"github.com/aegisllm/gateway/internal/fleet"
 	"github.com/aegisllm/gateway/internal/limiter"
 	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
@@ -83,6 +84,7 @@ type Server struct {
 	quarantine       *quarantine.Manager
 	semanticRegistry *semanticcontrol.Manager
 	semanticDrift    *semanticcontrol.Monitor
+	fleetAgent       *fleet.Agent
 	buildInfo        BuildInfo
 }
 
@@ -348,6 +350,28 @@ func (s *Server) applyRAGPolicy(p *policy.Policy) {
 }
 
 func (s *Server) SetPolicyDistribution(m *policydistribution.Manager) { s.distribution = m }
+
+// SetFleetAgent mounts the optional gateway-side fleet agent. Polling and
+// heartbeat work happens outside the request path; only the bounded local
+// fail-closed decision is consulted at admission when required state is on.
+func (s *Server) SetFleetAgent(a *fleet.Agent) {
+	s.fleetAgent = a
+	if a != nil && s.cfg.FleetRequiredState {
+		s.AddReadinessCheck("fleet_required_state", func() string {
+			if !a.RequestAllowed(time.Now().UTC()) {
+				return "required fleet state is stale, revoked, or outside offline grace"
+			}
+			return ""
+		})
+	}
+}
+
+func (s *Server) FleetStatus() (fleet.AgentStatus, bool) {
+	if s.fleetAgent == nil {
+		return fleet.AgentStatus{}, false
+	}
+	return s.fleetAgent.Status(), true
+}
 
 // SetSemanticRegistry mounts the signed semantic lifecycle control plane. It
 // is optional in development/shadow deployments; semantic enforcement remains
