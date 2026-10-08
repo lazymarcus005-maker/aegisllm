@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -123,6 +124,27 @@ func TestTLSVerificationAndMTLS(t *testing.T) {
 	unknownTLS, _, _ := (ClientTLSOptions{ServerName: "server.test", CertificateFile: clientCertFile, KeyFile: clientKeyFile}).TLSConfig()
 	if _, err := (&http.Client{Transport: &http.Transport{TLSClientConfig: unknownTLS}}).Get(srv.URL); err == nil {
 		t.Fatal("unknown CA was accepted")
+	}
+}
+
+func TestTLSConfigEnforcesMinimumTLS12(t *testing.T) {
+	client, _, err := (ClientTLSOptions{MinVersion: tls.VersionTLS10}).TLSConfig()
+	if err == nil || !strings.Contains(err.Error(), "TLS minimum version must be 1.2 or newer") {
+		t.Fatalf("expected TLS 1.2 minimum rejection, got config=%v err=%v", client, err)
+	}
+	dir := t.TempDir()
+	ca := makeCA(t)
+	cert, key := makeLeaf(t, ca, 12, []string{"server.test"}, false, false)
+	certFile, keyFile := writePair(t, dir, "server", cert, key)
+	server, files, err := (ServerTLSOptions{CertificateFile: certFile, KeyFile: keyFile, MinVersion: tls.VersionTLS12}).TLSConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		defer file.Close()
+	}
+	if server.MinVersion < tls.VersionTLS12 {
+		t.Fatalf("server minimum TLS version = %d, want at least TLS 1.2", server.MinVersion)
 	}
 }
 

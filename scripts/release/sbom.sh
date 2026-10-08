@@ -3,7 +3,8 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 out=${RELEASE_OUT:-$root/build/release}
 mkdir -p "$out/supply-chain"
-go run "$root/scripts/release/sbom.go" "$out/supply-chain/sbom.cdx.json"
+. "$root/scripts/release/toolchain.sh"
+docker run --rm --user root -v "$root:/src" -w /src "$GO_TOOL_IMAGE" sh -ceu 'go run /src/scripts/release/sbom.go /src/build/release/supply-chain/sbom.cdx.json'
 python3 - "$out/supply-chain/sbom.cdx.json" <<'PY'
 import json, sys
 r=json.load(open(sys.argv[1]))

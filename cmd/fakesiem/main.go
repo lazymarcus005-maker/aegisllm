@@ -8,6 +8,8 @@ import (
 	"os"
 	"strconv"
 	"sync/atomic"
+
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 var calls atomic.Int64
@@ -32,9 +34,7 @@ func main() {
 		w.WriteHeader(http.StatusAccepted)
 	})
 	cert, key := os.Getenv("FAKE_SIEM_CERT_FILE"), os.Getenv("FAKE_SIEM_KEY_FILE")
-	if cert != "" && key != "" {
-		_ = http.ListenAndServeTLS(":9200", cert, key, h)
-		return
+	if err := securetransport.ServeHTTPServer(securetransport.NewHTTPServer(":9200", h), cert, key); err != nil {
+		panic(err)
 	}
-	_ = http.ListenAndServe(":9200", h)
 }

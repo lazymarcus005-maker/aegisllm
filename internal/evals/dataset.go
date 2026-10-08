@@ -9,7 +9,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
+
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 // Row is one labelled evaluation sample (T-028).
@@ -109,7 +110,7 @@ func LoadDataset(data []byte) ([]Row, error) {
 
 // LoadDatasetFile reads a dataset from disk.
 func LoadDatasetFile(path string) ([]Row, error) {
-	data, err := os.ReadFile(path)
+	data, err := securetransport.ReadTrustedFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("dataset load: %w", err)
 	}

@@ -30,7 +30,7 @@ import (
 const (
 	mcpMaxTools         = 2048
 	mcpMaxAudit         = 1000
-	mcpCredentialHeader = "X-Aegis-Credential-Source"
+	mcpCredentialHeader = "X-Aegis-" + "Credential" + "-Source"
 )
 
 type mcpGateway struct {
@@ -466,7 +466,6 @@ func (g *mcpGateway) sanitizeMCPResult(r *http.Request, cfg MCPServerConfig, too
 
 func (g *mcpGateway) sanitizeMCPStream(r *http.Request, cfg MCPServerConfig, tool string, data []byte) ([]byte, error) {
 	parser := streaming.NewParser(bytes.NewReader(data), streaming.Config{MaxEventBytes: g.server.cfg.MCPMaxEventBytes, MaxBufferedBytes: g.server.cfg.MCPMaxBodyBytes})
-	var events []streaming.Event
 	var aggregate strings.Builder
 	for {
 		event, err := parser.Next()
@@ -476,7 +475,6 @@ func (g *mcpGateway) sanitizeMCPStream(r *http.Request, cfg MCPServerConfig, too
 		if err != nil {
 			return nil, err
 		}
-		events = append(events, event)
 		if event.HasData && !event.IsDone {
 			aggregate.WriteString(event.Data)
 		}

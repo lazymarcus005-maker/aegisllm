@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aegisllm/gateway/internal/securetransport"
 	"github.com/aegisllm/gateway/internal/tokenization"
 	"github.com/redis/go-redis/v9"
 )
@@ -47,7 +48,9 @@ func usage() {
 func runStatus(args []string) {
 	f := flag.NewFlagSet("status", flag.ExitOnError)
 	redisURL := f.String("redis-url", os.Getenv("TOKEN_VAULT_REDIS_URL"), "Redis URL")
-	f.Parse(args)
+	if err := f.Parse(args); err != nil {
+		fail("invalid status flags")
+	}
 	out := map[string]any{"schema_version": 1, "status": "configured"}
 	if *redisURL != "" {
 		client, err := redis.ParseURL(*redisURL)
@@ -55,7 +58,7 @@ func runStatus(args []string) {
 			out["redis"] = "invalid"
 		} else {
 			rdb := redis.NewClient(client)
-			defer rdb.Close()
+			defer closeRedis(rdb)
 			if err := rdb.Ping(context.Background()).Err(); err != nil {
 				out["redis"] = "unavailable"
 			} else {
@@ -71,8 +74,10 @@ func runStatus(args []string) {
 func runVerifyKeyring(args []string) {
 	f := flag.NewFlagSet("verify-keyring", flag.ExitOnError)
 	path := f.String("file", os.Getenv("TOKEN_VAULT_KEYRING_FILE"), "keyring file")
-	f.Parse(args)
-	data, err := os.ReadFile(*path)
+	if err := f.Parse(args); err != nil {
+		fail("invalid verify-keyring flags")
+	}
+	data, err := securetransport.ReadTrustedFile(*path)
 	if err != nil {
 		fail("keyring unavailable")
 		return
@@ -88,8 +93,10 @@ func runVerifyKeyring(args []string) {
 func runRotatePlan(args []string) {
 	f := flag.NewFlagSet("rotate-plan", flag.ExitOnError)
 	path := f.String("file", os.Getenv("TOKEN_VAULT_KEYRING_FILE"), "keyring file")
-	f.Parse(args)
-	data, err := os.ReadFile(*path)
+	if err := f.Parse(args); err != nil {
+		fail("invalid rotate-plan flags")
+	}
+	data, err := securetransport.ReadTrustedFile(*path)
 	if err != nil {
 		fail("keyring unavailable")
 		return
@@ -108,15 +115,19 @@ func runRevoke(args []string) {
 	prefix := f.String("prefix", "tokvault", "Redis prefix")
 	hash := f.String("index-hash", "", "already-derived session index hash")
 	file := f.String("scope-file", "", "secure file containing session_index_hash")
-	f.Parse(args)
+	if err := f.Parse(args); err != nil {
+		fail("invalid revoke-session flags")
+	}
 	value := strings.TrimSpace(*hash)
 	if value == "" && *file != "" {
-		data, err := os.ReadFile(*file)
-		if err == nil {
-			var in safeScopeFile
-			if json.Unmarshal(data, &in) == nil {
-				value = strings.TrimSpace(in.SessionIndexHash)
-			}
+		data, err := securetransport.ReadTrustedFile(*file)
+		if err != nil {
+			fail("scope file unavailable")
+			return
+		}
+		var in safeScopeFile
+		if json.Unmarshal(data, &in) == nil {
+			value = strings.TrimSpace(in.SessionIndexHash)
 		}
 	}
 	if value == "" || len(value) > 128 || strings.ContainsAny(value, "\r\n") {
@@ -133,7 +144,7 @@ func runRevoke(args []string) {
 		return
 	}
 	rdb := redis.NewClient(opts)
-	defer rdb.Close()
+	defer closeRedis(rdb)
 	// The backend accepts only the derived index and deletes records through
 	// its bounded index. It does not need the vault encryption key.
 	vault := tokenization.NewRedisVault(rdb, *prefix, time.Hour)
@@ -149,4 +160,11 @@ func write(value any) {
 	enc.SetEscapeHTML(true)
 	_ = enc.Encode(value)
 }
+
+func closeRedis(client *redis.Client) {
+	if err := client.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, "redis close:", err)
+	}
+}
+
 func fail(message string) { fmt.Fprintln(os.Stderr, message); os.Exit(1) }

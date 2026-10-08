@@ -261,7 +261,12 @@ func (p *RoutedProxy) checkHealth() {
 		if reqErr == nil {
 			resp, callErr := proxy.client.Do(req)
 			if callErr == nil {
-				resp.Body.Close()
+				if closeErr := resp.Body.Close(); closeErr != nil {
+					p.manager.SetHealth(u.ID, false)
+					p.observeHealth(u.ID, string(u.Class), "unavailable", false)
+					cancel()
+					continue
+				}
 				healthy := resp.StatusCode < 500
 				p.manager.SetHealth(u.ID, healthy)
 				state := "healthy"

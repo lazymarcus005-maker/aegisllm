@@ -23,6 +23,7 @@ import (
 
 	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/securetransport"
 	"gopkg.in/yaml.v3"
 )
 
@@ -241,7 +242,7 @@ func WriteDirectory(dir string, b *Bundle) error {
 }
 
 func ReadDirectory(dir string) (*Bundle, error) {
-	manifestData, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	manifestData, err := securetransport.ReadTrustedFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
 		return nil, fmt.Errorf("bundle manifest: %w", err)
 	}
@@ -256,13 +257,13 @@ func ReadDirectory(dir string) (*Bundle, error) {
 		if !safeFileName(name) {
 			return nil, errors.New("bundle contains unsafe file name")
 		}
-		data, readErr := os.ReadFile(filepath.Join(dir, name))
+		data, readErr := securetransport.ReadTrustedFile(filepath.Join(dir, name))
 		if readErr != nil {
 			return nil, fmt.Errorf("bundle file %s: %w", name, readErr)
 		}
 		files[name] = data
 	}
-	sigData, err := os.ReadFile(filepath.Join(dir, "signature.ed25519"))
+	sigData, err := securetransport.ReadTrustedFile(filepath.Join(dir, "signature.ed25519"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &Bundle{Manifest: m, Files: files}, nil
@@ -310,7 +311,7 @@ func (t *TrustStore) Load() error {
 	if !t.modTime.IsZero() && stat.ModTime().Equal(t.modTime) {
 		return nil
 	}
-	data, err := os.ReadFile(t.path)
+	data, err := securetransport.ReadTrustedFile(t.path)
 	if err != nil {
 		return err
 	}

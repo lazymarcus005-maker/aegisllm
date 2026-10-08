@@ -84,10 +84,6 @@ func newMCPRegistry(path string, interval time.Duration, allowInsecure ...bool) 
 	return &mcpRegistryManager{file: f}, nil
 }
 
-func validateMCPRegistry(reg MCPRegistry) error {
-	return validateMCPRegistryMode(reg, false)
-}
-
 func validateMCPRegistryMode(reg MCPRegistry, allowHTTP bool) error {
 	if reg.Schema != "aegisllm.mcp/v1" || reg.Version != 1 || len(reg.Servers) == 0 {
 		return errors.New("MCP registry version or servers are invalid")

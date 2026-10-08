@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -562,7 +563,15 @@ func comparisonKPI(id, label string, value, previous uint64, available bool, def
 				delta = 100
 			}
 		} else {
-			delta = int64(value*100/previous) - 100
+			deltaFloat := float64(value)*100/float64(previous) - 100
+			switch {
+			case deltaFloat >= float64(math.MaxInt64):
+				delta = math.MaxInt64
+			case deltaFloat <= float64(math.MinInt64):
+				delta = math.MinInt64
+			default:
+				delta = int64(deltaFloat)
+			}
 		}
 	}
 	return KPI{ID: id, Label: label, Value: value, Previous: previous, Comparison: available, DeltaPercent: delta, Trend: trend, Definition: definition, OwnerAction: ownerAction}

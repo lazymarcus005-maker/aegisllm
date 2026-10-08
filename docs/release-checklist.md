@@ -1,6 +1,7 @@
 # P1.10 release checklist
 
-- [ ] `make verify-release` completed from a clean checkout.
+- [ ] `make verify-release` completed from a clean checkout; every required
+      evidence stage is `pass`.
 - [ ] Full suite/build/vet/gofmt/diff and Docker GCC race suite pass.
 - [ ] Every registered fuzz target runs; no required target is skipped.
 - [ ] Coverage report meets overall and critical-package floors.

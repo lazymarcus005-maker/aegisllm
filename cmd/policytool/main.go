@@ -18,6 +18,7 @@ import (
 	"github.com/aegisllm/gateway/internal/gateway"
 	"github.com/aegisllm/gateway/internal/policy"
 	"github.com/aegisllm/gateway/internal/policydistribution"
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 type result struct {
@@ -115,7 +116,7 @@ func bundleMain(args []string) {
 		if *out == "" || *sequence == 0 || *issuer == "" || *keyID == "" {
 			fail("create requires -out, -sequence, -issuer, and -key-id")
 		}
-		policyData, err := os.ReadFile(*policyPath)
+		policyData, err := securetransport.ReadTrustedFile(*policyPath)
 		if err != nil {
 			fail("policy artifact unavailable")
 		}
@@ -133,7 +134,7 @@ func bundleMain(args []string) {
 			if len(parts) != 2 {
 				fail("invalid evaluation artifact")
 			}
-			data, readErr := os.ReadFile(parts[1])
+			data, readErr := securetransport.ReadTrustedFile(parts[1])
 			if readErr != nil || policydistribution.AddFile(bundle, parts[0], data, true) != nil {
 				fail("evaluation artifact unavailable")
 			}
@@ -229,14 +230,14 @@ func readSecretInput(path string) ([]byte, error) {
 	if path == "-" {
 		return io.ReadAll(os.Stdin)
 	}
-	return os.ReadFile(filepath.Clean(path))
+	return securetransport.ReadTrustedFile(filepath.Clean(path))
 }
 
 func readOptional(path string) []byte {
 	if path == "" {
 		return nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := securetransport.ReadTrustedFile(path)
 	if err != nil {
 		fail("optional artifact unavailable")
 	}
@@ -307,7 +308,7 @@ func readInput(path string) ([]byte, error) {
 	if path == "-" {
 		return io.ReadAll(os.Stdin)
 	}
-	return os.ReadFile(path)
+	return securetransport.ReadTrustedFile(path)
 }
 
 func write(v any) {

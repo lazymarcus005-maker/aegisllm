@@ -16,6 +16,7 @@ import (
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
 	"github.com/aegisllm/gateway/internal/routing"
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 // DeploymentProfile selects the operational safety contract for the gateway.
@@ -621,7 +622,7 @@ func validateSemanticConfig(cfg Config) error {
 	if err != nil {
 		return errors.New("THRESHOLDS_FILE is missing or invalid")
 	}
-	questionData, err := os.ReadFile(cfg.QuestionsFile)
+	questionData, err := securetransport.ReadTrustedFile(cfg.QuestionsFile)
 	if err != nil {
 		return errors.New("QUESTIONS_FILE is unreadable")
 	}
@@ -943,16 +944,6 @@ func validateQuestionsFile(path string) error {
 	}
 	if _, err := decision.LoadQuestionsFile(path); err != nil {
 		return errors.New("QUESTIONS_FILE is missing or invalid")
-	}
-	return nil
-}
-
-func validateThresholdsFile(path string) error {
-	if strings.TrimSpace(path) == "" {
-		return errors.New("THRESHOLDS_FILE is required")
-	}
-	if _, err := policy.LoadSemanticThresholdsFile(path); err != nil {
-		return errors.New("THRESHOLDS_FILE is missing or invalid")
 	}
 	return nil
 }

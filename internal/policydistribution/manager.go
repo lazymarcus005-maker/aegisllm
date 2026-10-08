@@ -511,7 +511,7 @@ func (m *Manager) checkSequence(seq uint64, hash string) error {
 }
 
 func (m *Manager) loadState() error {
-	data, err := os.ReadFile(m.cfg.StatePath)
+	data, err := securetransport.ReadTrustedFile(m.cfg.StatePath)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -593,7 +593,9 @@ func versionLess(got, want string) bool {
 		var v [3]int
 		p := strings.Split(strings.TrimPrefix(s, "v"), ".")
 		for i := 0; i < len(p) && i < 3; i++ {
-			fmt.Sscanf(p[i], "%d", &v[i])
+			if _, err := fmt.Sscanf(p[i], "%d", &v[i]); err != nil {
+				v[i] = 0
+			}
 		}
 		return v
 	}
@@ -607,9 +609,7 @@ func versionLess(got, want string) bool {
 }
 func decodeBase64(s string) ([]byte, error) {
 	const prefix = "base64:"
-	if strings.HasPrefix(s, prefix) {
-		s = s[len(prefix):]
-	}
+	s = strings.TrimPrefix(s, prefix)
 	b, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
 		return nil, errors.New("invalid base64 bundle data")

@@ -1,5 +1,5 @@
-ARG GO_VERSION=1.25.0
-FROM golang:${GO_VERSION}-bookworm AS build
+ARG GO_TOOL_IMAGE=golang:1.25.13-bookworm@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48
+FROM ${GO_TOOL_IMAGE} AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

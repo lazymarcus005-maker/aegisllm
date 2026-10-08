@@ -1,11 +1,10 @@
 # P1.10 release verification
 
-`make verify-release` is the single release entrypoint. It is fail-fast for
-correctness, race, fuzz, benchmark, E2E, conformance, reproducibility,
-secret-scan, and SBOM stages. Static-analysis, license, and image-vulnerability
-stages continue far enough to write an evidence manifest when an external tool
-or vulnerability database is unavailable, then fail the release; a blocked
-required gate is never reported as a pass.
+`make verify-release` is the single release entrypoint. Every correctness,
+race, fuzz, benchmark, E2E, conformance, reproducibility, secret-scan, SBOM,
+static-analysis, license, and image-vulnerability stage is required. An
+external tool or vulnerability database outage writes an explicit `blocked`
+stage and fails the release; it is never reported as a pass.
 
 Reports are written to the ignored `build/release/` directory. The command does
 not update conformance fixtures, baselines, or policy files. Fixture updates
@@ -17,7 +16,7 @@ tool versions, report hash, status, and blocker reason.
 
 The fast correctness tier is `go test -p 1 ./...`, `go build ./...`, `go vet
 ./...`, and `gofmt`. The race tier runs the complete suite in
-`golang:1.25.0-bookworm`, installs the Debian GCC/libc toolchain in the
+the digest-pinned `golang:1.25.13-bookworm` image, installs the Debian GCC/libc toolchain in the
 container, and uses `-race -p 1`; host compiler availability is irrelevant.
 Fuzz smoke runs every target in `scripts/release/fuzz-targets.txt` for a
 bounded two seconds by default. Seeds are committed as `Fuzz.Add` calls beside
@@ -46,6 +45,10 @@ outputs must have the same SHA-256. The offline CycloneDX 1.5 SBOM is schema
 validated; the final scratch/non-root image has no shell or package manager,
 declares a healthcheck, and is read-only-rootfs compatible except for the
 explicit audit mount. Trivy 0.56.2, go-licenses 1.6.0, staticcheck 2025.1.1,
-govulncheck 1.1.4, and gosec 2.22.8 are run in pinned containers. Signing is
-not fabricated: provenance/checksums are produced, and signing is optional
-until a keyless test identity is available.
+govulncheck 1.1.4, and gosec 2.22.8 run in the digest-pinned Go 1.25.13
+container/toolchain lane. The static parser counts only reachable govulncheck
+findings, preserves exact gosec suppression details, rejects stale allowlist
+entries, and treats package-load errors as blocked. Trivy records and validates
+database metadata, image identity, vulnerability count, and severity counts.
+Signing is not fabricated: provenance/checksums are produced, and signing is
+optional until a keyless test identity is available.

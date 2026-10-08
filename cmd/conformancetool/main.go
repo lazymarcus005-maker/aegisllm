@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/aegisllm/gateway/internal/conformance"
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 func main() {
@@ -149,7 +150,7 @@ func validateCommand(args []string) error {
 			return errors.New("JUnit report is missing or empty")
 		}
 	}
-	if checksum, e := os.ReadFile(*path + ".sha256"); e == nil && strings.TrimSpace(string(checksum)) != conformance.ArtifactSHA256(mustRead(*path)) {
+	if checksum, e := securetransport.ReadTrustedFile(*path + ".sha256"); e == nil && strings.TrimSpace(string(checksum)) != conformance.ArtifactSHA256(mustRead(*path)) {
 		return errors.New("report artifact hash does not match")
 	}
 	fmt.Printf("valid report schema=%s cases=%d\n", r.SchemaVersion, len(r.Cases))
@@ -159,7 +160,7 @@ func validateCommand(args []string) error {
 	return nil
 }
 
-func mustRead(path string) []byte { data, _ := os.ReadFile(path); return data }
+func mustRead(path string) []byte { data, _ := securetransport.ReadTrustedFile(path); return data }
 
 func compareCommand(args []string) error {
 	fs := flag.NewFlagSet("compare", flag.ContinueOnError)

@@ -3,8 +3,8 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 out=${RELEASE_OUT:-$root/build/release}
 mkdir -p "$out/supply-chain"
-image=${GO_TOOL_IMAGE:-golang:1.25.0-bookworm}
-docker run --rm --user root -v "$root:/src" -w /src "$image" sh -ceu '
+. "$root/scripts/release/toolchain.sh"
+docker run --rm --user root -v "$root:/src" -w /src "$GO_TOOL_IMAGE" sh -ceu '
   export GOBIN=/tmp/release-tools
   mkdir -p "$GOBIN"
   go install github.com/google/go-licenses@v1.6.0

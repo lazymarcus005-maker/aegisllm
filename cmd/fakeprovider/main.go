@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 type Behavior struct {
@@ -40,7 +42,7 @@ func main() {
 	flag.Parse()
 	cfg := Config{Default: Behavior{Usage: true}, Cases: map[string]Behavior{}}
 	if *behaviorFile != "" {
-		data, err := os.ReadFile(*behaviorFile)
+		data, err := securetransport.ReadTrustedFile(*behaviorFile)
 		if err != nil {
 			panic("fakeprovider behavior unavailable")
 		}
@@ -128,7 +130,7 @@ func handle(w http.ResponseWriter, r *http.Request, profile string, cfg Config) 
 func writeJSON(w http.ResponseWriter, profile, model, text string, b Behavior) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	response := map[string]any{}
+	var response map[string]any
 	switch profile {
 	case "anthropic":
 		response = map[string]any{"id": "msg_fake", "type": "message", "role": "assistant", "model": model, "content": []any{map[string]any{"type": "text", "text": text}}, "stop_reason": "end_turn"}

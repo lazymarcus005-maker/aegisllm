@@ -1,4 +1,6 @@
 schema_version: aegisllm.security-allowlist/v1
 entries: []
-# Any future suppression requires an owner, UTC expiry, exact tool/finding,
-# affected path, and a review reason. Expired entries fail the release gate.
+# Any future suppression requires exactly: tool, rule, repository-relative path,
+# positive source line, lowercase SHA-256 fingerprint, owner, reason, and an
+# RFC3339 UTC expiry. The release parser rejects malformed, expired, duplicate,
+# or stale entries; wildcards and global suppressions are not valid.

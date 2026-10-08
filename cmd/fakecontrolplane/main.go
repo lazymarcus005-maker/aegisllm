@@ -12,6 +12,7 @@ import (
 	"os"
 
 	"github.com/aegisllm/gateway/internal/policydistribution"
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 func main() {
@@ -49,12 +50,7 @@ func main() {
 		_, _ = w.Write(envelope)
 	})
 	slog.Warn("fake control plane is non-production test infrastructure")
-	if *cert != "" || *key != "" {
-		if err := http.ListenAndServeTLS(*addr, *cert, *key, handler); err != nil {
-			slog.Error("server stopped", "error", err)
-			os.Exit(1)
-		}
-	} else if err := http.ListenAndServe(*addr, handler); err != nil {
+	if err := securetransport.ServeHTTPServer(securetransport.NewHTTPServer(*addr, handler), *cert, *key); err != nil {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)
 	}

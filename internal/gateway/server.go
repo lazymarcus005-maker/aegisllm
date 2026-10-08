@@ -76,6 +76,14 @@ type Server struct {
 	auditWAL       *audit.WAL
 	auditExporter  *audit.Exporter
 	auditSink      audit.Sink
+	buildInfo      BuildInfo
+}
+
+// BuildInfo is sanitized provenance embedded in release readiness evidence.
+type BuildInfo struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	Date    string `json:"date"`
 }
 
 // SemanticReadiness is the sanitized semantic contract exposed by /ready.
@@ -357,6 +365,9 @@ func (s *Server) recordRoute(env *core.InspectionEnvelope, action core.Action, s
 
 func (s *Server) SetSemanticReadiness(fn func() SemanticReadiness) { s.semanticStatus = fn }
 
+// SetBuildInfo attaches release provenance to the sanitized readiness record.
+func (s *Server) SetBuildInfo(info BuildInfo) { s.buildInfo = info }
+
 // SetMetricsHandler mounts a handler at GET /metrics (spec §15). The
 // production observability handler also provides the metrics source used by
 // the protection dashboard, keeping dashboard wiring in the server boundary.
@@ -608,6 +619,7 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 		"status":             "ready",
 		"deployment_profile": string(s.cfg.profile()),
 		"security_mode":      s.cfg.SecurityMode,
+		"build":              s.buildInfo,
 		"dependencies":       dependencies,
 		"secure_material":    materialResponse,
 	}

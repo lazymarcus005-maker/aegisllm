@@ -111,9 +111,7 @@ func (p *Parser) build(lines []string, raw []byte) Event {
 		if !ok {
 			field, value = line, ""
 		}
-		if strings.HasPrefix(value, " ") {
-			value = value[1:]
-		}
+		value = strings.TrimPrefix(value, " ")
 		switch field {
 		case "data":
 			data = append(data, value)

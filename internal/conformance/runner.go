@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 var allowedReasonIDs = map[string]bool{
@@ -39,7 +41,7 @@ func LoadAuth(path string) (http.Header, error) {
 	if path == "" {
 		return make(http.Header), nil
 	}
-	b, err := os.ReadFile(path)
+	b, err := securetransport.ReadTrustedFile(path)
 	if err != nil {
 		return nil, errors.New("auth descriptor unavailable")
 	}
@@ -57,7 +59,7 @@ func LoadAuth(path string) (http.Header, error) {
 		}
 	}
 	if d.BearerFile != "" {
-		value, e := os.ReadFile(d.BearerFile)
+		value, e := securetransport.ReadTrustedFile(d.BearerFile)
 		if e != nil {
 			return nil, errors.New("bearer file unavailable")
 		}
@@ -71,7 +73,7 @@ func LoadAuth(path string) (http.Header, error) {
 		if item.ValueEnv != "" {
 			value = os.Getenv(item.ValueEnv)
 		} else {
-			raw, e := os.ReadFile(item.ValueFile)
+			raw, e := securetransport.ReadTrustedFile(item.ValueFile)
 			if e != nil {
 				return nil, errors.New("auth header file unavailable")
 			}
@@ -98,7 +100,7 @@ type RunnerOptions struct {
 func (o RunnerOptions) Client() (*http.Client, error) {
 	tr := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: o.ServerName}}
 	if o.CAFile != "" {
-		pem, err := os.ReadFile(o.CAFile)
+		pem, err := securetransport.ReadTrustedFile(o.CAFile)
 		if err != nil {
 			return nil, errors.New("CA file unavailable")
 		}

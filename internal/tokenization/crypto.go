@@ -208,8 +208,8 @@ func (k *Keyring) seal(plaintext, aad []byte, version byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	dekNonce := make([]byte, 12)
-	if _, err := rand.Read(dekNonce); err != nil {
+	dekNonce, err := randomNonce(kekGCM)
+	if err != nil {
 		return nil, err
 	}
 	encDEK := kekGCM.Seal(nil, dekNonce, dek, nil)
@@ -217,8 +217,8 @@ func (k *Keyring) seal(plaintext, aad []byte, version byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	dataNonce := make([]byte, 12)
-	if _, err := rand.Read(dataNonce); err != nil {
+	dataNonce, err := randomNonce(dataGCM)
+	if err != nil {
 		return nil, err
 	}
 	ct := dataGCM.Seal(nil, dataNonce, plaintext, aad)
@@ -270,9 +270,8 @@ func (k *Keyring) open(blob, aad []byte) ([]byte, error) {
 	if len(blob) < 2+idLen+12+48+12 {
 		return nil, errors.New("ciphertext too short")
 	}
-	id := string(blob[2 : 2+idLen])
 	k.mu.RLock()
-	key, ok := k.keys[id]
+	key, ok := k.keys[string(blob[2:2+idLen])]
 	key = append([]byte(nil), key...)
 	k.mu.RUnlock()
 	if !ok {
@@ -347,6 +346,14 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
+func randomNonce(aead cipher.AEAD) ([]byte, error) {
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+	return nonce, nil
+}
+
 // Seal encrypts plaintext under a fresh data key.
 func (c *Crypto) Seal(plaintext []byte) ([]byte, error) {
 	return c.seal(plaintext, nil, blobVersion)
@@ -365,8 +372,8 @@ func (c *Crypto) seal(plaintext, aad []byte, version byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	dekNonce := make([]byte, 12)
-	if _, err := rand.Read(dekNonce); err != nil {
+	dekNonce, err := randomNonce(kekGCM)
+	if err != nil {
 		return nil, err
 	}
 	encDEK := kekGCM.Seal(nil, dekNonce, dek, nil)
@@ -375,8 +382,8 @@ func (c *Crypto) seal(plaintext, aad []byte, version byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	dataNonce := make([]byte, 12)
-	if _, err := rand.Read(dataNonce); err != nil {
+	dataNonce, err := randomNonce(dataGCM)
+	if err != nil {
 		return nil, err
 	}
 	ct := dataGCM.Seal(nil, dataNonce, plaintext, aad)

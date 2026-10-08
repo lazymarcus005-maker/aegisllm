@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 func main() {
@@ -17,7 +19,9 @@ func main() {
 	}
 	http.HandleFunc("/mcp", handle)
 	log.Printf("fake MCP listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, nil))
+	if err := securetransport.ServeHTTPServer(securetransport.NewHTTPServer(addr, http.DefaultServeMux), "", ""); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func handle(w http.ResponseWriter, r *http.Request) {

@@ -213,18 +213,18 @@ func SHA256Hex(data []byte) string {
 // RenderMarkdown renders the baseline as a report (T-030).
 func RenderMarkdown(b Baseline) string {
 	var s string
-	s += fmt.Sprintf("# security-v1 evaluation report\n\n")
+	s += "# security-v1 evaluation report\n\n"
 	s += fmt.Sprintf("- Generated: %s\n", b.GeneratedAt.UTC().Format(time.RFC3339))
 	s += fmt.Sprintf("- Dataset: %s (sha256 %s)\n", b.Dataset, b.DatasetSHA256[:16]+"…")
 	s += fmt.Sprintf("- Question schema: %s (sha256 %s)\n", b.QuestionSchema, b.QuestionSchemaSHA[:16]+"…")
 	s += fmt.Sprintf("- Provider: %s (checkpoint %q, revision %q)\n", b.Provider, b.Checkpoint, b.CheckpointRevision)
 	s += fmt.Sprintf("- Threshold policy: %s\n", b.ThresholdPolicy)
-	s += fmt.Sprintf("\n## Deterministic detectors\n\n")
-	s += fmt.Sprintf("| rows | TP | FP | FN | throughput rps | p95 ms |\n|---|---|---|---|---|---|\n")
+	s += "\n## Deterministic detectors\n\n"
+	s += "| rows | TP | FP | FN | throughput rps | p95 ms |\n|---|---|---|---|---|---|\n"
 	s += fmt.Sprintf("| %d | %d | %d | %d | %.0f | %.1f |\n",
 		b.Deterministic.Rows, b.Deterministic.TruePositives, b.Deterministic.FalsePositives,
 		b.Deterministic.FalseNegatives, b.Deterministic.ThroughputRPS, b.Deterministic.P95LatencyMS)
-	s += fmt.Sprintf("\n## Semantic questions\n\n")
+	s += "\n## Semantic questions\n\n"
 	if len(b.Semantic) == 0 {
 		s += "No semantic metrics recorded (provider absent or noop). Baseline pending a real laya-serve run.\n"
 		return s

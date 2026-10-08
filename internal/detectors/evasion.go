@@ -99,7 +99,6 @@ type sourceSpan struct{ message, part, start, end int }
 type projection struct {
 	text     string
 	byByte   []sourceSpan
-	parts    []sourceSpan
 	controls []sourceSpan
 }
 

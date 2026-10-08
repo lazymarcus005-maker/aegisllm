@@ -151,7 +151,7 @@ func newRemoteProvider(cfg HTTPProviderConfig, typeName, suffix string) (*remote
 		// Retain the reload handles so Close can stop their bounded pollers.
 		certFiles = loadedCertFiles
 	}
-	p := &remoteSpanProvider{cfg: cfg, typeName: typeName, auth: authFile, certFiles: certFiles, sem: make(chan struct{}, cfg.MaxConcurrent), breaker: newProviderBreaker(cfg.Breaker, cfg.BreakerOpen), status: ProviderStatus{ID: cfg.ID, Type: typeName, Languages: append([]string(nil), cfg.Languages...), Entities: mappingValues(cfg.EntityMappings), Available: true, Breaker: "closed"}}
+	p := &remoteSpanProvider{cfg: cfg, typeName: typeName, client: &http.Client{Transport: cfg.Transport, Timeout: cfg.Timeout}, auth: authFile, certFiles: certFiles, sem: make(chan struct{}, cfg.MaxConcurrent), breaker: newProviderBreaker(cfg.Breaker, cfg.BreakerOpen), status: ProviderStatus{ID: cfg.ID, Type: typeName, Languages: append([]string(nil), cfg.Languages...), Entities: mappingValues(cfg.EntityMappings), Available: true, Breaker: "closed"}}
 	_ = suffix
 	return p, nil
 }
@@ -263,7 +263,7 @@ func (p *remoteSpanProvider) call(ctx context.Context, text, language string) ([
 		}
 		req.Header.Set("Authorization", "Bearer "+secret)
 	}
-	resp, err := (&http.Client{Transport: p.cfg.Transport, Timeout: p.cfg.Timeout}).Do(req)
+	resp, err := p.client.Do(req)
 	if err != nil {
 		p.record(false, "transport", language, nil, time.Since(started))
 		return nil, errors.New("NER provider request failed")

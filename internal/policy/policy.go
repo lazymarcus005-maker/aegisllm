@@ -8,11 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"slices"
 	"strings"
 
 	"github.com/aegisllm/gateway/internal/core"
+	"github.com/aegisllm/gateway/internal/securetransport"
 	"gopkg.in/yaml.v3"
 )
 
@@ -374,7 +374,7 @@ func Load(data []byte) (*Policy, error) {
 
 // LoadFile reads and validates a policy file from disk.
 func LoadFile(path string) (*Policy, error) {
-	data, err := os.ReadFile(path)
+	data, err := securetransport.ReadTrustedFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("policy load: %w", err)
 	}

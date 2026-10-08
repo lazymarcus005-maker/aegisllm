@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/aegisllm/gateway/internal/securetransport"
 	"gopkg.in/yaml.v3"
 )
 
@@ -97,7 +97,7 @@ func LoadSemanticThresholds(data []byte) (*SemanticThresholds, error) {
 }
 
 func LoadSemanticThresholdsFile(path string) (*SemanticThresholds, error) {
-	data, err := os.ReadFile(path)
+	data, err := securetransport.ReadTrustedFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("threshold policy load: %w", err)
 	}

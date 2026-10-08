@@ -12,6 +12,7 @@ import (
 
 	"github.com/aegisllm/gateway/internal/evals"
 	"github.com/aegisllm/gateway/internal/pii"
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 func main() {
@@ -27,13 +28,13 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		if err := os.WriteFile(*datasetPath, data, 0o644); err != nil {
+		if err := os.WriteFile(*datasetPath, data, 0o600); err != nil {
 			log.Fatal(err)
 		}
 		fmt.Println("wrote synthetic non-production dataset to", *datasetPath)
 		return
 	}
-	data, err := os.ReadFile(*datasetPath)
+	data, err := securetransport.ReadTrustedFile(*datasetPath)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -78,12 +79,12 @@ func main() {
 	}
 	fmt.Print(string(jsonData))
 	if *jsonPath != "" {
-		if err := os.WriteFile(*jsonPath, jsonData, 0o644); err != nil {
+		if err := os.WriteFile(*jsonPath, jsonData, 0o600); err != nil {
 			log.Fatal(err)
 		}
 	}
 	if *reportPath != "" {
-		if err := os.WriteFile(*reportPath, []byte(evals.RenderPIIMarkdown(report)), 0o644); err != nil {
+		if err := os.WriteFile(*reportPath, []byte(evals.RenderPIIMarkdown(report)), 0o600); err != nil {
 			log.Fatal(err)
 		}
 	}

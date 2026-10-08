@@ -10,10 +10,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 
+	"github.com/aegisllm/gateway/internal/securetransport"
 	"gopkg.in/yaml.v3"
 )
 
@@ -64,7 +64,7 @@ func LoadQuestions(data []byte) (*QuestionSchema, error) {
 
 // LoadQuestionsFile reads and validates a question schema from disk.
 func LoadQuestionsFile(path string) (*QuestionSchema, error) {
-	data, err := os.ReadFile(path)
+	data, err := securetransport.ReadTrustedFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("question schema load: %w", err)
 	}

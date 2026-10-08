@@ -9,11 +9,11 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"hash/crc32"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -89,9 +89,7 @@ func (s Scope) canonical(includeCategory bool) []byte {
 }
 
 func itoa(value int) string {
-	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], uint64(value))
-	return hex.EncodeToString(buf[:])
+	return strconv.Itoa(value)
 }
 
 func (s Scope) digest(key []byte, includeCategory bool) string {

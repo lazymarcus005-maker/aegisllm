@@ -14,6 +14,7 @@ import (
 	"github.com/aegisllm/gateway/internal/detectors"
 	"github.com/aegisllm/gateway/internal/evals"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/securetransport"
 	"gopkg.in/yaml.v3"
 )
 
@@ -46,7 +47,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		if err := os.WriteFile(*datasetPath, data, 0o644); err != nil {
+		if err := os.WriteFile(*datasetPath, data, 0o600); err != nil {
 			log.Fatal(err)
 		}
 		fmt.Printf("wrote dataset to %s\n", *datasetPath)
@@ -70,7 +71,7 @@ func main() {
 			log.Fatal(err)
 		}
 		if *outputPath != "" {
-			if err := os.WriteFile(*outputPath, data, 0o644); err != nil {
+			if err := os.WriteFile(*outputPath, data, 0o600); err != nil {
 				log.Fatal(err)
 			}
 		}
@@ -80,7 +81,7 @@ func main() {
 		if *artifactPath == "" {
 			log.Fatal("-artifact is required")
 		}
-		artifactData, err := os.ReadFile(*artifactPath)
+		artifactData, err := securetransport.ReadTrustedFile(*artifactPath)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -107,7 +108,7 @@ func main() {
 			if dest == "" {
 				dest = *artifactPath
 			}
-			if err := os.WriteFile(dest, out, 0o644); err != nil {
+			if err := os.WriteFile(dest, out, 0o600); err != nil {
 				log.Fatal(err)
 			}
 			fmt.Printf("promoted reviewed artifact written to %s\n", dest)
@@ -133,7 +134,7 @@ func main() {
 	baseline.Deterministic = evals.RunDeterministic(rows, registry)
 	baseline.Semantic = evals.RunSemantic(rows, provider, allQuestionIDs(qs))
 	if *comparePath != "" {
-		oldData, err := os.ReadFile(*comparePath)
+		oldData, err := securetransport.ReadTrustedFile(*comparePath)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -154,19 +155,19 @@ func main() {
 	}
 	fmt.Print(string(out))
 	if *baselinePath != "" {
-		if err := os.WriteFile(*baselinePath, out, 0o644); err != nil {
+		if err := os.WriteFile(*baselinePath, out, 0o600); err != nil {
 			log.Fatal(err)
 		}
 	}
 	if *reportPath != "" {
-		if err := os.WriteFile(*reportPath, []byte(evals.RenderMarkdown(baseline)), 0o644); err != nil {
+		if err := os.WriteFile(*reportPath, []byte(evals.RenderMarkdown(baseline)), 0o600); err != nil {
 			log.Fatal(err)
 		}
 	}
 }
 
 func loadInputs(datasetPath, questionsPath string) ([]evals.Row, []byte, *decision.QuestionSchema, []byte) {
-	datasetData, err := os.ReadFile(datasetPath)
+	datasetData, err := securetransport.ReadTrustedFile(datasetPath)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -174,7 +175,7 @@ func loadInputs(datasetPath, questionsPath string) ([]evals.Row, []byte, *decisi
 	if err != nil {
 		log.Fatal(err)
 	}
-	questionsData, err := os.ReadFile(questionsPath)
+	questionsData, err := securetransport.ReadTrustedFile(questionsPath)
 	if err != nil {
 		log.Fatal(err)
 	}

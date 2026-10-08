@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
+
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 type CompareReport struct {
@@ -23,7 +24,7 @@ type SemanticDiff struct {
 }
 
 func LoadReport(path string) (Report, error) {
-	b, err := os.ReadFile(path)
+	b, err := securetransport.ReadTrustedFile(path)
 	if err != nil {
 		return Report{}, err
 	}

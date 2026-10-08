@@ -197,6 +197,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer srv.Close()
+	srv.SetBuildInfo(gateway.BuildInfo{Version: buildVersion, Commit: buildCommit, Date: buildDate})
 
 	// Versioned question schema (FR-009); invalid schema fails startup.
 	var questionSchema *decision.QuestionSchema

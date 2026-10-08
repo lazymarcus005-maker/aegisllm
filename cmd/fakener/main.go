@@ -9,6 +9,7 @@ import (
 	"regexp"
 
 	"github.com/aegisllm/gateway/internal/pii"
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 type request struct {
@@ -25,7 +26,9 @@ type responseSpan struct {
 func main() {
 	http.HandleFunc("/", handle)
 	log.Println("fake NER CI service listening on :8400")
-	log.Fatal(http.ListenAndServe(":8400", nil))
+	if err := securetransport.ServeHTTPServer(securetransport.NewHTTPServer(":8400", http.DefaultServeMux), "", ""); err != nil {
+		log.Fatal(err)
+	}
 }
 func handle(w http.ResponseWriter, r *http.Request) {
 	var in request

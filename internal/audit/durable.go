@@ -22,6 +22,7 @@ import (
 	"hash/crc32"
 	"io"
 	"math"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -131,7 +132,7 @@ func OpenWAL(cfg WALConfig) (*WAL, error) {
 	w := &WAL{cfg: cfg, key: append([]byte(nil), cfg.HMACKey...)}
 	if len(w.key) == 0 {
 		path := filepath.Join(cfg.Dir, "hmac.key")
-		data, err := os.ReadFile(path)
+		data, err := securetransport.ReadTrustedFile(path)
 		if errors.Is(err, os.ErrNotExist) {
 			w.key = make([]byte, 32)
 			if _, err = rand.Read(w.key); err != nil {
@@ -195,7 +196,7 @@ func (w *WAL) recover() error {
 		if no == 0 {
 			continue
 		}
-		f, err := os.OpenFile(filepath.Join(w.cfg.Dir, name), os.O_RDWR, 0600)
+		f, err := securetransport.OpenTrustedFile(filepath.Join(w.cfg.Dir, name), os.O_RDWR, 0600)
 		if err != nil {
 			return err
 		}
@@ -222,7 +223,6 @@ func (w *WAL) recover() error {
 					_ = f.Close()
 					return err
 				}
-				size = offset
 				break
 			}
 			if err != nil {
@@ -248,7 +248,7 @@ func (w *WAL) recover() error {
 	w.segment = last
 	w.segmentNo = segmentNumber(last)
 	path := filepath.Join(w.cfg.Dir, last)
-	w.file, err = os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0600)
+	w.file, err = securetransport.OpenTrustedFile(path, os.O_RDWR|os.O_APPEND, 0600)
 	if err != nil {
 		return err
 	}
@@ -348,7 +348,11 @@ func (w *WAL) Append(ctx context.Context, event Event) (Event, error) {
 	binary.BigEndian.PutUint16(frame[8:10], frameVersion)
 	binary.BigEndian.PutUint16(frame[10:12], flags)
 	binary.BigEndian.PutUint64(frame[12:20], w.next)
-	binary.BigEndian.PutUint32(frame[20:24], uint32(len(stored)))
+	frameLength := uint64(len(stored))
+	if frameLength > uint64(^uint32(0)) {
+		return Event{}, errors.New("audit frame is too large")
+	}
+	binary.BigEndian.PutUint32(frame[20:24], uint32(frameLength)) // #nosec G115 -- frameLength is bounded to uint32 above.
 	copy(frame[24:56], w.previous[:])
 	copy(frame[56:88], hash[:])
 	copy(frame[88:120], mac.Sum(nil))
@@ -405,7 +409,7 @@ func (w *WAL) replayFrom(ctx context.Context, after uint64, fn func(Event) error
 	var expected uint64 = 1
 	var prev [32]byte
 	for fileIndex, name := range files {
-		f, err := os.Open(filepath.Join(w.cfg.Dir, name))
+		f, err := securetransport.OpenTrustedFile(filepath.Join(w.cfg.Dir, name), os.O_RDONLY, 0)
 		if err != nil {
 			return err
 		}
@@ -551,7 +555,7 @@ func (w *WAL) rotate() error {
 }
 func (w *WAL) openSegment(no uint64) error {
 	name := fmt.Sprintf("segment-%020d.wal", no)
-	f, err := os.OpenFile(filepath.Join(w.cfg.Dir, name), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
+	f, err := securetransport.OpenTrustedFile(filepath.Join(w.cfg.Dir, name), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
 	if err != nil {
 		return err
 	}
@@ -622,8 +626,7 @@ func (w *WAL) decrypt(payload []byte, flags []byte) ([]byte, error) {
 	if len(payload) < 1+idLen {
 		return nil, errors.New("audit encryption frame invalid")
 	}
-	id := string(payload[1 : 1+idLen])
-	block := w.blocks[id]
+	block := w.blocks[string(payload[1:1+idLen])]
 	if block == nil {
 		return nil, errors.New("audit encryption key unavailable")
 	}
@@ -636,7 +639,7 @@ func (w *WAL) decrypt(payload []byte, flags []byte) ([]byte, error) {
 }
 
 func loadEncryptionKeyring(path string) (map[string][]byte, string, error) {
-	data, err := os.ReadFile(path)
+	data, err := securetransport.ReadTrustedFile(path)
 	if err != nil {
 		return nil, "", errors.New("audit encryption keyring unavailable")
 	}
@@ -860,7 +863,7 @@ func NewExporter(wal *WAL, cfg ExporterConfig) (*Exporter, error) {
 	}
 	e := &Exporter{wal: wal, cfg: cfg, client: &http.Client{Timeout: cfg.Timeout, Transport: &http.Transport{TLSClientConfig: tlsCfg}}, stop: make(chan struct{}), done: make(chan struct{}), state: ExporterStatus{State: "stopped"}}
 	e.certs = certs
-	if data, readErr := os.ReadFile(filepath.Join(wal.cfg.Dir, "export.checkpoint")); readErr == nil {
+	if data, readErr := securetransport.ReadTrustedFile(filepath.Join(wal.cfg.Dir, "export.checkpoint")); readErr == nil {
 		var cp checkpoint
 		if json.Unmarshal(data, &cp) == nil && cp.NextSequence > 0 {
 			e.checkpoint = cp.NextSequence - 1
@@ -952,7 +955,7 @@ func (e *Exporter) sendBatch(ctx context.Context, events []Event) error {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Idempotency-Key", stableIDs(ids))
 		if e.cfg.AuthFile != "" {
-			secret, err := os.ReadFile(e.cfg.AuthFile)
+			secret, err := securetransport.ReadTrustedFile(e.cfg.AuthFile)
 			if err != nil {
 				return errors.New("audit exporter credential unavailable")
 			}
@@ -1065,9 +1068,11 @@ func randomJitter(max time.Duration) int64 {
 	if max <= 0 {
 		return 0
 	}
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return int64(binary.BigEndian.Uint64(b[:]) % uint64(max/4+1))
+	value, err := rand.Int(rand.Reader, big.NewInt(max.Nanoseconds()/4+1))
+	if err != nil {
+		return 0
+	}
+	return value.Int64()
 }
 func min(a, b int) int {
 	if a < b {

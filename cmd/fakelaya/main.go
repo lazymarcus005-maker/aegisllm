@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 type request struct {
@@ -48,5 +50,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"provider": "laya", "checkpoint": "fake-checkpoint", "schema_version": "security-v1", "route": "fake", "decisions": decisions})
 	})
-	_ = http.ListenAndServe(":8300", nil)
+	if err := securetransport.ServeHTTPServer(securetransport.NewHTTPServer(":8300", http.DefaultServeMux), "", ""); err != nil {
+		panic(err)
+	}
 }

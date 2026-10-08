@@ -6,13 +6,9 @@ import (
 	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/hex"
-	"encoding/pem"
 	"errors"
-	"fmt"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/aegisllm/gateway/internal/securetransport"
@@ -317,38 +313,6 @@ func keyAlgorithm(key any) (string, error) {
 		return jwt.SigningMethodES256.Alg(), nil
 	default:
 		return "", errors.New("unsupported verification key")
-	}
-}
-
-func loadPublicKey(path string) (any, string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, "", err
-	}
-	block, _ := pem.Decode(data)
-	if block == nil {
-		return nil, "", errors.New("missing PEM block")
-	}
-	var key any
-	if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
-		key = cert.PublicKey
-	} else if key, err = x509.ParsePKIXPublicKey(block.Bytes); err != nil {
-		if rsaKey, rsaErr := x509.ParsePKCS1PublicKey(block.Bytes); rsaErr == nil {
-			key = rsaKey
-		} else {
-			return nil, "", err
-		}
-	}
-	switch k := key.(type) {
-	case *rsa.PublicKey:
-		return k, jwt.SigningMethodRS256.Alg(), nil
-	case *ecdsa.PublicKey:
-		if k.Curve != elliptic.P256() {
-			return nil, "", errors.New("only P-256 ES256 keys are supported")
-		}
-		return k, jwt.SigningMethodES256.Alg(), nil
-	default:
-		return nil, "", fmt.Errorf("unsupported public key type %T", key)
 	}
 }
 

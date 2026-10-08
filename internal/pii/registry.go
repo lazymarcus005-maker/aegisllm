@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -85,7 +84,7 @@ func LoadRegistryForProfile(data []byte, profile string) (*Registry, error) {
 }
 
 func LoadRegistryFile(path, profile string) (*Registry, error) {
-	data, err := os.ReadFile(path)
+	data, err := securetransport.ReadTrustedFile(path)
 	if err != nil {
 		return nil, errors.New("PII NER registry unavailable")
 	}

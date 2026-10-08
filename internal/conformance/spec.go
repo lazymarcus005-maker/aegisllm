@@ -9,11 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/aegisllm/gateway/internal/securetransport"
 	"gopkg.in/yaml.v3"
 )
 
@@ -67,7 +67,7 @@ func LoadSpecification(path string) (Specification, error) {
 	if strings.TrimSpace(path) == "" {
 		return DefaultSpecification(), nil
 	}
-	b, err := os.ReadFile(path)
+	b, err := securetransport.ReadTrustedFile(path)
 	if err != nil {
 		return Specification{}, err
 	}

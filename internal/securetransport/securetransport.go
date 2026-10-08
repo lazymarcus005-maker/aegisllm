@@ -132,10 +132,10 @@ func (f *File[T]) reload(initial bool) error {
 	if err != nil {
 		return f.failure(initial, err)
 	}
-	data, err := os.ReadFile(f.path)
+	data, err := ReadTrustedFile(f.path)
 	digestData := append([]byte(nil), data...)
 	if err == nil && f.dependent != "" {
-		dependent, dependentErr := os.ReadFile(f.dependent)
+		dependent, dependentErr := ReadTrustedFile(f.dependent)
 		if dependentErr != nil {
 			err = dependentErr
 		} else {
@@ -263,10 +263,7 @@ func ParsePublicKey(data []byte) (any, error) {
 func pemDecode(data []byte) ([]byte, []byte) {
 	for len(data) > 0 {
 		block, rest := decodePEM(data)
-		if block != nil {
-			return block, rest
-		}
-		return nil, nil
+		return block, rest
 	}
 	return nil, nil
 }
@@ -313,7 +310,11 @@ func (o ClientTLSOptions) TLSConfig() (*tls.Config, []*File[tls.Certificate], er
 			return nil, nil, errors.New("TLS client certificate and key must be provided together")
 		}
 		certFile, err := NewFileWithDependency(o.CertificateFile, o.KeyFile, o.PollInterval, func(data []byte) (tls.Certificate, time.Time, error) {
-			cert, err := tls.X509KeyPair(data, mustRead(o.KeyFile))
+			keyData, err := ReadTrustedFile(o.KeyFile)
+			if err != nil {
+				return tls.Certificate{}, time.Time{}, errors.New("TLS client key unavailable")
+			}
+			cert, err := tls.X509KeyPair(data, keyData)
 			if err != nil {
 				return tls.Certificate{}, time.Time{}, errors.New("invalid TLS client certificate")
 			}
@@ -333,12 +334,11 @@ func (o ClientTLSOptions) TLSConfig() (*tls.Config, []*File[tls.Certificate], er
 			return &cert, nil
 		}
 	}
-	return &tls.Config{MinVersion: o.MinVersion, MaxVersion: o.MaxVersion, RootCAs: roots, ServerName: o.ServerName, GetClientCertificate: getCert}, certFiles, nil
-}
-
-func mustRead(path string) []byte {
-	data, _ := os.ReadFile(path)
-	return data
+	config := &tls.Config{MinVersion: tls.VersionTLS12, MaxVersion: o.MaxVersion, RootCAs: roots, ServerName: o.ServerName, GetClientCertificate: getCert}
+	if o.MinVersion > config.MinVersion {
+		config.MinVersion = o.MinVersion
+	}
+	return config, certFiles, nil
 }
 
 func loadRoots(path string) (*x509.CertPool, error) {
@@ -349,7 +349,7 @@ func loadRoots(path string) (*x509.CertPool, error) {
 	if path == "" {
 		return pool, nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := ReadTrustedFile(path)
 	if err != nil || !pool.AppendCertsFromPEM(data) {
 		return nil, errors.New("invalid CA bundle")
 	}
@@ -389,7 +389,11 @@ func (o ServerTLSOptions) TLSConfig() (*tls.Config, []*File[tls.Certificate], er
 		return nil, nil, errors.New("invalid TLS version range")
 	}
 	certFile, err := NewFileWithDependency(o.CertificateFile, o.KeyFile, o.PollInterval, func(data []byte) (tls.Certificate, time.Time, error) {
-		cert, err := tls.X509KeyPair(data, mustRead(o.KeyFile))
+		keyData, err := ReadTrustedFile(o.KeyFile)
+		if err != nil {
+			return tls.Certificate{}, time.Time{}, errors.New("TLS server key unavailable")
+		}
+		cert, err := tls.X509KeyPair(data, keyData)
 		if err != nil {
 			return tls.Certificate{}, time.Time{}, errors.New("invalid TLS server certificate")
 		}
@@ -398,7 +402,7 @@ func (o ServerTLSOptions) TLSConfig() (*tls.Config, []*File[tls.Certificate], er
 	if err != nil {
 		return nil, nil, err
 	}
-	config := &tls.Config{MinVersion: o.MinVersion, MaxVersion: o.MaxVersion, ClientAuth: tls.NoClientCert,
+	config := &tls.Config{MinVersion: tls.VersionTLS12, MaxVersion: o.MaxVersion, ClientAuth: tls.NoClientCert,
 		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 			cert, err := certFile.Get()
 			if err != nil {
@@ -406,12 +410,15 @@ func (o ServerTLSOptions) TLSConfig() (*tls.Config, []*File[tls.Certificate], er
 			}
 			return &cert, nil
 		}}
+	if o.MinVersion > config.MinVersion {
+		config.MinVersion = o.MinVersion
+	}
 	if o.RequireClient {
 		if o.ClientCAFile == "" {
 			certFile.Close()
 			return nil, nil, errors.New("mTLS client CA is required")
 		}
-		caData, err := os.ReadFile(o.ClientCAFile)
+		caData, err := ReadTrustedFile(o.ClientCAFile)
 		if err != nil {
 			certFile.Close()
 			return nil, nil, errors.New("mTLS client CA is unreadable")

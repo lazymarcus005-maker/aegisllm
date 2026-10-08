@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/aegisllm/gateway/internal/audit"
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 func main() {
@@ -84,7 +85,7 @@ func keyMaterial(path string) ([]byte, error) {
 	if path == "" {
 		return nil, nil
 	}
-	return os.ReadFile(path)
+	return securetransport.ReadTrustedFile(path)
 }
 
 func usage() { fmt.Fprintln(os.Stderr, "usage: audittool verify|inspect|repair -dir PATH [-confirm]") }

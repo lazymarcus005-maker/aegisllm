@@ -1,7 +1,7 @@
 {
   "schema_version": "aegisllm.benchmark/v1",
   "host_class": "shared-host-advisory",
-  "go": "go1.25.0",
+  "go": "go1.25.13",
   "gomaxprocs": 1,
   "runs": 5,
   "regression_tolerance": {"ns_per_op": 0.25, "allocs_per_op": 0.25},

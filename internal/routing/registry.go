@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"path"
 	"regexp"
 	"slices"
@@ -20,6 +19,7 @@ import (
 	"time"
 
 	"github.com/aegisllm/gateway/internal/core"
+	"github.com/aegisllm/gateway/internal/securetransport"
 	"gopkg.in/yaml.v3"
 )
 
@@ -256,7 +256,7 @@ func validSHA256(value string) bool {
 }
 
 func LoadFile(file string) (*Registry, error) {
-	data, err := os.ReadFile(file)
+	data, err := securetransport.ReadTrustedFile(file)
 	if err != nil {
 		return nil, errors.New("upstream registry unavailable")
 	}
