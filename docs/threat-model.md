@@ -100,6 +100,22 @@ not treat the dashboard as the durable audit source.
 
 # P1.10 release and supply-chain threats
 
+# P2.1 multimodal/document DLP
+
+Attachment references are normalized before forwarding and inspected under
+encoded/decoded byte, count/page/text, archive expansion, timeout, and
+cancellation budgets. MIME is checked against magic bytes. URL sources require
+HTTPS, host allowlisting, DNS/IP validation on every redirect, bounded reads,
+response MIME verification, and a separate fetch client with no caller or
+extractor mTLS credentials. `file://`, credentials, query-bearing URLs, and
+unallowlisted/private destinations fail closed. Extracted text joins the
+existing detector/PII/evasion/semantic/policy path, including cross-part
+state; audit and metrics contain only bounded metadata and hashes. Unsupported
+binary reconstruction blocks rather than claiming REDACT/TOKENIZE succeeded.
+
+Remaining promotion risks are the real OCR/document engine, private PKI and
+rotation, network DNS/redirect operations, and production data calibration.
+
 The release boundary treats tool/database outages as blockers, not passes. A
 pinned Debian Go image supplies the race compiler; reproducible hash comparison,
 CycloneDX SBOM, final-image vulnerability scan, secret scan, least-privilege

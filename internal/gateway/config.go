@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aegisllm/gateway/internal/attachment"
 	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/pii"
@@ -108,6 +109,24 @@ type Config struct {
 	LayaTLSServerName              string
 	PIIRegistryFile                string
 	PIIRequireNER                  bool
+	AttachmentEnabled              bool
+	AttachmentAdapter              string
+	AttachmentExtractorURL         string
+	AttachmentAllowedHosts         []string
+	AttachmentAllowPrivateHosts    bool
+	AttachmentMaxEncodedBytes      int64
+	AttachmentMaxDecodedBytes      int64
+	AttachmentMaxTextBytes         int
+	AttachmentMaxCount             int
+	AttachmentMaxPages             int
+	AttachmentMaxExpansionRatio    int64
+	AttachmentTimeout              time.Duration
+	AttachmentMaxRedirects         int
+	AttachmentAllowedMIMEs         []string
+	AttachmentTLSCAFile            string
+	AttachmentTLSCertFile          string
+	AttachmentTLSKeyFile           string
+	AttachmentTLSServerName        string
 	HeaderApplication              string
 	HeaderTenant                   string
 	HeaderUser                     string
@@ -270,6 +289,24 @@ func configFrom(get func(string) string) Config {
 		LayaTLSServerName:              get("LAYA_TLS_SERVER_NAME"),
 		PIIRegistryFile:                get("PII_NER_REGISTRY_FILE"),
 		PIIRequireNER:                  getenvBool(get, "PII_NER_REQUIRED", profile == ProfileProduction),
+		AttachmentEnabled:              getenvBool(get, "DLP_ATTACHMENT_ENABLED", profile == ProfileProduction || profile == ProfileShadow),
+		AttachmentAdapter:              getenvDefault(get, "DLP_ATTACHMENT_ADAPTER", "builtin"),
+		AttachmentExtractorURL:         get("DLP_ATTACHMENT_EXTRACTOR_URL"),
+		AttachmentAllowedHosts:         splitCSV(get("DLP_ATTACHMENT_ALLOWED_HOSTS")),
+		AttachmentAllowPrivateHosts:    getenvBool(get, "DLP_ATTACHMENT_ALLOW_PRIVATE_HOSTS", false),
+		AttachmentMaxEncodedBytes:      getenvInt64(get, "DLP_ATTACHMENT_MAX_ENCODED_BYTES", attachment.DefaultMaxEncodedBytes),
+		AttachmentMaxDecodedBytes:      getenvInt64(get, "DLP_ATTACHMENT_MAX_DECODED_BYTES", attachment.DefaultMaxDecodedBytes),
+		AttachmentMaxTextBytes:         getenvInt(get, "DLP_ATTACHMENT_MAX_TEXT_BYTES", attachment.DefaultMaxTextBytes),
+		AttachmentMaxCount:             getenvInt(get, "DLP_ATTACHMENT_MAX_COUNT", attachment.DefaultMaxAttachments),
+		AttachmentMaxPages:             getenvInt(get, "DLP_ATTACHMENT_MAX_PAGES", attachment.DefaultMaxPages),
+		AttachmentMaxExpansionRatio:    getenvInt64(get, "DLP_ATTACHMENT_MAX_EXPANSION_RATIO", 20),
+		AttachmentTimeout:              getenvDuration(get, "DLP_ATTACHMENT_TIMEOUT", attachment.DefaultTimeout),
+		AttachmentMaxRedirects:         getenvInt(get, "DLP_ATTACHMENT_MAX_REDIRECTS", 2),
+		AttachmentAllowedMIMEs:         splitCSV(getenvDefault(get, "DLP_ATTACHMENT_ALLOWED_MIME_TYPES", strings.Join(attachment.DefaultAllowedMIMEs, ","))),
+		AttachmentTLSCAFile:            get("DLP_ATTACHMENT_TLS_CA_FILE"),
+		AttachmentTLSCertFile:          get("DLP_ATTACHMENT_TLS_CERT_FILE"),
+		AttachmentTLSKeyFile:           get("DLP_ATTACHMENT_TLS_KEY_FILE"),
+		AttachmentTLSServerName:        get("DLP_ATTACHMENT_TLS_SERVER_NAME"),
 		HeaderApplication:              getenvDefault(get, "HEADER_APPLICATION", "X-Application-Id"),
 		HeaderTenant:                   getenvDefault(get, "HEADER_TENANT", "X-Tenant-Id"),
 		HeaderUser:                     getenvDefault(get, "HEADER_USER", "X-User-Id"),
@@ -413,6 +450,30 @@ func ValidateConfig(cfg Config) error {
 	if cfg.StreamFlushInterval == 0 {
 		cfg.StreamFlushInterval = streamDefaults.StreamFlushInterval
 	}
+	if cfg.AttachmentMaxEncodedBytes == 0 {
+		cfg.AttachmentMaxEncodedBytes = streamDefaults.AttachmentMaxEncodedBytes
+	}
+	if cfg.AttachmentMaxDecodedBytes == 0 {
+		cfg.AttachmentMaxDecodedBytes = streamDefaults.AttachmentMaxDecodedBytes
+	}
+	if cfg.AttachmentMaxTextBytes == 0 {
+		cfg.AttachmentMaxTextBytes = streamDefaults.AttachmentMaxTextBytes
+	}
+	if cfg.AttachmentMaxCount == 0 {
+		cfg.AttachmentMaxCount = streamDefaults.AttachmentMaxCount
+	}
+	if cfg.AttachmentMaxPages == 0 {
+		cfg.AttachmentMaxPages = streamDefaults.AttachmentMaxPages
+	}
+	if cfg.AttachmentMaxExpansionRatio == 0 {
+		cfg.AttachmentMaxExpansionRatio = streamDefaults.AttachmentMaxExpansionRatio
+	}
+	if cfg.AttachmentTimeout == 0 {
+		cfg.AttachmentTimeout = streamDefaults.AttachmentTimeout
+	}
+	if cfg.AttachmentMaxRedirects == 0 {
+		cfg.AttachmentMaxRedirects = streamDefaults.AttachmentMaxRedirects
+	}
 	if cfg.TLSMinVersion == 0 {
 		cfg.TLSMinVersion = tls.VersionTLS12
 	}
@@ -457,6 +518,9 @@ func ValidateConfig(cfg Config) error {
 		return err
 	}
 	if err := validateSemanticConfig(cfg); err != nil {
+		return err
+	}
+	if err := validateAttachmentConfig(cfg, profile); err != nil {
 		return err
 	}
 	if profile != ProfileProduction {
@@ -583,6 +647,46 @@ func ValidateConfig(cfg Config) error {
 	// Threshold artifacts are mandatory and strictly validated only when
 	// semantic enforcement is requested. Deterministic-only production may
 	// omit or ignore semantic artifacts and reports semantic=disabled.
+	return nil
+}
+
+func validateAttachmentConfig(cfg Config, profile DeploymentProfile) error {
+	if cfg.AttachmentMaxEncodedBytes <= 0 || cfg.AttachmentMaxDecodedBytes <= 0 || cfg.AttachmentMaxTextBytes <= 0 || cfg.AttachmentMaxCount <= 0 || cfg.AttachmentMaxPages <= 0 || cfg.AttachmentMaxExpansionRatio <= 0 || cfg.AttachmentTimeout <= 0 || cfg.AttachmentMaxRedirects < 0 {
+		return errors.New("attachment limits and timeout must be positive")
+	}
+	if cfg.AttachmentEnabled && len(cfg.AttachmentAllowedMIMEs) == 0 {
+		return errors.New("DLP_ATTACHMENT_ALLOWED_MIME_TYPES must not be empty")
+	}
+	if !cfg.AttachmentEnabled {
+		if profile == ProfileProduction && strings.TrimSpace(cfg.AttachmentAdapter) != "" {
+			return errors.New("production cannot disable configured attachment DLP")
+		}
+		return nil
+	}
+	if cfg.AttachmentAdapter != "builtin" && cfg.AttachmentAdapter != "http" {
+		return errors.New("DLP_ATTACHMENT_ADAPTER must be builtin or http")
+	}
+	if profile == ProfileProduction {
+		if cfg.AttachmentAdapter != "http" || strings.TrimSpace(cfg.AttachmentExtractorURL) == "" {
+			return errors.New("production attachment extraction requires authenticated private HTTP adapter")
+		}
+		u, ok := parseDependencyURL(cfg.AttachmentExtractorURL)
+		if !ok || !strings.EqualFold(u.Scheme, "https") || u.User != nil || u.RawQuery != "" {
+			return errors.New("production attachment extractor must use verified HTTPS without credentials or query data")
+		}
+		if len(cfg.AttachmentAllowedHosts) == 0 {
+			return errors.New("production attachment URL sources require DLP_ATTACHMENT_ALLOWED_HOSTS")
+		}
+		if cfg.AttachmentTLSCAFile == "" || cfg.AttachmentTLSCertFile == "" || cfg.AttachmentTLSKeyFile == "" {
+			return errors.New("production attachment extractor requires CA and client certificate/key")
+		}
+		if !cfg.AttachmentAllowPrivateHosts {
+			return errors.New("production attachment private service policy must explicitly allow private hosts")
+		}
+	}
+	if (cfg.AttachmentTLSCertFile == "") != (cfg.AttachmentTLSKeyFile == "") {
+		return errors.New("attachment TLS certificate and key must be paired")
+	}
 	return nil
 }
 
@@ -953,6 +1057,16 @@ func getenvDefault(get func(string) string, key, def string) string {
 		return v
 	}
 	return def
+}
+
+func splitCSV(value string) []string {
+	var out []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func getenvInt64(get func(string) string, key string, def int64) int64 {

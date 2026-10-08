@@ -31,6 +31,15 @@ separate feature-roadmap file).
 ## P2 — expanded coverage
 
 - [x] P2.1 Streaming inspection and enforcement (delivered early as P0.3).
+- [x] P2.1 Production multimodal/document DLP boundary: bounded OpenAI,
+  Anthropic, and generic attachment normalization; private extractor seam;
+  fail-closed MIME/base64/archive/URL/SSRF/timeout limits; shared extracted
+  text policy path; honest binary action semantics; readiness and audit-safe
+  metadata. Evidence class: contract and fake-service integration only;
+  real OCR/document engines, production PKI, and data calibration remain
+  promotion dependencies. Evidence: `internal/attachment/attachment_test.go`,
+  `internal/gateway/multimodal_test.go`, and
+  `docs/multimodal-document-dlp.md`.
 - [ ] P2.2 Credential brokering and deeper MCP/runtime integration.
 - [ ] P2.3 Richer entity detection and multi-tenant vault namespaces (bounded cross-message detection moved into P1.4).
 

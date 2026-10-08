@@ -47,6 +47,10 @@ type RuntimeRecorder interface {
 	DecActiveRequests()
 }
 
+// AttachmentObserver is optional so existing custom Recorder implementations
+// remain source-compatible. Labels are fixed contract metadata only.
+type AttachmentObserver interface{ ObserveAttachment(outcome, adapter string) }
+
 // DashboardObserver receives the bounded, content-free events used by the
 // operator dashboard's rolling window. It is deliberately separate from the
 // Prometheus exposition surface so the dashboard never parses text metrics or
@@ -108,6 +112,7 @@ type Metrics struct {
 	nerCalls            *prometheus.CounterVec
 	nerLatency          *prometheus.HistogramVec
 	evasion             *prometheus.CounterVec
+	attachments         *prometheus.CounterVec
 	distribution        *prometheus.CounterVec
 	auditEnqueued       prometheus.Counter
 	auditDurable        prometheus.Counter
@@ -251,6 +256,7 @@ func New() *Metrics {
 		nerCalls:            prometheus.NewCounterVec(prometheus.CounterOpts{Name: "pii_ner_calls_total", Help: "Local NER calls by bounded provider/entity/language/confidence and outcome."}, []string{"provider", "entity", "language", "confidence_bucket", "error", "fallback"}),
 		nerLatency:          prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "pii_ner_latency_ms", Help: "Local NER latency by bounded provider and language."}, []string{"provider", "language"}),
 		evasion:             prometheus.NewCounterVec(prometheus.CounterOpts{Name: "evasion_events_total", Help: "Bounded canonicalization/evasion events by type, depth, action, and budget outcome."}, []string{"type", "encoding_depth", "action", "budget_rejected"}),
+		attachments:         prometheus.NewCounterVec(prometheus.CounterOpts{Name: "attachment_inspection_total", Help: "Bounded multimodal inspection outcomes by contract result and adapter."}, []string{"outcome", "adapter"}),
 		distribution:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "policy_distribution_events_total", Help: "Signed policy distribution events by bounded event, reason, and key ID."}, []string{"event", "reason", "key_id"}),
 		auditEnqueued:       prometheus.NewCounter(prometheus.CounterOpts{Name: "audit_enqueue_total", Help: "Audit events accepted by the audit API."}),
 		auditDurable:        prometheus.NewCounter(prometheus.CounterOpts{Name: "audit_durable_total", Help: "Audit events durably appended to the WAL."}),
@@ -272,8 +278,20 @@ func New() *Metrics {
 		m.breakerOpen, m.activeRequests, m.activeLaya, m.calibrationInfo, m.semanticRejected,
 		m.schemaMismatch, m.checkpointMismatch, m.missingDecisions, m.fallbackReasons, m.distribution,
 		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring, m.routeSelected, m.routeFailover, m.routeHealth, m.routeRejected, m.routeUnavailable, m.nerCalls, m.nerLatency, m.evasion,
-		m.auditEnqueued, m.auditDurable, m.auditExported, m.auditRetried, m.auditDeadLetter, m.auditCorruption, m.auditDropped, m.auditQueueBytes, m.auditOldestAge, m.auditExporterState)
+		m.attachments, m.auditEnqueued, m.auditDurable, m.auditExported, m.auditRetried, m.auditDeadLetter, m.auditCorruption, m.auditDropped, m.auditQueueBytes, m.auditOldestAge, m.auditExporterState)
 	return m
+}
+
+func (m *Metrics) ObserveAttachment(outcome, adapter string) {
+	switch outcome {
+	case "allow", "blocked", "failed", "canceled":
+	default:
+		outcome = "other"
+	}
+	if adapter != "builtin" && adapter != "http" {
+		adapter = "other"
+	}
+	m.attachments.WithLabelValues(outcome, adapter).Inc()
 }
 
 func (m *Metrics) ObserveAuditEnqueue() {
@@ -716,6 +734,7 @@ func (Noop) ObserveMissingDecision()                                            
 func (Noop) ObserveTokens(int, string)                                                          {}
 func (Noop) ObserveStream(core.Direction, string, core.Action, core.Action, string, int64, int) {}
 func (Noop) ObserveFalsePositiveSample()                                                        {}
+func (Noop) ObserveAttachment(string, string)                                                   {}
 func (Noop) ObserveRateLimited()                                                                {}
 func (Noop) ObserveConcurrencyRejected()                                                        {}
 func (Noop) ObservePromptBudgetRejected()                                                       {}

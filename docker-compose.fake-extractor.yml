@@ -1,0 +1,10 @@
+# Synthetic CI-only extraction contract fixture. It does not represent OCR or
+# document-engine quality and must never be used as a production adapter.
+services:
+  fake-extractor:
+    build:
+      context: .
+      dockerfile: Dockerfile.fake-extractor
+    profiles: [attachment-ci]
+    expose:
+      - "8421"

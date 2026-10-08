@@ -33,6 +33,15 @@ func TestOpenAISecretSplitAcrossDeltasNeverReachesClient(t *testing.T) {
 	}
 }
 
+func TestStreamAttachmentShapeFailsClosedBeforeTextRelease(t *testing.T) {
+	if !streamDataHasAttachment([]byte(`{"type":"image_url","image_url":{"url":"data:image/png;base64,AA"}}`)) {
+		t.Fatal("attachment-shaped SSE event was not recognized")
+	}
+	if streamDataHasAttachment([]byte(`{"delta":{"content":"the word attachment is harmless"}}`)) {
+		t.Fatal("plain text mentioning attachment was misclassified")
+	}
+}
+
 func TestAnthropicSplitPIIIsTokenizedWithValidSSE(t *testing.T) {
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/aegisllm/gateway/internal/attachment"
 	"github.com/aegisllm/gateway/internal/audit"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/decision"
@@ -42,6 +43,21 @@ type SecurityPipeline struct {
 	candidate       atomic.Pointer[RuntimeSnapshot]
 	canaryEligible  func(*core.InspectionEnvelope) bool
 	canaryObserve   func(bool)
+	attachments     *attachment.Inspector
+}
+
+// SetAttachmentInspector mounts the bounded multimodal boundary. It is kept
+// separate from detector registration so a missing extractor cannot silently
+// become a text-only inspection path.
+func (p *SecurityPipeline) SetAttachmentInspector(inspector *attachment.Inspector) {
+	p.attachments = inspector
+}
+
+func (p *SecurityPipeline) AttachmentStatus() attachment.Status {
+	if p.attachments == nil {
+		return attachment.Status{}
+	}
+	return p.attachments.Status()
 }
 
 func (p *SecurityPipeline) recordAudit(ctx context.Context, event audit.Event) error {
@@ -148,6 +164,9 @@ func (p *SecurityPipeline) evasionConfig() detectors.EvasionConfig {
 }
 
 func (p *SecurityPipeline) Close() {
+	if p.attachments != nil {
+		p.attachments.Close()
+	}
 	if provider, ok := p.spans.(interface{ Close() }); ok {
 		provider.Close()
 	}

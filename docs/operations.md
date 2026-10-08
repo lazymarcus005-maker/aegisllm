@@ -80,6 +80,20 @@ and evicted using `LIMITER_MAX_KEYS` and `LIMITER_KEY_IDLE_TIMEOUT`.
 These limits are process-local; multi-instance global enforcement requires an
 external/distributed limiter and is deferred.
 
+### Multimodal/document DLP
+
+Production attachment DLP uses the private HTTPS extractor adapter with
+`DLP_ATTACHMENT_ALLOWED_HOSTS`, explicit private-host policy, CA material, and
+mTLS client certificate/key files. Keep byte, count, page, expansion, text,
+timeout, and redirect limits bounded. `/ready` is not ready when production
+attachment DLP is disabled or extractor TLS material is unavailable.
+
+The builtin adapter and `cmd/fakeextractor` prove contracts only. Before
+promotion, validate the real OCR/document engine behind the private adapter,
+issue and rotate its PKI, test DNS/redirect policy from the gateway network,
+and run a reviewed sensitive-data calibration set. Never log media URLs with
+credentials, extracted text, raw bytes, or base64 bodies.
+
 `MAX_PROMPT_CHARS` is measured over normalized text parts before scanners or
 upstream forwarding and returns `413`. Non-stream responses are bounded by
 `MAX_RESPONSE_BYTES` before any bytes are written. Streaming requests are

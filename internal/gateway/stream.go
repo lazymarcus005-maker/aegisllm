@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -112,6 +113,13 @@ func (s *Server) copyStreamResponse(w http.ResponseWriter, resp *http.Response, 
 			_ = state.write(event.Raw)
 			return
 		}
+		if streamDataHasAttachment([]byte(event.Data)) {
+			// SSE reconstruction is text-fragment aware but cannot safely
+			// rebuild arbitrary binary protocol blocks. Do not release an
+			// attachment-shaped event through the text-only stream path.
+			state.terminalError("STREAM_ATTACHMENT_UNSUPPORTED", http.StatusBadGateway)
+			return
+		}
 		fragments, err := streaming.Extract(state.family, event.Data)
 		if err != nil {
 			if s.cfg.StreamingFailClosed || s.cfg.DeploymentProfile == ProfileProduction {
@@ -134,6 +142,36 @@ func (s *Server) copyStreamResponse(w http.ResponseWriter, resp *http.Response, 
 			return
 		}
 	}
+}
+
+func streamDataHasAttachment(data []byte) bool {
+	var value any
+	if json.Unmarshal(data, &value) != nil {
+		return false
+	}
+	var walk func(any) bool
+	walk = func(v any) bool {
+		switch item := v.(type) {
+		case map[string]any:
+			for key, child := range item {
+				switch strings.ToLower(key) {
+				case "image_url", "input_image", "input_file", "file_data", "document", "attachment", "attachments":
+					return true
+				}
+				if walk(child) {
+					return true
+				}
+			}
+		case []any:
+			for _, child := range item {
+				if walk(child) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return walk(value)
 }
 
 func (s *streamState) add(event streaming.Event, fragments []streaming.Fragment) error {

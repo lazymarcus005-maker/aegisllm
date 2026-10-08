@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aegisllm/gateway/internal/attachment"
 	"github.com/aegisllm/gateway/internal/audit"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/pii"
@@ -27,10 +28,35 @@ func (p *SecurityPipeline) ProcessRequestContext(ctx context.Context, env *core.
 	if p.mode == ModeOff {
 		return RequestDecision{Action: core.ActionAllow}, nil
 	}
+	if p.attachments != nil {
+		if err := p.attachments.Inspect(ctx, env); err != nil {
+			p.observeAttachment("failed")
+			if ae, ok := err.(*attachment.Error); ok {
+				dec := RequestDecision{Action: core.ActionBlock, Code: ae.Code}
+				ins := &inspection{env: env, start: time.Now(), dec: policy.Decision{Action: core.ActionBlock, PolicyID: p.current().Engine.Policy().ID, PolicyVersion: p.current().Engine.Policy().Version, Code: ae.Code, MatchedRule: "attachment_contract", Reason: "attachment inspection failed"}}
+				_ = p.recordAudit(ctx, p.auditEvent(ins))
+				return dec, nil
+			}
+			return RequestDecision{}, err
+		}
+		p.observeAttachment("allow")
+	}
 	ins := p.inspectContext(ctx, env)
 	var transformed []byte
 	switch ins.dec.Action {
 	case core.ActionRedact, core.ActionTokenize:
+		if hasAttachmentFinding(env, ins.findings) {
+			// Binary reconstruction is format-specific and is not claimed by
+			// this gateway. A policy transformation must never be reported as
+			// successful when the original attachment would still be forwarded.
+			ins.dec.Action = core.ActionBlock
+			ins.dec.Code = "ATTACHMENT_TRANSFORM_UNSUPPORTED"
+			ins.dec.Reason = "attachment transformation is unavailable"
+			if err := p.recordAudit(ctx, p.auditEvent(ins)); err != nil {
+				return RequestDecision{}, err
+			}
+			return RequestDecision{Action: core.ActionBlock, Code: ins.dec.Code}, nil
+		}
 		namer := pii.RedactNamer
 		if ins.dec.Action == core.ActionTokenize {
 			namer = pii.TokenNamer
@@ -61,6 +87,19 @@ func (p *SecurityPipeline) ProcessRequestContext(ctx context.Context, env *core.
 		return RequestDecision{}, err
 	}
 	return RequestDecision{Action: ins.dec.Action, Code: ins.dec.Code, TransformedBody: transformed}, nil
+}
+
+func hasAttachmentFinding(env *core.InspectionEnvelope, findings []core.SecurityFinding) bool {
+	for _, finding := range findings {
+		if finding.Location.MessageIndex < 0 || finding.Location.MessageIndex >= len(env.Messages) {
+			continue
+		}
+		parts := env.Messages[finding.Location.MessageIndex].Parts
+		if finding.Location.PartIndex >= 0 && finding.Location.PartIndex < len(parts) && parts[finding.Location.PartIndex].Attachment != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *SecurityPipeline) storeTokenMappings(env *core.InspectionEnvelope, plan []pii.Transformation, dec policy.Decision) error {
@@ -300,11 +339,30 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 		return ResponseOutcome{}, err
 	}
 	deriveResponseEnvelope(respEnv, reqEnv)
+	if p.attachments != nil {
+		if err := p.attachments.Inspect(context.Background(), respEnv); err != nil {
+			p.observeAttachment("failed")
+			if ae, ok := err.(*attachment.Error); ok {
+				ins := &inspection{env: respEnv, start: time.Now(), dec: policy.Decision{Action: core.ActionBlock, Code: ae.Code, Reason: "attachment inspection failed"}}
+				_ = p.recordAudit(context.Background(), p.auditEvent(ins))
+				return ResponseOutcome{Action: core.ActionBlock, Code: ae.Code}, nil
+			}
+			return ResponseOutcome{}, err
+		}
+		p.observeAttachment("allow")
+	}
 	ins := p.inspect(respEnv)
 	outcome := ResponseOutcome{Action: ins.dec.Action, Code: ins.dec.Code}
 	switch ins.dec.Action {
 	case core.ActionBlock, core.ActionReview:
 	case core.ActionRedact, core.ActionTokenize:
+		if hasAttachmentFinding(respEnv, ins.findings) {
+			ins.dec.Action = core.ActionBlock
+			ins.dec.Code = "ATTACHMENT_TRANSFORM_UNSUPPORTED"
+			ins.dec.Reason = "attachment transformation is unavailable"
+			outcome.Action, outcome.Code = ins.dec.Action, ins.dec.Code
+			break
+		}
 		plan := pii.Plan(ins.findings, pii.RedactNamer)
 		outcome.Transformations = plan
 	}
@@ -349,6 +407,12 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 		return ResponseOutcome{}, err
 	}
 	return outcome, nil
+}
+
+func (p *SecurityPipeline) observeAttachment(outcome string) {
+	if observer, ok := p.recorder.(interface{ ObserveAttachment(string, string) }); ok && p.attachments != nil {
+		observer.ObserveAttachment(outcome, p.attachments.Status().Adapter)
+	}
 }
 
 func responseRestoreAllowed(raw []byte) bool {

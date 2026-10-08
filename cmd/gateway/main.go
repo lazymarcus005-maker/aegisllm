@@ -18,6 +18,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/aegisllm/gateway/internal/attachment"
 	"github.com/aegisllm/gateway/internal/audit"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/decision"
@@ -267,6 +268,35 @@ func main() {
 	// Security mode is not stated here: Server.SetPipeline propagates
 	// cfg.SecurityMode into the pipeline — the server owns the mode.
 	pipe := gateway.NewSecurityPipeline(registry, policy.NewEngine(pol), sink)
+	attachmentInspector, attachmentErr := attachment.New(attachment.Config{
+		Enabled: cfg.AttachmentEnabled, Production: cfg.DeploymentProfile == gateway.ProfileProduction,
+		Adapter: cfg.AttachmentAdapter, EndpointURL: cfg.AttachmentExtractorURL,
+		AllowedHosts: cfg.AttachmentAllowedHosts, AllowPrivateHosts: cfg.AttachmentAllowPrivateHosts,
+		MaxEncodedBytes: cfg.AttachmentMaxEncodedBytes, MaxDecodedBytes: cfg.AttachmentMaxDecodedBytes,
+		MaxTextBytes: cfg.AttachmentMaxTextBytes, MaxAttachments: cfg.AttachmentMaxCount, MaxPages: cfg.AttachmentMaxPages,
+		MaxExpansionRatio: cfg.AttachmentMaxExpansionRatio, Timeout: cfg.AttachmentTimeout, MaxRedirects: cfg.AttachmentMaxRedirects,
+		AllowedMIMEs: cfg.AttachmentAllowedMIMEs,
+		TLS:          securetransport.ClientTLSOptions{CAFile: cfg.AttachmentTLSCAFile, CertificateFile: cfg.AttachmentTLSCertFile, KeyFile: cfg.AttachmentTLSKeyFile, ServerName: cfg.AttachmentTLSServerName, MinVersion: cfg.TLSMinVersion, MaxVersion: cfg.TLSMaxVersion, PollInterval: cfg.TLSReloadInterval, Metrics: metrics},
+	}, nil)
+	if attachmentErr != nil {
+		logger.Error("attachment extractor unavailable")
+		os.Exit(1)
+	}
+	for n, status := range attachmentInspector.MaterialStatuses() {
+		srv.AddMaterialReadiness(fmt.Sprintf("attachment_tls_material_%d", n+1), status)
+	}
+	defer attachmentInspector.Close()
+	pipe.SetAttachmentInspector(attachmentInspector)
+	srv.AddReadinessCheck("attachment_dlp", func() string {
+		status := attachmentInspector.Status()
+		if cfg.DeploymentProfile == gateway.ProfileProduction && !status.Enabled {
+			return "attachment DLP disabled"
+		}
+		if status.Enabled && !status.Ready {
+			return "attachment extractor unavailable"
+		}
+		return ""
+	})
 	spanProviders := []pii.SpanProvider{pii.NewRegexSpanProvider()}
 	if cfg.PIIRegistryFile != "" {
 		nerRegistry, loadErr := pii.LoadRegistryFile(cfg.PIIRegistryFile, string(cfg.DeploymentProfile))
