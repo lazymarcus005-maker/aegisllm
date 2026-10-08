@@ -3,7 +3,10 @@ package evals
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/policy"
@@ -20,9 +23,15 @@ type ConfidenceLabel struct {
 // question/slice; never one universal number). Returns ok=false when no
 // threshold satisfies the target — nothing may then enforce for the slice.
 func FitThreshold(labels []ConfidenceLabel, targetFPR float64) (float64, bool) {
+	if targetFPR < 0 || targetFPR > 1 || math.IsNaN(targetFPR) || math.IsInf(targetFPR, 0) {
+		return 0, false
+	}
 	var negatives []float64
 	candidates := map[float64]bool{}
 	for _, l := range labels {
+		if l.Confidence < 0 || l.Confidence > 1 || math.IsNaN(l.Confidence) || math.IsInf(l.Confidence, 0) {
+			return 0, false
+		}
 		candidates[l.Confidence] = true
 		if !l.Positive {
 			negatives = append(negatives, l.Confidence)
@@ -71,10 +80,15 @@ func Calibrate(rows []Row, provider decision.DecisionProvider, questionIDs []str
 		if err != nil {
 			return nil, fmt.Errorf("calibrate %s: provider failed: %w", r.ID, err)
 		}
+		for id := range ev.Decisions {
+			if _, expectedID := expected[id]; !expectedID {
+				return nil, fmt.Errorf("calibrate %s: unknown decision for %s", r.ID, id)
+			}
+		}
 		for _, id := range ids {
 			d, ok := ev.Decisions[id]
 			if !ok {
-				continue
+				return nil, fmt.Errorf("calibrate %s: missing decision for %s", r.ID, id)
 			}
 			key := id + "\x00" + r.Language
 			labels[key] = append(labels[key], ConfidenceLabel{Confidence: d.Confidence, Positive: expected[id]})
@@ -94,10 +108,146 @@ func Calibrate(rows []Row, provider decision.DecisionProvider, questionIDs []str
 				Language:      lang,
 				MinConfidence: t,
 				Evaluated:     ok,
+				SampleCount:   len(ls),
 			})
 		}
 	}
 	return records, nil
+}
+
+// VerifyArtifact checks immutable provenance bindings and promotion criteria.
+func VerifyArtifact(artifact *policy.SemanticThresholds, schemaData, datasetData []byte, schemaID string, schemaVersion int, questionIDs []string, provider string) error {
+	if artifact == nil {
+		return fmt.Errorf("calibration artifact is nil")
+	}
+	if !strings.EqualFold(artifact.QuestionSchemaSHA256, SHA256Hex(schemaData)) || !strings.EqualFold(artifact.DatasetSHA256, SHA256Hex(datasetData)) {
+		return fmt.Errorf("calibration provenance hash mismatch")
+	}
+	// Verification validates a candidate before promotion; use the strict
+	// binding rules while temporarily satisfying only the state predicate.
+	candidate := *artifact
+	candidate.Promoted, candidate.State = true, "promoted"
+	if err := candidate.ValidateForEnforcement(schemaID, schemaVersion, questionIDs, provider); err != nil {
+		return err
+	}
+	for _, m := range artifact.Metrics {
+		c := artifact.PromotionCriteria
+		if m.FalsePositive > c.MaxFPR || m.FalseNegative > c.MaxFNR || m.Precision < c.MinPrecision || m.Recall < c.MinRecall || m.Samples < c.MinSamples {
+			return fmt.Errorf("promotion criteria failed for %s/%s/%s", m.Question, m.Language, m.Risk)
+		}
+	}
+	return nil
+}
+
+// NewArtifact creates a reviewed, non-promoted artifact. Promotion is a
+// separate explicit operation in evaltool.
+func NewArtifact(rows []Row, provider decision.DecisionProvider, schemaData, datasetData []byte, schema *decision.QuestionSchema, targetFPR float64, toolVersion string) (*policy.SemanticThresholds, error) {
+	return NewArtifactWithCriteria(rows, provider, schemaData, datasetData, schema, policy.PromotionCriteria{MaxFPR: targetFPR, MaxFNR: 1, MinPrecision: 0, MinRecall: 0, MinSamples: 1}, toolVersion)
+}
+
+// NewArtifactWithCriteria is the explicit calibration path used by promotion
+// tooling. Criteria are stored in the artifact and rechecked at promotion.
+func NewArtifactWithCriteria(rows []Row, provider decision.DecisionProvider, schemaData, datasetData []byte, schema *decision.QuestionSchema, criteria policy.PromotionCriteria, toolVersion string) (*policy.SemanticThresholds, error) {
+	ids := make([]string, 0, len(schema.Questions))
+	riskByQuestion := map[string]string{}
+	for _, q := range schema.Questions {
+		ids = append(ids, q.ID)
+		riskByQuestion[q.ID] = q.Risk
+	}
+	records, err := Calibrate(rows, provider, ids, criteria.MaxFPR)
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]*sliceCounts{}
+	for _, row := range rows {
+		expected := row.SemanticExpected()
+		if len(expected) == 0 {
+			continue
+		}
+		ev, evalErr := provider.Evaluate(context.Background(), stubRequest(row), keysOf(expected))
+		if evalErr != nil {
+			return nil, fmt.Errorf("evaluate %s: %w", row.ID, evalErr)
+		}
+		for id, want := range expected {
+			d, ok := ev.Decisions[id]
+			if !ok {
+				return nil, fmt.Errorf("evaluate %s: missing decision for %s", row.ID, id)
+			}
+			key := id + "\x00" + row.Language + "\x00" + riskByQuestion[id]
+			if counts[key] == nil {
+				counts[key] = &sliceCounts{Question: id, Language: row.Language, Risk: riskByQuestion[id]}
+			}
+			c := counts[key]
+			c.Samples++
+			if want {
+				c.Positive++
+			} else {
+				c.Negative++
+			}
+			switch {
+			case want && d.Value:
+				c.TP++
+			case want && !d.Value:
+				c.FN++
+			case !want && d.Value:
+				c.FP++
+			default:
+				c.TN++
+			}
+		}
+	}
+	checkpoint := ""
+	if len(rows) > 0 {
+		ev, evalErr := provider.Evaluate(context.Background(), stubRequest(rows[0]), ids)
+		if evalErr != nil {
+			return nil, evalErr
+		}
+		checkpoint = ev.Checkpoint
+	}
+	stats := make([]policy.SemanticSliceStats, 0, len(counts))
+	for _, c := range counts {
+		stats = append(stats, c.Stats())
+	}
+	sort.Slice(stats, func(i, j int) bool {
+		if stats[i].Question != stats[j].Question {
+			return stats[i].Question < stats[j].Question
+		}
+		return stats[i].Language < stats[j].Language
+	})
+	now := time.Now().UTC().Format(time.RFC3339)
+	artifact := &policy.SemanticThresholds{
+		ID: "semantic-thresholds-" + schema.Schema, Version: 1, ArtifactVersion: 1,
+		Owner: "security-team", EffectiveDate: now[:10], QuestionSchema: schema.Schema,
+		QuestionSchemaID: schema.Schema, QuestionSchemaVersion: schema.Version, QuestionSchemaSHA256: SHA256Hex(schemaData),
+		Provider: provider.Name(), Checkpoint: checkpoint, ModelRevision: checkpoint,
+		DatasetID: "held-out", DatasetVersion: "dataset-v1", DatasetSHA256: SHA256Hex(datasetData),
+		CalibrationMethod: "held-out-quantile-fpr", CalibrationTimestamp: now, EvaluationTimestamp: now,
+		ToolVersion: toolVersion, Evaluated: true, Promoted: false, State: "non_promoted",
+		PromotionCriteria: criteria,
+		SampleCounts:      stats, Metrics: stats, Thresholds: records,
+	}
+	for i := range artifact.Thresholds {
+		for _, stat := range stats {
+			if artifact.Thresholds[i].Question == stat.Question && artifact.Thresholds[i].Language == stat.Language {
+				artifact.Thresholds[i].Risk = stat.Risk
+				artifact.Thresholds[i].SampleCount = stat.Samples
+			}
+		}
+	}
+	return artifact, nil
+}
+
+type sliceCounts struct {
+	Question, Language, Risk    string
+	Samples, Positive, Negative int
+	TP, FP, FN, TN              int
+}
+
+func (c *sliceCounts) Stats() policy.SemanticSliceStats {
+	return policy.SemanticSliceStats{Question: c.Question, Language: c.Language, Risk: c.Risk,
+		Samples: c.Samples, Positive: c.Positive, Negative: c.Negative,
+		FalsePositive: ratio(c.FP, c.FP+c.TN), FalseNegative: ratio(c.FN, c.FN+c.TP),
+		Precision: ratio(c.TP, c.TP+c.FP), Recall: ratio(c.TP, c.TP+c.FN)}
 }
 
 func stubRequest(r Row) decision.DecisionRequest {

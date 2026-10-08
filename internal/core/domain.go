@@ -52,6 +52,7 @@ const (
 	PartToolCall   = "tool_call"
 	PartToolResult = "tool_result"
 	PartImageRef   = "image_ref"
+	PartAttachment = "attachment"
 )
 
 // Span locates a finding within a message part's text (spec §10 location).
@@ -94,6 +95,22 @@ type ContentPart struct {
 	ToolName   string          `json:"tool_name,omitempty"`
 	Arguments  json.RawMessage `json:"arguments,omitempty"`
 	Payload    json.RawMessage `json:"payload,omitempty"`
+	Attachment *AttachmentRef  `json:"attachment,omitempty"`
+}
+
+// AttachmentRef is a bounded, non-serializable reference to multimodal input.
+// InlineData and URL are deliberately excluded from JSON and audit projections;
+// they exist only for the in-process extraction boundary.
+type AttachmentRef struct {
+	Kind       string            `json:"kind"`
+	MIMEType   string            `json:"mime_type,omitempty"`
+	Name       string            `json:"name,omitempty"`
+	URL        string            `json:"-"`
+	InlineData string            `json:"-"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	TextBytes  int               `json:"text_bytes,omitempty"`
+	Pages      int               `json:"pages,omitempty"`
+	Hash       string            `json:"hash,omitempty"`
 }
 
 // Message is a normalized conversation message.
@@ -154,7 +171,7 @@ func (e *InspectionEnvelope) TextParts() []LocatedText {
 				continue
 			}
 			switch p.Type {
-			case PartText, PartToolCall, PartToolResult:
+			case PartText, PartToolCall, PartToolResult, PartAttachment, PartImageRef:
 				out = append(out, LocatedText{MessageIndex: mi, PartIndex: pi, Role: m.Role, Text: p.Text})
 			}
 		}

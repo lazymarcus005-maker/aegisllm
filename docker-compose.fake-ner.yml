@@ -1,0 +1,9 @@
+# Synthetic CI-only NER smoke profile. It does not represent model quality.
+services:
+  fake-ner:
+    build:
+      context: .
+      dockerfile: Dockerfile.fake-ner
+    profiles: [ner-ci]
+    expose:
+      - "8400"

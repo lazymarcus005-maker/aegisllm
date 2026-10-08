@@ -1,0 +1,20 @@
+# Non-production deterministic RAG authorization evidence profile.
+# The HTTP link is intentionally plaintext and must never be promoted.
+services:
+  fake-rag-auth:
+    build:
+      context: .
+      dockerfile: Dockerfile.fake-rag-auth
+    expose:
+      - "8500"
+  security-gateway:
+    environment:
+      SECURITY_MODE: "enforce"
+      RAG_AUTH_MODE: "enforce"
+      RAG_AUTH_ADAPTER: "http"
+      RAG_AUTH_URL: "http://fake-rag-auth:8500"
+      RAG_AUTH_TIMEOUT: "2s"
+      RAG_MAX_RESULTS: "16"
+      RAG_MAX_RESULT_BYTES: "262144"
+    depends_on:
+      - fake-rag-auth

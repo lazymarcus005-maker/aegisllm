@@ -1,104 +1,44 @@
 (() => {
-  const pollMs = 2000;
-  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  "use strict";
   const els = {
-    total: document.getElementById("total-counter"),
-    card: document.getElementById("total-card"),
-    updated: document.getElementById("updated-at"),
-    list: document.getElementById("leaderboard"),
-    empty: document.getElementById("empty-state"),
-    blocked: document.getElementById("blocked"),
-    tokenized: document.getElementById("tokenized"),
-    redacted: document.getElementById("redacted"),
-    review: document.getElementById("review"),
-    allowed: document.getElementById("allowed")
+    status: document.getElementById("global-status"), dot: document.querySelector(".status-dot"), readiness: document.getElementById("readiness-label"), freshness: document.getElementById("freshness-label"),
+    profile: document.getElementById("profile-label"), mode: document.getElementById("mode-label"), policy: document.getElementById("policy-label"), window: document.getElementById("window-label"), refresh: document.getElementById("last-refresh"), reset: document.getElementById("reset-note"),
+    kpis: document.getElementById("kpis"), trend: document.getElementById("trend-chart"), funnel: document.getElementById("funnel"), alerts: document.getElementById("alerts"), alertCount: document.getElementById("alert-count"), controls: document.getElementById("control-status"), routing: document.getElementById("routing-breakdown"), audit: document.getElementById("audit-breakdown"), limits: document.getElementById("limit-breakdown"), canary: document.getElementById("canary-stat"), leaderboard: document.getElementById("leaderboard"), leaderboardEmpty: document.getElementById("leaderboard-empty"), connection: document.getElementById("connection-state"),
+    windowFilter: document.getElementById("window-filter"), actionFilter: document.getElementById("action-filter"), providerFilter: document.getElementById("provider-filter"), stageFilter: document.getElementById("stage-filter"), refreshButton: document.getElementById("refresh-button")
   };
-  let currentTotal = 0;
-  let lastUpdated = "";
+  const format = value => new Intl.NumberFormat().format(Number(value || 0));
+  const query = () => {
+    const params = new URLSearchParams({ window: els.windowFilter.value });
+    [["action", els.actionFilter.value], ["provider_class", els.providerFilter.value], ["source_stage", els.stageFilter.value]].forEach(([key, value]) => { if (value) params.set(key, value); });
+    return params.toString();
+  };
+  const getJSON = async path => { const response = await fetch(path, { credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } }); if (!response.ok) throw new Error(`operator API ${response.status}`); return response.json(); };
+  const text = (node, value) => { node.textContent = value == null ? "" : String(value); return node; };
+  const clear = node => { while (node.firstChild) node.removeChild(node.firstChild); };
+  const item = (tag, className, value) => { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = value; return node; };
+  const safeDetailURL = value => { const candidate = String(value || "/ready"); return candidate.startsWith("/") && !candidate.startsWith("//") && !candidate.includes("\\") ? candidate : "/ready"; };
 
-  const format = value => new Intl.NumberFormat().format(value || 0);
-  const animateNumber = (node, from, to, duration = 700) => {
-    if (reducedMotion || from === to) { node.textContent = format(to); return; }
-    const start = performance.now();
-    const tick = now => {
-      const progress = Math.min((now - start) / duration, 1);
-      const eased = 1 - Math.pow(1 - progress, 3);
-      node.textContent = format(Math.round(from + (to - from) * eased));
-      if (progress < 1) requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  };
+  function renderOverview(data) {
+    const status = data.status || {}; const readiness = status.readiness || {}; const freshness = data.freshness || {};
+    text(els.profile, `Profile ${status.deployment_profile || "—"}`); text(els.mode, `Mode ${status.security_mode || "—"}`);
+    const policy = status.policy || {}; text(els.policy, `Policy ${policy.sequence ? `#${policy.sequence} ${policy.hash || ""}` : (policy.id || "—")}`); text(els.window, `Window ${data.window && data.window.requested || "—"}`);
+    const readyLabel = readiness.state === "healthy" || readiness.state === "ready" ? "Protection ready" : `Protection ${readiness.state || "unavailable"}`; text(els.readiness, readyLabel); text(els.freshness, `${freshness.status || "unknown"} · ${freshness.age_seconds || 0}s since event`); text(els.refresh, new Date(data.generated_at).toLocaleTimeString()); text(els.reset, `Aggregate reset ${new Date(data.reset.reset_at).toLocaleString()} · ${data.reset.durable ? "durable" : "process-local"}`);
+    els.dot.className = `status-dot ${readiness.state === "degraded" ? "degraded" : readiness.state === "healthy" || readiness.state === "ready" ? "" : "incident"}`;
+    clear(els.kpis); (data.kpis || []).forEach(kpi => { const card = item("article", "kpi"); card.title = `${kpi.definition} Owner/action: ${kpi.owner_action}`; card.append(item("h2", "", kpi.label), item("strong", "kpi-value", format(kpi.value))); const foot = item("div", "kpi-foot"); const comparison = kpi.comparison_available ? `${kpi.delta_percent >= 0 ? "+" : ""}${kpi.delta_percent}% vs prior` : "No comparison"; foot.append(item("span", `trend-${kpi.trend}`, comparison)); foot.append(item("span", "", "· hover for definition")); card.append(foot); els.kpis.append(card); });
+    renderFunnel(data.funnel || {}); renderControls(status.components || []);
+  }
 
-  const renderRows = rows => {
-    els.list.replaceChildren();
-    if (!rows || rows.length === 0) { els.empty.hidden = false; return; }
-    els.empty.hidden = true;
-    const max = Math.max(...rows.map(row => row.count), 1);
-    rows.forEach((row, index) => {
-      const item = document.createElement("div");
-      item.className = "leader-row";
-      const rank = document.createElement("div");
-      rank.className = "rank";
-      rank.textContent = ["🥇", "🥈", "🥉"][index] || `#${index + 1}`;
-      const category = document.createElement("div");
-      category.className = "category";
-      const title = document.createElement("strong");
-      title.textContent = row.category || "Unknown";
-      const subtype = document.createElement("span");
-      subtype.textContent = row.subtype || "unspecified";
-      category.append(title, subtype);
-      const track = document.createElement("div");
-      track.className = "bar-track";
-      const fill = document.createElement("div");
-      fill.className = "bar-fill";
-      fill.style.width = `${Math.max((row.count / max) * 100, 1)}%`;
-      track.append(fill);
-      const count = document.createElement("div");
-      count.className = "count";
-      count.textContent = format(row.count);
-      item.append(rank, category, track, count);
-      els.list.append(item);
-    });
-  };
+  function renderFunnel(funnel) { clear(els.funnel); const rows = [["Inspected", funnel.inspected], ["Findings", funnel.findings], ["Transformed / blocked", funnel.transformed_or_blocked], ["Forwarded", funnel.forwarded]]; const max = Math.max(...rows.map(row => Number(row[1] || 0)), 1); rows.forEach(([label, value]) => { const row = item("div", "funnel-row"); row.append(item("span", "", label)); const track = item("div", "funnel-track"); const fill = item("div", "funnel-fill"); fill.style.width = `${Math.max(Number(value || 0) / max * 100, value ? 2 : 0)}%`; track.append(fill); row.append(track, item("strong", "", format(value))); els.funnel.append(row); }); }
 
-  const update = async () => {
-    try {
-      const response = await fetch("/api/protection-stats", { cache: "no-store" });
-      if (!response.ok) throw new Error("stats request failed");
-      const stats = await response.json();
-      const nextTotal = Number(stats.total_prevented || 0);
-      animateNumber(els.total, currentTotal, nextTotal);
-      if (nextTotal > currentTotal && !reducedMotion) {
-        els.card.classList.remove("pulse");
-        void els.card.offsetWidth;
-        els.card.classList.add("pulse");
-        burst();
-      }
-      currentTotal = nextTotal;
-      ["blocked", "tokenized", "redacted", "review", "allowed"].forEach(key => { els[key].textContent = format(stats[key]); });
-      renderRows(stats.by_category);
-      const updated = stats.updated_at ? new Date(stats.updated_at).toLocaleTimeString() : "";
-      if (updated && updated !== lastUpdated) { els.updated.textContent = `Updated / อัปเดต ${updated}`; lastUpdated = updated; }
-    } catch (_) {
-      els.updated.textContent = "Waiting for gateway / รอ gateway…";
-    }
-  };
+  function renderTrend(data) { clear(els.trend); const points = (data.points || []).slice(-12); const max = Math.max(...points.flatMap(point => [point.protected, point.forwarded, point.findings].map(Number)), 1); const grid = item("div", "trend-grid"); points.forEach(point => { const col = item("div", "trend-col"); const bars = item("div", "trend-bars"); [[point.protected, "protected"], [point.forwarded, "forwarded"], [point.findings, "findings"]].forEach(([value, kind]) => { const bar = item("div", `bar ${kind}`); bar.style.height = `${Math.max(Number(value || 0) / max * 100, value ? 2 : 0)}%`; bar.title = `${kind}: ${format(value)}`; bar.setAttribute("aria-label", `${kind} ${format(value)}`); bars.append(bar); }); col.append(bars, item("span", "trend-label", new Date(point.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))); grid.append(col); }); els.trend.append(grid); }
 
-  const canvas = document.getElementById("ambient-canvas");
-  const ctx = canvas.getContext("2d");
-  const particles = Array.from({ length: 24 }, () => ({ x: Math.random(), y: Math.random(), r: 1 + Math.random() * 2, v: .00015 + Math.random() * .00025, phase: Math.random() * 6 }));
-  const confetti = [];
-  const resize = () => { canvas.width = window.innerWidth * devicePixelRatio; canvas.height = window.innerHeight * devicePixelRatio; ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0); };
-  const drawShield = (x, y, size) => { ctx.beginPath(); ctx.moveTo(x, y - size); ctx.lineTo(x + size * .72, y - size * .55); ctx.lineTo(x + size * .58, y + size * .42); ctx.lineTo(x, y + size); ctx.lineTo(x - size * .58, y + size * .42); ctx.lineTo(x - size * .72, y - size * .55); ctx.closePath(); ctx.fill(); };
-  const floatParticles = time => {
-    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
-    ctx.fillStyle = "rgba(120, 127, 230, .24)";
-    particles.forEach(p => { p.y -= p.v; if (p.y < -.05) p.y = 1.05; drawShield(p.x * window.innerWidth, p.y * window.innerHeight + Math.sin(time / 1200 + p.phase) * 7, p.r * 2.2); });
-    confetti.forEach((piece, index) => { piece.y += piece.v; piece.x += piece.dx; piece.rotation += piece.spin; ctx.save(); ctx.translate(piece.x, piece.y); ctx.rotate(piece.rotation); ctx.fillStyle = piece.color; ctx.fillRect(-2, -2, 4, 4); ctx.restore(); if (piece.y > window.innerHeight + 10) confetti.splice(index, 1); });
-    requestAnimationFrame(floatParticles);
-  };
-  const burst = () => { for (let i = 0; i < 26; i += 1) confetti.push({ x: window.innerWidth * .5 + (Math.random() - .5) * 180, y: 110 + Math.random() * 35, v: 1.2 + Math.random() * 2.1, dx: (Math.random() - .5) * 1.6, rotation: Math.random() * 6, spin: (Math.random() - .5) * .18, color: ["#5d63f5", "#a36df4", "#1ca67a"][i % 3] }); };
-  if (!reducedMotion) { resize(); window.addEventListener("resize", resize); requestAnimationFrame(floatParticles); }
-  update();
-  window.setInterval(update, pollMs);
+  function renderCounts(node, values, emptyLabel) { clear(node); const rows = (values || []).slice(0, 8); if (!rows.length) { node.append(item("span", "muted", emptyLabel)); return; } rows.forEach(row => { const line = item("div", "metric-row"); line.append(item("span", "", row.key), item("strong", "", format(row.count))); node.append(line); }); }
+  function renderBreakdown(data, status) { renderCounts(els.routing, data.provider_classes, "No route events in window"); clear(els.audit); const audit = status.audit || {}; [["State", audit.state || "unavailable"], ["Queue bytes", format(audit.queue_bytes)], ["Oldest age", `${format(audit.oldest_age_seconds)}s`], ["Exporter", audit.exporter_state || "unavailable"]].forEach(([key, value]) => { const line = item("div", "metric-row"); line.append(item("span", "", key), item("strong", "", value)); els.audit.append(line); }); (data.audit || []).slice(0, 3).forEach(row => { const line = item("div", "metric-row"); line.append(item("span", "", `Events ${row.key}`), item("strong", "", format(row.count))); els.audit.append(line); }); renderCounts(els.limits, data.runtime_limits, "No admission-limit events in window"); text(els.canary, format(data.canary_disagreements)); renderLeaderboard(data.rule_subtypes || data.categories); }
+  function renderLeaderboard(values) { clear(els.leaderboard); const rows = (values || []).slice(0, 8); els.leaderboardEmpty.hidden = rows.length > 0; const max = Math.max(...rows.map(row => Number(row.count || 0)), 1); rows.forEach(row => { const line = item("div", "leader-row"); const label = item("div", "leader-label"); label.append(item("strong", "", row.key), item("span", "", "bounded category / subtype")); const track = item("div", "leader-track"); const fill = item("div", "leader-fill"); fill.style.width = `${Math.max(Number(row.count || 0) / max * 100, 2)}%`; track.append(fill); line.append(label, track, item("strong", "leader-count", format(row.count))); els.leaderboard.append(line); }); }
+  function renderControls(components) { clear(els.controls); const rows = components.length ? components : [{ name: "readiness", state: "unavailable", detail: "No status provider" }]; rows.forEach(component => { const line = item("div", "status-row"); line.append(item("span", "", component.name)); line.append(item("span", `status-pill ${component.state}`, component.state)); els.controls.append(line); }); }
+  function renderAlerts(data) { clear(els.alerts); const alerts = data.alerts || []; text(els.alertCount, alerts.length ? `${alerts.length} active alert${alerts.length === 1 ? "" : "s"}` : "No active alerts"); if (!alerts.length) { els.alerts.append(item("p", "muted", "Protection controls are healthy for the selected view.")); return; } alerts.forEach(alert => { const severity = ["high", "medium", "low"].includes(alert.severity) ? alert.severity : "medium"; const row = item("article", `alert ${severity}`); row.append(item("span", "alert-dot")); const body = item("div"); body.append(item("h3", "", alert.title), item("p", "", alert.detail)); const link = document.createElement("a"); link.href = safeDetailURL(alert.detail_url); link.textContent = "Open sanitized detail"; row.append(body, link); els.alerts.append(row); }); }
+
+  let delay = 2000; let timer = null; let inFlight = false;
+  async function update() { if (inFlight) return; inFlight = true; clearTimeout(timer); try { const suffix = query(); const [overview, series, breakdown, alerts] = await Promise.all([getJSON(`/api/dashboard/v2/overview?${suffix}`), getJSON(`/api/dashboard/v2/timeseries?${suffix}`), getJSON(`/api/dashboard/v2/breakdown?${suffix}`), getJSON(`/api/dashboard/v2/alerts?${suffix}`)]); renderOverview(overview); renderTrend(series); renderBreakdown(breakdown, overview.status || {}); renderAlerts(alerts); text(els.connection, "Live · polling every 2s"); delay = 2000; } catch (_) { text(els.connection, `Disconnected · retrying in ${Math.round(delay / 1000)}s`); text(els.freshness, "Dashboard API unavailable"); els.dot.className = "status-dot incident"; delay = Math.min(delay * 2, 30000); } finally { inFlight = false; timer = window.setTimeout(update, delay); } }
+  [els.windowFilter, els.actionFilter, els.providerFilter, els.stageFilter].forEach(control => control.addEventListener("change", update)); els.refreshButton.addEventListener("click", update); update();
 })();

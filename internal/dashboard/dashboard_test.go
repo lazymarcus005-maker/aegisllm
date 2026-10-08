@@ -19,12 +19,13 @@ func TestSnapshotProjectsProtectionCountersAndSortsFindings(t *testing.T) {
 	metrics.ObserveFindings(string(core.CategorySecret), "api_key")
 	metrics.ObserveFindings(string(core.CategoryPII), "phone")
 	metrics.ObserveFindings(string(core.CategoryPII), "phone")
+	metrics.ObserveStream(core.DirectionResponse, "openai-chat", core.ActionBlock, core.ActionBlock, "enforce", 128, 2)
 
 	stats := Snapshot(metrics)
-	if stats.TotalPrevented != 5 {
-		t.Fatalf("total prevented = %d, want 5", stats.TotalPrevented)
+	if stats.TotalPrevented != 6 {
+		t.Fatalf("total prevented = %d, want 6", stats.TotalPrevented)
 	}
-	if stats.Blocked != 2 || stats.Tokenized != 1 || stats.Redacted != 1 || stats.Review != 1 {
+	if stats.Blocked != 3 || stats.Tokenized != 1 || stats.Redacted != 1 || stats.Review != 1 {
 		t.Fatalf("action counters = %+v", stats)
 	}
 	if stats.Allowed != 2 {
@@ -35,6 +36,9 @@ func TestSnapshotProjectsProtectionCountersAndSortsFindings(t *testing.T) {
 	}
 	if stats.UpdatedAt.IsZero() {
 		t.Fatal("updated_at must be populated")
+	}
+	if stats.StreamBytes != 128 || stats.StreamEvents != 2 {
+		t.Fatalf("stream counters = %+v", stats)
 	}
 }
 

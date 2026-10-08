@@ -1,12 +1,31 @@
-FROM golang:1-alpine AS build
+ARG GO_TOOL_IMAGE=golang:1.25.13-bookworm@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48
+FROM ${GO_TOOL_IMAGE} AS build
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 go build -o /bin/security-gateway ./cmd/gateway
+COPY web ./web
+COPY policies ./policies
+COPY questions ./questions
+COPY examples ./examples
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=1970-01-01T00:00:00Z
+ENV SOURCE_DATE_EPOCH=0
+RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false \
+    -ldflags "-s -w -X main.buildVersion=${VERSION} -X main.buildCommit=${COMMIT} -X main.buildDate=${BUILD_DATE}" \
+    -o /bin/security-gateway ./cmd/gateway
 
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+# scratch deliberately contains no shell, package manager, private key, or
+# mutable filesystem. The gateway owns its explicitly mounted audit volume.
+FROM scratch
+WORKDIR /app
 COPY --from=build /bin/security-gateway /bin/security-gateway
-USER nobody
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY policies ./policies
+COPY questions ./questions
+COPY examples ./examples
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD ["/bin/security-gateway", "--healthcheck"]
+USER 65534:65534
 ENTRYPOINT ["/bin/security-gateway"]

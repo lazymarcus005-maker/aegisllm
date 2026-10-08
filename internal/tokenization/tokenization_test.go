@@ -162,3 +162,40 @@ func TestTokenLabel(t *testing.T) {
 		t.Fatal("brackets must be stripped")
 	}
 }
+
+func TestKeyringRotationKeepsOldRecordsReadable(t *testing.T) {
+	oldKey := bytes.Repeat([]byte{1}, 32)
+	newKey := bytes.Repeat([]byte{2}, 32)
+	oldCrypto, _ := NewCrypto(oldKey)
+	legacy, err := oldCrypto.Seal([]byte("legacy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyring, err := NewKeyring("new", map[string][]byte{"old": oldKey, "new": newKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := keyring.Open(legacy); err != nil || string(got) != "legacy" {
+		t.Fatalf("legacy open: %q %v", got, err)
+	}
+	rotated, err := keyring.Seal([]byte("rotated"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated[0] != keyringBlobVersion || string(rotated[2:2+int(rotated[1])]) != "new" {
+		t.Fatalf("active key envelope not recorded: %x", rotated[:8])
+	}
+	if got, err := keyring.Open(rotated); err != nil || string(got) != "rotated" {
+		t.Fatalf("rotated open: %q %v", got, err)
+	}
+	withoutOld, _ := NewKeyring("new", map[string][]byte{"new": newKey})
+	if _, err := withoutOld.Open(legacy); err == nil {
+		t.Fatal("removed legacy key decrypted an old record")
+	}
+}
+
+func TestParseKeyringRejectsMissingActiveKey(t *testing.T) {
+	if _, err := ParseKeyring([]byte(`{"version":1,"active_key_id":"new","keys":{"old":"0102"}}`)); err == nil {
+		t.Fatal("keyring with missing active key accepted")
+	}
+}

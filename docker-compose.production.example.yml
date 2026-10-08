@@ -1,0 +1,106 @@
+# Production reference only. Replace all *.example.invalid endpoints and
+# inject secrets from a secret manager or CI environment; do not commit them.
+services:
+  security-gateway:
+    image: ghcr.io/example/aegisllm-gateway:replace-with-reviewed-tag
+    networks: [default, laya-private]
+    ports:
+      - "8080:8080"
+    environment:
+      DEPLOYMENT_PROFILE: "production"
+      SECURITY_MODE: "enforce"
+      # Keep false until a real Laya calibration artifact is reviewed and
+      # promoted. The committed noop/synthetic artifact is never sufficient.
+      SECURITY_SEMANTIC_ENFORCE: "false"
+      AUTH_MODE: "jwt"
+      LISTEN_ADDR: ":8080"
+      INBOUND_TLS_CERT_FILE: "/run/secrets/aegis-gateway.crt"
+      INBOUND_TLS_KEY_FILE: "/run/secrets/aegis-gateway.key"
+      INBOUND_MTLS_MODE: "off"
+      TLS_MIN_VERSION: "1.2"
+      TLS_RELOAD_INTERVAL: "2s"
+      JWT_PUBLIC_KEY_FILE: "/run/secrets/aegis-jwt-public.pem"
+      JWT_ISSUER: "https://issuer.example.invalid"
+      JWT_AUDIENCE: "aegisllm"
+      JWT_TENANT_CLAIM: "tenant_id"
+      JWT_APPLICATION_CLAIM: "azp"
+      JWT_SUBJECT_CLAIM: "sub"
+      JWT_ROLES_CLAIM: "roles"
+      JWT_PROVIDER_CLAIM: "provider"
+      UPSTREAM_REGISTRY_FILE: "/etc/aegis/upstreams.yaml"
+      POLICY_FILE: "policies/enterprise-default.yaml"
+      QUESTIONS_FILE: "questions/security-v1.yaml"
+      THRESHOLDS_FILE: "policies/thresholds-security-v1.yaml"
+      LAYA_URL: "${LAYA_URL:-}"
+      LAYA_TLS_CA_FILE: "/run/secrets/aegis-laya-ca.pem"
+      LAYA_TLS_SERVER_NAME: "laya.example.invalid"
+      LAYA_TIMEOUT: "5s"
+      TOKEN_VAULT_KEYRING_FILE: "/run/secrets/aegis-vault-keyring.json"
+      TOKEN_VAULT_REDIS_URL: "rediss://redis.example.invalid:6379/0"
+      TOKEN_VAULT_REDIS_CA_FILE: "/run/secrets/aegis-redis-ca.pem"
+      TOKEN_VAULT_REDIS_SERVER_NAME: "redis.example.invalid"
+      QUARANTINE_REDIS_URL: "rediss://redis.example.invalid:6379/1"
+      QUARANTINE_REDIS_CA_FILE: "/run/secrets/aegis-redis-ca.pem"
+      QUARANTINE_REDIS_SERVER_NAME: "redis.example.invalid"
+      TELEMETRY_HMAC_KEY_FILE: "/run/secrets/aegis-telemetry-hmac-key"
+      AUDIT_WAL_DIR: "/var/lib/aegisllm/audit"
+      AUDIT_SEGMENT_BYTES: "67108864"
+      AUDIT_MAX_BYTES: "4294967296"
+      AUDIT_RETENTION: "720h"
+      AUDIT_FSYNC: "sync"
+      AUDIT_FAILURE_MODE: "fail_closed"
+      AUDIT_HMAC_KEY_FILE: "/run/secrets/aegis-audit-hmac-key"
+      AUDIT_ENCRYPTION_KEYRING_FILE: "/run/secrets/aegis-audit-keyring.json"
+      AUDIT_SIEM_URL: "${AUDIT_SIEM_URL:-https://siem.example.invalid/ingest}"
+      AUDIT_SIEM_AUTH_FILE: "/run/secrets/aegis-siem-token"
+      AUDIT_SIEM_CA_FILE: "/run/secrets/aegis-siem-ca.pem"
+      AUDIT_SIEM_SERVER_NAME: "siem.example.invalid"
+      MAX_RESPONSE_BYTES: "4194304"
+      MAX_PROMPT_CHARS: "65536"
+      MAX_STREAM_DURATION: "5m"
+      MAX_SSE_EVENT_BYTES: "65536"
+      STREAM_INSPECTION_WINDOW: "4096"
+      MAX_BUFFERED_STREAM_BYTES: "1048576"
+      STREAM_FLUSH_INTERVAL: "25ms"
+      STREAM_FAIL_CLOSED: "true"
+      UPSTREAM_DIAL_TIMEOUT: "5s"
+      UPSTREAM_TLS_HANDSHAKE_TIMEOUT: "5s"
+      UPSTREAM_RESPONSE_HEADER_TIMEOUT: "30s"
+      UPSTREAM_REQUEST_TIMEOUT: "2m"
+      UPSTREAM_IDLE_CONN_TIMEOUT: "90s"
+      UPSTREAM_MAX_IDLE_CONNS: "100"
+      UPSTREAM_BREAKER_FAILURE_THRESHOLD: "3"
+      UPSTREAM_BREAKER_OPEN_INTERVAL: "30s"
+      SERVER_READ_HEADER_TIMEOUT: "10s"
+      SERVER_READ_TIMEOUT: "30s"
+      SERVER_IDLE_TIMEOUT: "2m"
+      SERVER_SHUTDOWN_TIMEOUT: "10s"
+      REQUESTS_PER_SECOND: "10"
+      RATE_BURST: "20"
+      MAX_CONCURRENT_REQUESTS: "16"
+      MAX_CONCURRENT_LAYA: "4"
+      LIMITER_MAX_KEYS: "10000"
+      LIMITER_KEY_IDLE_TIMEOUT: "10m"
+    volumes:
+      - audit-wal:/var/lib/aegisllm/audit
+    # Redis and the upstream are intentionally external. Never point this
+    # production profile at the repository's mock-upstream service.
+
+  # Optional operator-managed profile. LAYA_IMAGE is deliberately required
+  # from the environment; no official image is assumed or hard-coded here.
+  laya:
+    image: "${LAYA_IMAGE:?set LAYA_IMAGE to an operator-reviewed image}"
+    profiles: [semantic]
+    expose:
+      - "8300"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    networks: [laya-private]
+
+networks:
+  laya-private:
+    internal: true
+
+volumes:
+  audit-wal:

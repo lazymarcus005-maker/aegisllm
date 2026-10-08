@@ -74,6 +74,14 @@ This follows the OWASP recommendation that strict security controls should be en
 
 ## 3. External Context
 
+### P1.10 release boundary
+
+Release evidence is produced outside the request path by `make verify-release`.
+The gate separates correctness, concurrency/fuzz, robust performance,
+dependency-failure recovery, conformance, reproducible build, SBOM, and final
+image checks. Reports are metadata-only and live under ignored build output;
+fixture mutation and signing require explicit operator action.
+
 Laya is a local, non-autoregressive System 1 decision engine that supports typed decisions such as:
 
 - `choice`
@@ -147,6 +155,23 @@ Existing LLM Gateway
 Target LLM
 ```
 
+### 4.1 Canonicalization and evasion stage
+
+The deterministic stage first builds a bounded scan projection. Maintained
+Unicode NFKC normalization, removal/flagging of zero-width and bidi controls,
+and targeted Latin/Cyrillic/Greek/fullwidth confusable mappings feed the
+existing detectors. Per-byte source maps preserve same-part UTF-8 spans.
+Base64 (standard/raw/URL-safe), percent, JSON Unicode, and optional strict hex
+candidates are decoded only within policy depth/work/expansion limits; decoded
+findings record an encoding chain but never decoded content. Cross-part and
+decoded findings are marked unsafe and therefore cannot create a redact or
+tokenize offset. The policy stage defaults secret unsafe spans to BLOCK and
+configured PII unsafe spans to REVIEW/BLOCK.
+
+The existing streaming holdback is the stateful cross-chunk projection. It
+feeds the same pipeline on each rolling window, so streaming does not create a
+second divergent detector implementation.
+
 ---
 
 ## 5. Trust Boundaries
@@ -196,6 +221,17 @@ The security gateway inspects tool intent and content, but actual credentials be
 
 ## 6. Core Components
 
+### 6.0 Provider conformance lab
+
+P1.8 adds an external compatibility lab around the public gateway listener.
+Versioned OpenAI Chat/Responses, Anthropic Messages, and generic alias profiles
+are exercised against a deterministic non-production fake-provider matrix. The
+runner normalizes IDs, timestamps, and SSE chunk boundaries into semantic
+shapes and emits only bounded privacy-safe JSON/JUnit artifacts. Production
+routing can require an explicitly declared, SHA-256-bound report before
+enabling advanced provider features; the declaration is never inferred from a
+remote result.
+
 ### 6.1 Gateway Adapter
 
 Responsibilities:
@@ -228,6 +264,19 @@ custom agent protocol
 ---
 
 ### 6.2 Request Normalizer
+
+### 6.3 Durable audit, trace, and SIEM boundary
+
+Audit is a separate metadata-only boundary after each security decision. A
+typed event encoder feeds a crash-recoverable local WAL with CRC, chained
+SHA-256/HMAC, optional AES-GCM keyring encryption, atomic checkpoints, bounded
+segments, retention, and quota enforcement. An asynchronous HTTPS exporter
+replays the WAL until an accepted response, preserving at-least-once delivery
+with stable event IDs and a dead-letter quarantine. Development may mirror the
+same sanitized event to stdout. W3C `traceparent` is validated at ingress,
+new trace/span IDs are generated when absent, and only an allowlisted
+`traceparent` header is propagated to upstream, Laya, NER, MCP, and SIEM; no
+identity or authorization headers are propagated.
 
 Converts provider-specific data into:
 
@@ -334,6 +383,12 @@ Example:
 ---
 
 ### 6.4 PII Span Detector
+
+Free-form PII uses the replaceable production span engine documented in
+[docs/pii-ner.md](pii-ner.md): deterministic validators run before private
+Presidio-compatible or Aegis NER adapters, provider offsets are normalized to
+UTF-8 bytes, and strict profiles fail closed when required NER is unavailable.
+Semantic Laya output remains evidence only and is never a span source.
 
 Regex alone cannot identify every person name, address, organization context, or free-form personal information.
 
@@ -475,6 +530,24 @@ threshold
 owner
 effective date
 ```
+
+#### P0.5 enforcement gate
+
+`SECURITY_SEMANTIC_ENFORCE=true` is a typed startup contract, not a rollout
+hint. It requires a reachable operator-provided Laya URL, a real non-noop
+provider, and a promoted threshold artifact whose question-schema and
+held-out-dataset SHA-256 values match the loaded files. The artifact also
+records checkpoint/model revision, timestamps, per-language/risk sample
+counts, FPR/FNR/precision/recall, criteria, tool version, and explicit
+evaluated/promoted state. Every eligible question/language slice is unique and
+covered; high-risk slices cannot be omitted.
+
+At runtime, evidence is rejected when decisions are missing or extra, a
+question is unknown, schema/checkpoint/provider metadata differs, or confidence
+is non-finite/out of range. Rejection selects the validated risk/direction/
+provider fallback matrix; strict high-risk policy defaults to BLOCK. It is
+never converted into a false answer or safe allow. `/ready` exposes only
+`disabled|shadow|ready|unready` plus bounded safe metadata.
 
 ---
 
@@ -721,13 +794,16 @@ rolling/sliding buffer
 + cross-chunk detector state
 ```
 
-V1 options:
-
-1. Disable streaming in enforce mode initially.
-2. Support streaming only after stateful scanning is implemented.
-3. Allow streaming in shadow mode for telemetry.
-
-Recommended: implement buffered non-streaming first, then streaming.
+The implemented P0.3 adapter uses a bounded SSE parser, provider-specific
+delta extraction, a 4096-byte production-minimum holdback, and a bounded event
+queue. It re-enters the same detector/policy/transformation pipeline used by
+buffered responses. Requests with `stream:true` never skip request inspection;
+only the response transport is streamed. Shadow mode records predicted and
+applied actions separately. BLOCK/REVIEW closes the upstream body and emits a
+sanitized terminal error, while REDACT/TOKENIZE rewrite only extracted text or
+tool-argument deltas. The guarantee is bounded: detector candidates longer
+than the configured window or streams that exhaust the byte budget fail
+closed, and arbitrary encodings remain outside deterministic coverage.
 
 ---
 
@@ -1050,7 +1126,68 @@ AI Security Platform
 
 ---
 
-## 23. References
+## P1.7 Security Operations Dashboard v2
+
+The dashboard is a read-only operator projection. `internal/observability`
+emits bounded content-free events into `internal/dashboard`'s fixed-size
+process-local rolling aggregator; the dashboard never parses Prometheus text or
+reads durable audit records. The gateway joins that aggregate with sanitized
+readiness, policy, routing, audit, semantic, MCP, and secure-material status.
+The versioned API is mounted beneath `/api/dashboard/v2/` behind operator RBAC,
+and the embedded page uses same-origin polling with bounded exponential
+backoff. A process restart is explicit in the response reset object until a
+durable aggregate design is approved.
+
+## P2.2 Retrieval authorization gateway
+
+Retrieval context is a separate authorization boundary. After authenticated
+identity enrichment and before the normalizer/pipeline forwards a request, the
+gateway recognizes bounded OpenAI, Anthropic, and generic RAG shapes. It
+extracts only a retrieval query digest and bounded metadata; query text,
+document text, and tokens never cross the private authorization wire. Bounded
+classification/label metadata and resource IDs are sent only to that trusted
+private decision boundary and never enter audit/metrics. A request contract binds tenant,
+application, subject, roles, groups, collection/index, classification/labels,
+purpose, operation, policy ID/version, and request ID. Every result contract
+also binds document/chunk ID and content digest.
+
+The authorization response must contain an allow decision, expiry, decision ID,
+and a deterministic binding over the verified identity, policy snapshot,
+operation, query digest, and resource/chunk digest. The gateway authorizes the
+retrieval request and every returned result with bounded body/shape/count,
+timeout, and concurrency limits. Any missing, denied, stale, substituted,
+cross-tenant/application/subject/collection/purpose/label, or malformed result
+rejects the complete retrieval set. Vector-store/provider filtering is never a
+security decision, and arbitrary result redaction is not claimed to be sound.
+
+Production uses the shared verified TLS/mTLS client transport and fails closed
+on authorization-service unavailability. Development has an explicit
+deny-by-default in-process seam and a deterministic fake service for tests and
+Compose smoke evidence. `RAG_AUTH_MODE=shadow` is a non-production calibration
+mode; production promotion requires enforce mode, private PKI, a real
+authorization service, a real IdP/vector DB integration, and reviewed policy
+calibration.
+
+## 23. Automated incident quarantine (P2.3)
+
+Automated quarantine is a policy-bound control plane attached to the verified
+gateway identity and every request/tool/retrieval/provider boundary. Signals
+are restricted to eight reason codes and digest-only evidence references. A
+bounded aggregation window, threshold, cooldown, duplicate suppression, and
+hysteresis protect against a client manufacturing broad containment. The
+default response is observe; tenant/provider disable actions require explicit
+policy thresholds and broad-scope authorization.
+
+State is revisioned and atomically updated in a process-safe memory store for
+development/shadow and a Redis CAS implementation for production. Keys always
+include the verified tenant digest. Ingress checks cover API aliases and stale
+sessions; route/provider selection, streaming/upstream forwarding, RAG,
+MCP/tool execution, credential access, and token re-identification perform
+their own checks. Expiry of risky resource containment enters health-gated
+probation. Operator lifecycle endpoints are RBAC-protected and preserve
+history; release is optimistic-revision checked and never destructive.
+
+## 24. References
 
 - Laya documentation: https://nandhakishorm.github.io/laya/
 - Laya staged adoption: https://nandhakishorm.github.io/laya/staged-adoption/
@@ -1060,3 +1197,33 @@ AI Security Platform
 - Laya GitHub: https://github.com/NandhaKishorM/laya
 - OWASP LLM02: Sensitive Information Disclosure: https://genai.owasp.org/llmrisk/llm022025-sensitive-information-disclosure/
 - OWASP LLM07: System Prompt Leakage: https://genai.owasp.org/llmrisk/llm072025-system-prompt-leakage/
+# P0.7 encrypted service links and rotation
+
+All outbound HTTPS and `rediss://` links are constructed through
+`internal/securetransport`. It combines system trust with an optional
+dependency-specific CA bundle, enforces TLS 1.2 or newer, verifies the server
+name, and optionally presents a client certificate. The inbound listener uses
+the same reloadable certificate material and can require a client CA. A
+trusted-edge termination mode is an explicit production contract; it does not
+disable verification on dependency links.
+
+Mounted certificates, JWT public keys, credentials, and vault keyrings are
+polled with bounded intervals and replaced atomically. The active value is
+kept on malformed replacement. Readiness and metrics expose only generation,
+reload timestamps, bounded failure state, and certificate expiry. Vault
+envelopes carry an opaque key ID and version; the active key seals new values
+while retained previous keys decrypt existing values. The default keyring
+reload policy refuses removal of a retained key until an operator explicitly
+proves expiry and enables the controlled removal flag.
+
+## MCP gateway boundary
+
+MCP requests enter through the authenticated `/mcp/{server}` route. A strict
+versioned registry selects the HTTPS endpoint, allowed methods/tools, schema
+limits, transport TLS, and opaque credential profile. The gateway fetches and
+sanitizes `tools/list`, removes policy-restricted tools, validates arguments,
+then calls `InspectToolCall` before acquiring credentials and opening the tool
+execution request. Results, including bounded SSE data, pass through
+`InspectToolResult` before re-entry. Sessions are keyed by an opaque random ID
+but bound in memory to the verified tenant/application/subject and server.
+Registry and secure-material reloads publish only validated candidates.

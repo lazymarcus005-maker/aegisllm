@@ -4,9 +4,62 @@ version: 7
 owner: security-team
 effective_date: "2026-10-05"
 
+quarantine:
+  enabled: true
+  max_ttl: 30m
+  probation_ttl: 10m
+  max_states: 10000
+  default: {reason: default, level: observe, scope: session, threshold: 3, window: 1m, cooldown: 1m, ttl: 10m}
+  rules:
+    - {reason: secret_exfiltration, level: isolate, scope: user, threshold: 3, window: 5m, cooldown: 1m, ttl: 15m}
+    - {reason: detector_evasion, level: isolate, scope: session, threshold: 3, window: 5m, cooldown: 1m, ttl: 10m}
+    - {reason: rag_cross_scope_access, level: require_human_review, scope: user, threshold: 2, window: 5m, cooldown: 1m, ttl: 15m}
+    - {reason: tool_policy_violation, level: isolate, scope: application, threshold: 3, window: 5m, cooldown: 1m, ttl: 15m}
+    - {reason: token_reidentification_abuse, level: isolate, scope: session, threshold: 2, window: 5m, cooldown: 1m, ttl: 15m}
+    - {reason: auth_anomaly, level: require_human_review, scope: user, threshold: 3, window: 5m, cooldown: 1m, ttl: 15m}
+    - {reason: provider_integrity_failure, level: disable, scope: provider, threshold: 3, window: 10m, cooldown: 5m, ttl: 15m, allow_broad: true}
+    - {reason: operator_action, level: isolate, scope: session, threshold: 1, window: 1m, cooldown: 1s, ttl: 15m}
+
+# RAG context is accepted only with a request- and resource-bound decision.
+# The private adapter is selected by deployment configuration; this reviewed
+# policy action is fail-closed and cannot redact arbitrary provider shapes.
+rag:
+  mode: enforce
+  on_deny: block
+  require_purpose: true
+  require_collection: true
+  require_classification: false
+  allowed_operations: [retrieve, retrieve_result]
+
 default:
   action: allow
 
+evasion:
+  enabled: true
+  transforms: [nfkc, controls, confusable_skeleton, base64, percent, json_unicode]
+  max_decode_depth: 1
+  max_decode_work_bytes: 262144
+  max_decoded_expansion_ratio: 8
+  max_json_depth: 8
+  max_json_nodes: 512
+  max_json_string_bytes: 16384
+  budget_action: block
+  actions:
+    encoded: block
+    cross_part: block
+    structured_json: block
+    zero_width_control: review
+    budget_exceeded: block
+
+# P0.6 compatibility declarations. The v7 sections below are normalized into
+# the same effective contract, preserving their stable rule IDs.
+safe_default:
+  action: block
+confidence_escalation:
+  - id: high-confidence-secret
+    category: SECRET
+    min_confidence: 0.90
+    action: block
 # Provider-boundary baseline for confidential data (precedence level 5).
 targets:
   cloud:
@@ -20,11 +73,11 @@ targets:
 # entry). Use action: block to reject the whole request/response instead.
 secrets:
   GITLAB_PAT:
-    action: redact
+    action: block
   GITHUB_TOKEN:
-    action: redact
+    action: block
   PEM_PRIVATE_KEY:
-    action: redact
+    action: block
   JWT:
     action: redact
   BEARER_TOKEN:
@@ -32,9 +85,9 @@ secrets:
   AWS_ACCESS_KEY:
     action: redact
   AWS_SECRET_ACCESS_KEY:
-    action: redact
+    action: block
   OPENAI_API_KEY:
-    action: redact
+    action: block
   ANTHROPIC_API_KEY:
     action: redact
   SLACK_TOKEN:
@@ -103,3 +156,18 @@ fallback:
   laya_unavailable:
     high_risk: block
     low_risk: deterministic_only
+  # P0.5 semantic evidence failures are explicit policy decisions. High-risk
+  # unknown/error paths remain BLOCK in the strict profile.
+  semantic:
+    - risk: high
+      direction: "*"
+      provider: "*"
+      on_error: block
+    - risk: medium
+      direction: "*"
+      provider: "*"
+      on_error: review
+    - risk: low
+      direction: "*"
+      provider: "*"
+      on_error: review

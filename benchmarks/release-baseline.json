@@ -1,0 +1,19 @@
+{
+  "schema_version": "aegisllm.benchmark/v1",
+  "host_class": "shared-host-advisory",
+  "go": "go1.25.13",
+  "gomaxprocs": 1,
+  "runs": 5,
+  "regression_tolerance": {"ns_per_op": 0.25, "allocs_per_op": 0.25},
+  "metrics": {
+    "BenchmarkParser": {"ns_per_op": 134704, "bytes_per_op": 87328, "allocs_per_op": 834},
+    "BenchmarkEvasionTransforms/base64": {"ns_per_op": 105133, "bytes_per_op": 13168, "allocs_per_op": 135},
+    "BenchmarkEvasionTransforms/nfkc": {"ns_per_op": 55935, "bytes_per_op": 10792, "allocs_per_op": 105},
+    "BenchmarkEvasionTransforms/percent": {"ns_per_op": 103913, "bytes_per_op": 12984, "allocs_per_op": 131},
+    "BenchmarkEvasionTransforms/json_unicode": {"ns_per_op": 382467, "bytes_per_op": 28681, "allocs_per_op": 338},
+    "BenchmarkAllow": {"ns_per_op": 397.2, "bytes_per_op": 64, "allocs_per_op": 2},
+    "BenchmarkProxyForward": {"ns_per_op": 101105, "bytes_per_op": 6959, "allocs_per_op": 90}
+  },
+  "slo": {"gateway_clean_request_p95_ms": 25},
+  "notes": "Numbers are refreshed only by an explicit reviewed baseline update; shared-host values are advisory. Stable CI uses the same gate on a pinned runner class."
+}

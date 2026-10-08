@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -221,6 +222,36 @@ func TestCircuitBreakerOpensAndRecovers(t *testing.T) {
 	}
 }
 
+func TestCircuitBreakerAllowsOneHalfOpenProbe(t *testing.T) {
+	now := time.Unix(0, 0)
+	b := NewCircuitBreaker(1, time.Second)
+	b.SetClock(func() time.Time { return now })
+	b.Record(false)
+	now = now.Add(2 * time.Second)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	allowed := 0
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if b.Allow() {
+				mu.Lock()
+				allowed++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if allowed != 1 {
+		t.Fatalf("half-open probes allowed=%d, want 1", allowed)
+	}
+	b.Record(true)
+	if b.State() != "closed" {
+		t.Fatalf("state after successful probe = %s", b.State())
+	}
+}
+
 func TestResilientProviderShedsAndSurfacesErrors(t *testing.T) {
 	now := time.Unix(0, 0)
 	b := NewCircuitBreaker(2, time.Minute)
@@ -241,6 +272,49 @@ func TestResilientProviderShedsAndSurfacesErrors(t *testing.T) {
 	if err == nil || ev.Provider != "" {
 		t.Fatal("open circuit must not produce evidence")
 	}
+}
+
+func TestLimitedProviderHonorsCancellationAndReleasesSlots(t *testing.T) {
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	inner := &blockingProvider{started: started, finish: finish}
+	limited := NewLimitedProvider(inner, 1, nil)
+	firstDone := make(chan struct{})
+	go func() {
+		_, _ = limited.Evaluate(context.Background(), DecisionRequest{}, []string{"q"})
+		close(firstDone)
+	}()
+	<-started
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := limited.Evaluate(ctx, DecisionRequest{}, []string{"q"}); err == nil {
+		t.Fatal("cancelled waiter should not enter provider")
+	}
+	close(finish)
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first evaluation did not release")
+	}
+	if _, err := limited.Evaluate(context.Background(), DecisionRequest{}, []string{"q"}); err != nil {
+		t.Fatalf("slot was not released: %v", err)
+	}
+}
+
+type blockingProvider struct {
+	started chan struct{}
+	finish  chan struct{}
+}
+
+func (p *blockingProvider) Name() string { return "blocking" }
+func (p *blockingProvider) Evaluate(context.Context, DecisionRequest, []string) (DecisionEvidence, error) {
+	select {
+	case <-p.started:
+	default:
+		close(p.started)
+	}
+	<-p.finish
+	return DecisionEvidence{Provider: "blocking"}, nil
 }
 
 type failingProvider struct{}

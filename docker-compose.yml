@@ -4,19 +4,52 @@ services:
     ports:
       - "8080:8080"
     environment:
+      DEPLOYMENT_PROFILE: "development"
       LISTEN_ADDR: ":8080"
       UPSTREAM_BASE_URL: "http://mock-upstream:9090"
+      MCP_REGISTRY_FILE: "/app/examples/mcp-registry.yaml"
       UPSTREAM_AUTH_MODE: "none"
-      SECURITY_MODE: "shadow"
+      SECURITY_MODE: "off"
+      AUTH_MODE: "off"
       LOG_LEVEL: "info"
       POLICY_FILE: "policies/enterprise-default.yaml"
       QUESTIONS_FILE: "questions/security-v1.yaml"
       THRESHOLDS_FILE: "policies/thresholds-security-v1.yaml"
       TOKEN_VAULT_REDIS_URL: "redis://redis-token-store:6379/0"
-      # TOKEN_VAULT_KEY: inject a 64-hex-char key via secret manager in production
+      TOKEN_VAULT_KEY: "${TOKEN_VAULT_KEY:-}"
+      TELEMETRY_HMAC_KEY: "${TELEMETRY_HMAC_KEY:-}"
+      MAX_RESPONSE_BYTES: "4194304"
+      MAX_PROMPT_CHARS: "65536"
+      MAX_STREAM_DURATION: "5m"
+      MAX_SSE_EVENT_BYTES: "65536"
+      STREAM_INSPECTION_WINDOW: "4096"
+      MAX_BUFFERED_STREAM_BYTES: "1048576"
+      STREAM_FLUSH_INTERVAL: "25ms"
+      STREAM_FAIL_CLOSED: "true"
+      UPSTREAM_DIAL_TIMEOUT: "5s"
+      UPSTREAM_TLS_HANDSHAKE_TIMEOUT: "5s"
+      UPSTREAM_RESPONSE_HEADER_TIMEOUT: "30s"
+      UPSTREAM_REQUEST_TIMEOUT: "2m"
+      UPSTREAM_IDLE_CONN_TIMEOUT: "90s"
+      UPSTREAM_MAX_IDLE_CONNS: "100"
+      UPSTREAM_BREAKER_FAILURE_THRESHOLD: "3"
+      UPSTREAM_BREAKER_OPEN_INTERVAL: "30s"
+      SERVER_READ_HEADER_TIMEOUT: "10s"
+      SERVER_READ_TIMEOUT: "30s"
+      SERVER_IDLE_TIMEOUT: "2m"
+      SERVER_SHUTDOWN_TIMEOUT: "10s"
+      REQUESTS_PER_SECOND: "10"
+      RATE_BURST: "20"
+      MAX_CONCURRENT_REQUESTS: "16"
+      MAX_CONCURRENT_LAYA: "4"
+      LIMITER_MAX_KEYS: "10000"
+      LIMITER_KEY_IDLE_TIMEOUT: "10m"
     depends_on:
       - mock-upstream
+      - fake-mcp
       - redis-token-store
+    tmpfs:
+      - /tmp:rw,mode=1777
 
   mock-upstream:
     build:
@@ -24,6 +57,13 @@ services:
       dockerfile: Dockerfile.mock-upstream
     ports:
       - "9090:9090"
+
+  fake-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.fake-mcp
+    expose:
+      - "9100"
 
   redis-token-store:
     image: redis:7-alpine
@@ -37,6 +77,14 @@ services:
       - "9091:9090"
     volumes:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  fake-siem:
+    profiles: ["audit-siem"]
+    build:
+      context: .
+      dockerfile: Dockerfile.fake-siem
+    expose:
+      - "9200"
 
 # Semantic decision engine — run the official laya-serve locally (FR-007).
 # Load the multilingual checkpoint for Thai/English routing and never expose

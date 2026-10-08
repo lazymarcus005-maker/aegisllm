@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/aegisllm/gateway/internal/securetransport"
 )
 
 func main() {
@@ -26,7 +28,9 @@ func main() {
 	mux.HandleFunc("POST /v1/responses", handleEcho)
 
 	log.Printf("mock upstream listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, mux))
+	if err := securetransport.ServeHTTPServer(securetransport.NewHTTPServer(":"+port, mux), "", ""); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func handleEcho(w http.ResponseWriter, r *http.Request) {

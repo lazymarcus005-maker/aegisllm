@@ -1,6 +1,7 @@
 # Binaries
 /bin/
 /dist/
+/build/
 
 # Environment
 .env
@@ -18,3 +19,7 @@ coverage.out
 # Go
 *.test
 *.out
+
+# Release verification evidence (reports are reproducible and intentionally
+# not committed; schemas and baselines live in the repository).
+release-evidence/

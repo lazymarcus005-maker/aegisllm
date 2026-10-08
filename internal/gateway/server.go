@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,11 +11,23 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/aegisllm/gateway/internal/audit"
+	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/dashboard"
+	"github.com/aegisllm/gateway/internal/limiter"
+	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
+	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/policydistribution"
+	"github.com/aegisllm/gateway/internal/quarantine"
+	"github.com/aegisllm/gateway/internal/ragauth"
+	"github.com/aegisllm/gateway/internal/routing"
+	"github.com/aegisllm/gateway/internal/securetransport"
+	"github.com/aegisllm/gateway/internal/trace"
 	"github.com/aegisllm/gateway/web/leaderboard"
 )
 
@@ -36,33 +49,182 @@ type Pipeline interface {
 	SetSecurityMode(mode string)
 }
 
+type contextualPipeline interface {
+	ProcessRequestContext(context.Context, *core.InspectionEnvelope, []byte) (RequestDecision, error)
+}
+
 // Server is the OpenAI-compatible security gateway HTTP server (FR-001).
 type Server struct {
-	cfg        Config
-	proxy      *Proxy
-	pipeline   Pipeline
-	logger     *slog.Logger
-	readyFns   map[string]func() string
-	readyOrder []string
-	metrics    http.Handler
-	dashboard  *dashboard.Dashboard
+	cfg            Config
+	proxy          *Proxy
+	routed         *RoutedProxy
+	pipeline       Pipeline
+	logger         *slog.Logger
+	readyFns       map[string]func() string
+	readyOrder     []string
+	metrics        http.Handler
+	runtimeMetrics observability.RuntimeRecorder
+	limiter        *limiter.Limiter
+	dashboard      *dashboard.Dashboard
+	dashboardV2    *dashboard.V2
+	authn          *auth.Authenticator
+	policy         *policy.Policy
+	policyRef      atomic.Pointer[policy.Policy]
+	distribution   *policydistribution.Manager
+	mcp            *mcpGateway
+	semanticStatus func() SemanticReadiness
+	materials      map[string]func() securetransport.Status
+	piiStatus      func() []pii.ProviderStatus
+	auditWAL       *audit.WAL
+	auditExporter  *audit.Exporter
+	auditSink      audit.Sink
+	rag            *ragauth.Gateway
+	quarantine     *quarantine.Manager
+	buildInfo      BuildInfo
+}
+
+// BuildInfo is sanitized provenance embedded in release readiness evidence.
+type BuildInfo struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	Date    string `json:"date"`
+}
+
+// SemanticReadiness is the sanitized semantic contract exposed by /ready.
+// It intentionally contains no URL, credentials, raw artifact data, or
+// request content.
+type SemanticReadiness struct {
+	Status                 string `json:"status"`
+	Provider               string `json:"provider,omitempty"`
+	SchemaVersion          string `json:"schema_version,omitempty"`
+	ThresholdPolicyID      string `json:"threshold_policy_id,omitempty"`
+	ThresholdPolicyVersion int    `json:"threshold_policy_version,omitempty"`
+	CheckpointID           string `json:"checkpoint_id,omitempty"`
+	CalibrationTimestamp   string `json:"calibration_timestamp,omitempty"`
+}
+
+type AuditStatus struct {
+	audit.WALStatus
+	Exporter audit.ExporterStatus `json:"exporter"`
 }
 
 // NewServer validates configuration and builds the server.
 func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
-	proxy, err := NewProxy(cfg)
-	if err != nil {
+	cfg = cfg.withRuntimeDefaults()
+	if err := ValidateConfig(cfg); err != nil {
 		return nil, err
 	}
-	switch cfg.SecurityMode {
-	case ModeOff, ModeShadow, ModeEnforce:
-	default:
-		return nil, errors.New("SECURITY_MODE must be one of: off, shadow, enforce")
+	if cfg.profile() == ProfileProduction && strings.TrimSpace(cfg.UpstreamRegistryFile) == "" {
+		return nil, errors.New("production requires UPSTREAM_REGISTRY_FILE")
+	}
+	if cfg.profile() == ProfileProduction && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(cfg.QuarantineRedisURL)), "rediss://") {
+		return nil, errors.New("production requires QUARANTINE_REDIS_URL=rediss://")
+	}
+	var proxy *Proxy
+	var routed *RoutedProxy
+	var err error
+	if cfg.UpstreamRegistryFile != "" {
+		manager, loadErr := routing.NewManagerFile(cfg.UpstreamRegistryFile)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		routed, err = NewRoutedProxy(cfg, manager)
+	} else {
+		proxy, err = NewProxy(cfg)
+	}
+	if err != nil {
+		return nil, err
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, proxy: proxy, logger: logger, readyFns: map[string]func() string{}}, nil
+	if cfg.DeploymentProfile == "" {
+		cfg.DeploymentProfile = ProfileDevelopment
+	}
+	if cfg.JWTTenantClaim == "" {
+		cfg.JWTTenantClaim = "tenant_id"
+	}
+	if cfg.JWTApplicationClaim == "" {
+		cfg.JWTApplicationClaim = "azp"
+	}
+	if cfg.JWTSubjectClaim == "" {
+		cfg.JWTSubjectClaim = "sub"
+	}
+	if cfg.JWTRolesClaim == "" {
+		cfg.JWTRolesClaim = "roles"
+	}
+	if cfg.JWTProviderClaim == "" {
+		cfg.JWTProviderClaim = "provider"
+	}
+	if cfg.JWTSessionClaim == "" {
+		cfg.JWTSessionClaim = "sid"
+	}
+	authn, err := auth.New(auth.Config{
+		Mode: cfg.AuthMode, DeploymentProfile: string(cfg.profile()),
+		AllowUnauthenticated: cfg.AllowUnauthenticatedShadow,
+		PublicKeyFile:        cfg.JWTPublicKeyFile, HMACSecret: cfg.JWTHMACSecret,
+		Issuer: cfg.JWTIssuer, Audience: cfg.JWTAudience,
+		TenantClaim: cfg.JWTTenantClaim, ApplicationClaim: cfg.JWTApplicationClaim,
+		SubjectClaim: cfg.JWTSubjectClaim, RolesClaim: cfg.JWTRolesClaim,
+		ProviderClaim: cfg.JWTProviderClaim, SessionClaim: cfg.JWTSessionClaim,
+		GroupsClaim:           cfg.JWTGroupsClaim,
+		RequireSessionBinding: cfg.profile() == ProfileProduction,
+		ClientCertIdentity:    cfg.AuthMode == auth.ModeMTLS,
+	})
+	if err != nil {
+		return nil, err
+	}
+	srv := &Server{cfg: cfg, proxy: proxy, routed: routed, logger: logger, readyFns: map[string]func() string{}, authn: authn,
+		materials:      map[string]func() securetransport.Status{},
+		runtimeMetrics: observability.Noop{}, limiter: limiter.New(limiter.Config{
+			RequestsPerSecond: cfg.RequestsPerSecond, Burst: cfg.RateBurst,
+			MaxConcurrent: cfg.MaxConcurrentRequests, MaxKeys: cfg.LimiterMaxKeys,
+			KeyIdleTimeout: cfg.LimiterKeyIdleTimeout,
+		})}
+	rag, ragErr := ragauth.NewGateway(ragauth.Config{Mode: cfg.RAGAuthMode, Adapter: cfg.RAGAuthAdapter, Production: cfg.profile() == ProfileProduction,
+		Timeout: cfg.RAGAuthTimeout, Limits: ragauth.Limits{MaxBytes: cfg.MaxBodyBytes, MaxResults: cfg.RAGMaxResults, MaxResultBytes: cfg.RAGMaxResultBytes,
+			MaxDepth: cfg.RAGMaxDepth, MaxNodes: cfg.RAGMaxNodes, MaxConcurrency: cfg.RAGMaxConcurrency, DecisionMaxAge: cfg.RAGDecisionMaxAge}}, ragauth.DenyByDefault{})
+	if ragErr != nil {
+		return nil, ragErr
+	}
+	srv.rag = rag
+	srv.semanticStatus = func() SemanticReadiness {
+		status := "disabled"
+		if cfg.SemanticEnforce {
+			status = "unready"
+		} else if cfg.SecurityMode == ModeShadow {
+			status = "shadow"
+		}
+		return SemanticReadiness{Status: status}
+	}
+	if proxy != nil {
+		for name, fn := range proxy.MaterialStatuses() {
+			srv.AddMaterialReadiness(name, fn)
+		}
+	}
+	if routed != nil {
+		for name, fn := range routed.MaterialStatuses() {
+			srv.AddMaterialReadiness(name, fn)
+		}
+	}
+	if cfg.JWTPublicKeyFile != "" {
+		srv.AddMaterialReadiness("jwt_verification_key", authn.KeyStatus)
+	}
+	if cfg.MCPRegistryFile != "" {
+		mcp, mcpErr := newMCPGateway(srv, cfg.MCPRegistryFile, cfg.MCPCredentialsFile)
+		if mcpErr != nil {
+			if proxy != nil {
+				proxy.Close()
+			}
+			if routed != nil {
+				routed.Close()
+			}
+			return nil, mcpErr
+		}
+		srv.mcp = mcp
+		srv.AddMaterialReadiness("mcp_registry", mcp.registry.status)
+	}
+	return srv, nil
 }
 
 // SetPipeline attaches the security pipeline and propagates the security
@@ -71,15 +233,220 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 func (s *Server) SetPipeline(p Pipeline) {
 	s.pipeline = p
 	p.SetSecurityMode(s.cfg.SecurityMode)
+	if q, ok := p.(interface{ SetQuarantine(*quarantine.Manager) }); ok && s.quarantine != nil {
+		q.SetQuarantine(s.quarantine)
+	}
 }
+
+// SetRAGAuthorization replaces the default deny-by-default adapter with the
+// configured private or deterministic adapter. The gateway remains the owner
+// of identity and enforcement mode.
+func (s *Server) SetRAGAuthorization(g *ragauth.Gateway) {
+	if g != nil {
+		s.rag = g
+		s.applyRAGPolicy(s.currentPolicy())
+	}
+}
+
+// Close releases reload watchers and pooled dependency transports owned by
+// the gateway. It is safe to call during graceful process shutdown.
+func (s *Server) Close() {
+	if s == nil {
+		return
+	}
+	if s.mcp != nil {
+		s.mcp.close()
+	}
+	if s.auditExporter != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ServerShutdownTimeout)
+		_ = s.auditExporter.Close(ctx)
+		cancel()
+	}
+	if s.auditWAL != nil {
+		_ = s.auditWAL.Close()
+	}
+	if s.proxy != nil {
+		s.proxy.Close()
+	}
+	if s.routed != nil {
+		s.routed.Close()
+	}
+	if closer, ok := s.pipeline.(interface{ Close() }); ok {
+		closer.Close()
+	}
+}
+
+func (s *Server) SetAudit(wal *audit.WAL, exporter *audit.Exporter, sinks ...audit.Sink) {
+	s.auditWAL, s.auditExporter = wal, exporter
+	if len(sinks) > 0 {
+		s.auditSink = sinks[0]
+	}
+}
+
+func (s *Server) recordAudit(ctx context.Context, event audit.Event) error {
+	if s.auditSink != nil {
+		if durable, ok := s.auditSink.(interface {
+			RecordDurable(context.Context, audit.Event) (audit.Event, error)
+		}); ok {
+			_, err := durable.RecordDurable(ctx, event)
+			return err
+		}
+		s.auditSink.Record(event)
+		return nil
+	}
+	if s.auditWAL != nil {
+		_, err := s.auditWAL.Append(ctx, event)
+		return err
+	}
+	return nil
+}
+
+func (s *Server) AuditStatus() AuditStatus {
+	if s.auditWAL == nil {
+		return AuditStatus{WALStatus: audit.WALStatus{Ready: false, LastError: "audit WAL unavailable"}, Exporter: audit.ExporterStatus{State: "unconfigured"}}
+	}
+	status := AuditStatus{WALStatus: s.auditWAL.Status(), Exporter: audit.ExporterStatus{State: "unconfigured"}}
+	if s.auditExporter != nil {
+		status.Exporter = s.auditExporter.Status()
+	}
+	return status
+}
+
+// SetPolicy attaches the already validated policy for the operator-only
+// effective-policy endpoint. The endpoint exposes only Policy.Summary().
+func (s *Server) SetPolicy(p *policy.Policy) {
+	s.policy = p
+	s.policyRef.Store(p)
+	s.applyRAGPolicy(p)
+	s.SetPolicyQuarantine(p)
+}
+
+func (s *Server) SetRuntimePolicy(p *policy.Policy) {
+	s.policyRef.Store(p)
+	s.applyRAGPolicy(p)
+	s.SetPolicyQuarantine(p)
+}
+
+func (s *Server) applyRAGPolicy(p *policy.Policy) {
+	if s.rag == nil {
+		return
+	}
+	if p == nil || p.RAG == nil {
+		s.rag.SetControls(ragauth.Controls{})
+		return
+	}
+	s.rag.SetControls(ragauth.Controls{Mode: p.RAG.Mode, RequirePurpose: p.RAG.RequirePurpose, RequireCollection: p.RAG.RequireCollection,
+		RequireClassification: p.RAG.RequireClassification, AllowedOperations: append([]string(nil), p.RAG.AllowedOperations...)})
+}
+
+func (s *Server) SetPolicyDistribution(m *policydistribution.Manager) { s.distribution = m }
+
+func (s *Server) currentPolicy() *policy.Policy {
+	if p := s.policyRef.Load(); p != nil {
+		return p
+	}
+	return s.policy
+}
+
+// SetPIIProviderStatus mounts a sanitized operator projection. The callback
+// must return metadata only; provider URLs, credentials, payloads, and text
+// samples are intentionally not representable in ProviderStatus.
+func (s *Server) SetPIIProviderStatus(fn func() []pii.ProviderStatus) { s.piiStatus = fn }
+
+func (s *Server) routeConstraint(action core.Action, provider string) routing.Constraint {
+	var out routing.Constraint
+	currentPolicy := s.currentPolicy()
+	if currentPolicy != nil && currentPolicy.Routing != nil {
+		if action == core.ActionForceLocalModel {
+			c := currentPolicy.Routing.ForceLocal
+			out = routing.Constraint{Routes: c.Routes, Classes: c.Classes, Providers: c.Providers, FallbackChain: c.FallbackChain}
+		} else {
+			for name, c := range currentPolicy.Routing.Actions {
+				if strings.EqualFold(name, string(action)) {
+					out = routing.Constraint{Routes: c.Routes, Classes: c.Classes, Providers: c.Providers, FallbackChain: c.FallbackChain}
+					break
+				}
+			}
+			if len(out.Routes) == 0 && len(out.Classes) == 0 && len(out.Providers) == 0 && out.FallbackChain == "" {
+				if c, ok := currentPolicy.Routing.ProviderBoundaries[provider]; ok {
+					out = routing.Constraint{Routes: c.Routes, Classes: c.Classes, Providers: c.Providers, FallbackChain: c.FallbackChain}
+				}
+			}
+		}
+		if action != core.ActionForceLocalModel {
+			if boundary, ok := currentPolicy.Routing.ProviderBoundaries[provider]; ok {
+				if len(boundary.Classes) > 0 {
+					out.Classes = boundary.Classes
+				}
+				if len(boundary.Providers) > 0 {
+					out.Providers = boundary.Providers
+				}
+				if len(boundary.Routes) > 0 {
+					out.Routes = boundary.Routes
+				}
+				if boundary.FallbackChain != "" {
+					out.FallbackChain = boundary.FallbackChain
+				}
+			}
+		}
+	}
+	if action == core.ActionForceLocalModel && len(out.Classes) == 0 && len(out.Routes) == 0 && out.FallbackChain == "" {
+		out.Classes = []string{string(routing.ClassLocal)}
+	}
+	return out
+}
+
+func (s *Server) recordRoute(env *core.InspectionEnvelope, action core.Action, selection routing.Selection) {
+	if selection.Route.ID == "" {
+		return
+	}
+	if auditor, ok := s.pipeline.(interface {
+		AuditRoute(*core.InspectionEnvelope, core.Action, string, string, string, string, string, bool)
+	}); ok {
+		auditor.AuditRoute(env, action, selection.Route.ID, string(selection.Route.Class), selection.Route.Provider, selection.RequestedModel, selection.RoutedModel, selection.Failover)
+	}
+	if recorder, ok := s.runtimeMetrics.(interface {
+		ObserveRouteSelected(string, string, string, bool)
+	}); ok {
+		recorder.ObserveRouteSelected(selection.Route.ID, string(selection.Route.Class), env.Metadata["endpoint_family"], selection.Failover)
+	}
+}
+
+func (s *Server) SetSemanticReadiness(fn func() SemanticReadiness) { s.semanticStatus = fn }
+
+// SetBuildInfo attaches release provenance to the sanitized readiness record.
+func (s *Server) SetBuildInfo(info BuildInfo) { s.buildInfo = info }
 
 // SetMetricsHandler mounts a handler at GET /metrics (spec §15). The
 // production observability handler also provides the metrics source used by
 // the protection dashboard, keeping dashboard wiring in the server boundary.
 func (s *Server) SetMetricsHandler(h http.Handler) {
 	s.metrics = h
+	if s.routed != nil {
+		if provider, ok := h.(interface {
+			RuntimeMetrics() observability.RuntimeRecorder
+		}); ok {
+			if routeMetrics, ok := provider.RuntimeMetrics().(interface {
+				ObserveRouteHealth(string, string, string, bool)
+			}); ok {
+				s.routed.SetRouteMetrics(routeMetrics)
+			}
+		}
+	}
+	if provider, ok := h.(interface {
+		RuntimeMetrics() observability.RuntimeRecorder
+	}); ok {
+		s.runtimeMetrics = provider.RuntimeMetrics()
+	}
 	if provider, ok := h.(dashboard.MetricsProvider); ok {
 		s.dashboard = dashboard.New(provider.ProtectionMetrics())
+		s.dashboardV2 = dashboard.NewV2()
+		s.dashboardV2.SetStatusProvider(s.dashboardStatus)
+		if binder, ok := h.(interface {
+			SetDashboardObserver(observability.DashboardObserver)
+		}); ok {
+			binder.SetDashboardObserver(s.dashboardV2.Aggregator())
+		}
 	}
 }
 
@@ -96,6 +463,34 @@ func (s *Server) AddReadinessCheck(name string, fn func() string) {
 	s.readyFns[name] = fn
 }
 
+// AddMaterialReadiness registers sanitized status for reloadable TLS,
+// certificate, secret, or keyring material. Names are operator-chosen bounded
+// labels and status never contains the underlying path or value.
+func (s *Server) AddMaterialReadiness(name string, fn func() securetransport.Status) {
+	if name == "" || fn == nil {
+		return
+	}
+	s.materials[name] = fn
+}
+
+func (s *Server) SetSecureMaterialMetrics(metrics securetransport.Metrics) {
+	if s == nil {
+		return
+	}
+	if s.proxy != nil {
+		s.proxy.SetSecureMaterialMetrics(metrics)
+	}
+	if s.routed != nil {
+		s.routed.SetSecureMaterialMetrics(metrics)
+	}
+	if s.authn != nil {
+		s.authn.SetSecureMaterialMetrics(metrics)
+	}
+	if s.mcp != nil {
+		s.mcp.setMetrics(metrics)
+	}
+}
+
 // Handler returns the routed HTTP handler.
 func (s *Server) handleProtectionStats(w http.ResponseWriter, _ *http.Request) {
 	if s.dashboard == nil {
@@ -103,6 +498,35 @@ func (s *Server) handleProtectionStats(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.dashboard.Snapshot())
+}
+
+func (s *Server) handleEffectivePolicy(w http.ResponseWriter, _ *http.Request) {
+	pol := s.currentPolicy()
+	if pol == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "policy unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"policy_id": pol.ID, "policy_version": pol.Version,
+		"owner": pol.Owner, "effective_date": pol.EffectiveDate,
+		"rules": pol.Summary(),
+	})
+}
+
+func (s *Server) handlePIIProviders(w http.ResponseWriter, _ *http.Request) {
+	if s.piiStatus == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"version": 1, "providers": []pii.ProviderStatus{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": 1, "providers": s.piiStatus()})
+}
+
+func (s *Server) handleRAGStatus(w http.ResponseWriter, _ *http.Request) {
+	if s.rag == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RAG authorization unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": 1, "status": s.rag.Status()})
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
@@ -116,30 +540,227 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(data)
 }
 
+func (s *Server) dashboardStatus() dashboard.RuntimeStatus {
+	status := dashboard.RuntimeStatus{
+		DeploymentProfile: string(s.cfg.profile()), SecurityMode: s.cfg.SecurityMode,
+		Readiness:  dashboard.ComponentStatus{Name: "readiness", State: "ready", DetailURL: "/ready"},
+		Components: []dashboard.ComponentStatus{},
+	}
+	if reason := s.readyCheck(); reason != "" {
+		status.Readiness.State = "degraded"
+		status.Readiness.Detail = "upstream is not ready"
+	} else {
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "upstream", State: "healthy", DetailURL: "/ready"})
+	}
+	for _, name := range s.readyOrder {
+		state := "healthy"
+		detail := ""
+		if reason := s.readyFns[name](); reason != "" {
+			state, detail, status.Readiness.State = "degraded", "required readiness check failed", "degraded"
+		}
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: safeSemanticMetadata(name), State: state, Detail: detail, DetailURL: "/ready"})
+	}
+	if s.auditWAL == nil {
+		status.Audit.State = "disabled"
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "audit", State: "disabled", Detail: "durable audit is not configured", DetailURL: "/api/audit/status"})
+	} else if auditStatus := s.AuditStatus(); !auditStatus.Ready {
+		status.Audit.State = "degraded"
+		status.Audit.QueueBytes = auditStatus.QueueBytes
+		status.Audit.OldestAgeSeconds = auditStatus.OldestAgeSeconds
+		status.Audit.ExporterState = auditStatus.Exporter.State
+		status.Readiness.State = "degraded"
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "audit", State: "degraded", Detail: "durable audit is not ready", DetailURL: "/api/audit/status"})
+	} else {
+		status.Audit.State = "healthy"
+		status.Audit.QueueBytes = auditStatus.QueueBytes
+		status.Audit.OldestAgeSeconds = auditStatus.OldestAgeSeconds
+		status.Audit.ExporterState = auditStatus.Exporter.State
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "audit", State: "healthy", DetailURL: "/api/audit/status"})
+	}
+	if s.quarantine == nil {
+		status.Quarantine.State = "disabled"
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "quarantine", State: "disabled", Detail: "incident quarantine is not configured", DetailURL: "/api/quarantine"})
+	} else if summary, err := s.quarantine.ListSummary(context.Background()); err != nil {
+		status.Quarantine.State = "degraded"
+		status.Readiness.State = "degraded"
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "quarantine", State: "degraded", Detail: "quarantine shared state is unavailable", DetailURL: "/api/quarantine"})
+	} else {
+		status.Quarantine = dashboard.QuarantineStatus{State: "healthy", Active: summary.Active, Acknowledged: summary.Acknowledged, Probation: summary.Probation}
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "quarantine", State: "healthy", Detail: "sanitized aggregate containment status", DetailURL: "/api/quarantine"})
+	}
+	semantic := SemanticReadiness{Status: "disabled"}
+	if s.semanticStatus != nil {
+		semantic = sanitizeSemanticReadiness(s.semanticStatus())
+	}
+	semanticState := "disabled"
+	if semantic.Status == "ready" || semantic.Status == "shadow" {
+		semanticState = "healthy"
+	} else if semantic.Status == "unready" {
+		semanticState = "degraded"
+		status.Readiness.State = "degraded"
+	}
+	status.Components = append(status.Components, dashboard.ComponentStatus{Name: "semantic", State: semanticState, Detail: semantic.Status})
+	status.Components = append(status.Components, dashboard.ComponentStatus{Name: "streaming", State: "healthy", Detail: "bounded response inspection is available"})
+	if s.piiStatus == nil {
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "ner", State: "disabled", Detail: "no NER provider registry is configured", DetailURL: "/api/pii/providers"})
+	} else {
+		providers := s.piiStatus()
+		state := "healthy"
+		if len(providers) == 0 {
+			state = "disabled"
+		} else {
+			for _, provider := range providers {
+				if !provider.Available {
+					state = "degraded"
+					break
+				}
+			}
+		}
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "ner", State: state, Detail: "sanitized provider availability", DetailURL: "/api/pii/providers"})
+	}
+	if s.mcp == nil {
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "mcp", State: "disabled", Detail: "MCP integration is not configured", DetailURL: "/api/mcp/servers"})
+	} else {
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "mcp", State: "healthy", DetailURL: "/api/mcp/servers"})
+	}
+	if p := s.currentPolicy(); p != nil {
+		status.Policy.ID, status.Policy.Version = p.ID, p.Version
+	}
+	if s.distribution != nil {
+		active := s.distribution.Status().Active
+		status.Policy.Sequence, status.Policy.Hash = active.Sequence, shortHash(active.BundleHash)
+		if status.Policy.ID == "" {
+			status.Policy.ID, status.Policy.Version = active.PolicyID, active.PolicyVersion
+		}
+	}
+	return status
+}
+
+func shortHash(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 12 {
+		return value[:12]
+	}
+	return value
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	dependencies := map[string]string{"upstream": "ready"}
+	var firstReason string
 	if reason := s.readyCheck(); reason != "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": reason})
-		return
+		dependencies["upstream"] = "not_ready"
+		firstReason = reason
 	}
 	for _, name := range s.readyOrder {
 		if reason := s.readyFns[name](); reason != "" {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready", "reason": name + ": " + reason})
-			return
+			dependencies[name] = "not_ready"
+			if firstReason == "" {
+				firstReason = name + ": " + reason
+			}
+		} else {
+			dependencies[name] = "ready"
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	materialResponse := map[string]any{}
+	for name, fn := range s.materials {
+		status := fn()
+		entry := map[string]any{"loaded": status.Loaded, "generation": status.Generation, "last_reload_success": status.LastSuccess}
+		if !status.LastFailure.IsZero() {
+			entry["last_reload_failure"] = status.LastFailure
+			entry["reload_failures"] = status.FailureCount
+		}
+		if !status.CertificateExpiry.IsZero() {
+			entry["certificate_expiry"] = status.CertificateExpiry
+		}
+		materialResponse[safeSemanticMetadata(name)] = entry
+		if !status.Loaded || (s.cfg.profile() == ProfileProduction && status.FailureCount > 0 && status.LastFailure.After(status.LastSuccess)) {
+			if firstReason == "" {
+				firstReason = "secure material is not ready"
+			}
+		}
+	}
+	response := map[string]any{
+		"status":             "ready",
+		"deployment_profile": string(s.cfg.profile()),
+		"security_mode":      s.cfg.SecurityMode,
+		"build":              s.buildInfo,
+		"dependencies":       dependencies,
+		"secure_material":    materialResponse,
+	}
+	if s.auditWAL != nil {
+		status := s.auditWAL.Status()
+		response["audit"] = status
+		if !status.Ready && s.cfg.profile() == ProfileProduction && firstReason == "" {
+			firstReason = "audit: durable WAL is not ready"
+		}
+	}
+	semantic := SemanticReadiness{Status: "disabled"}
+	if s.semanticStatus != nil {
+		semantic = s.semanticStatus()
+	}
+	semantic = sanitizeSemanticReadiness(semantic)
+	response["semantic"] = semantic
+	if semantic.Status == "unready" && firstReason == "" {
+		firstReason = "semantic: semantic contract is not ready"
+	}
+	if firstReason != "" {
+		response["status"] = "not_ready"
+		response["reason"] = firstReason
+		writeJSON(w, http.StatusServiceUnavailable, response)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func sanitizeSemanticReadiness(in SemanticReadiness) SemanticReadiness {
+	switch in.Status {
+	case "disabled", "shadow", "ready", "unready":
+	default:
+		in.Status = "unready"
+	}
+	in.Provider = safeSemanticMetadata(in.Provider)
+	in.SchemaVersion = safeSemanticMetadata(in.SchemaVersion)
+	in.ThresholdPolicyID = safeSemanticMetadata(in.ThresholdPolicyID)
+	in.CheckpointID = safeSemanticMetadata(in.CheckpointID)
+	in.CalibrationTimestamp = safeSemanticMetadata(in.CalibrationTimestamp)
+	return in
+}
+
+func safeSemanticMetadata(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 64 {
+		value = value[:64]
+	}
+	for i, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("._:-", r) {
+			continue
+		}
+		value = value[:i] + "_" + value[i+len(string(r)):]
+	}
+	return value
 }
 
 func (s *Server) readyCheck() string {
+	if s.routed != nil {
+		return s.routed.Readiness()
+	}
+	if s.proxy != nil {
+		if reason := s.proxy.Readiness(); reason != "" {
+			return reason
+		}
+	}
 	if s.cfg.UpstreamBaseURL == "" {
 		return "UPSTREAM_BASE_URL not configured"
 	}
 	u, err := url.Parse(s.cfg.UpstreamBaseURL)
 	if err != nil {
+		return "invalid UPSTREAM_BASE_URL"
+	}
+	if u.Scheme == "" || u.Host == "" {
 		return "invalid UPSTREAM_BASE_URL"
 	}
 	host := u.Host
@@ -152,13 +773,15 @@ func (s *Server) readyCheck() string {
 	}
 	conn, err := net.DialTimeout("tcp", host, time.Second)
 	if err != nil {
-		return "upstream unreachable: " + u.Host
+		return "upstream unreachable"
 	}
 	_ = conn.Close()
 	return ""
 }
 
 func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
+	requestCtx, traceCtx := trace.FromRequest(r)
+	r = r.WithContext(requestCtx)
 	normalizer := NormalizerFor(r.URL.Path)
 	if normalizer == nil {
 		http.NotFound(w, r)
@@ -177,56 +800,172 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 
 	env, err := normalizer.ParseRequest(body)
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "", err.Error(), "")
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "", "Invalid request body.", "")
 		return
 	}
 	s.enrich(env, r)
+	env.Metadata["trace_id"] = traceCtx.TraceID
+	env.Metadata["span_id"] = traceCtx.SpanID
+	env.Metadata["trace_flags"] = traceCtx.Flags
 	env.Metadata["endpoint_path"] = r.URL.Path
+	if decision, checkErr := s.checkQuarantine(requestCtx, r, env, quarantine.Resource{Provider: env.Target.Provider, Endpoint: env.Metadata["endpoint_family"]}); checkErr != nil {
+		if s.cfg.profile() == ProfileProduction {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "gateway_error", "QUARANTINE_STATE_UNAVAILABLE", "Security quarantine state is unavailable.", env.RequestID)
+			return
+		}
+	} else if !s.enforceQuarantine(w, decision, env.RequestID) {
+		return
+	}
+	if promptChars(env) > s.cfg.MaxPromptChars {
+		s.runtimeMetrics.ObservePromptBudgetRejected()
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "PROMPT_TOO_LARGE", "Prompt exceeds the configured character limit.", env.RequestID)
+		return
+	}
+	if s.rag != nil {
+		pol := s.currentPolicy()
+		policyID, policyVersion := "", 0
+		if pol != nil {
+			policyID, policyVersion = pol.ID, pol.Version
+		}
+		ragIdentity := ragauth.Identity{Tenant: env.Tenant, Application: env.Application, Subject: env.User.Subject, Roles: append([]string(nil), env.User.Roles...)}
+		if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
+			ragIdentity.Groups = append([]string(nil), principal.Groups...)
+		}
+		ragOutcome, ragErr := s.rag.Authorize(requestCtx, body, ragIdentity, env.RequestID, policyID, policyVersion)
+		if ragOutcome.Detected {
+			s.observeRAG(ragOutcome)
+			if !ragOutcome.Allowed && ragIdentity.Tenant != "" {
+				s.recordQuarantineSignal(requestCtx, quarantine.Signal{Reason: quarantine.ReasonRAGCrossScope,
+					Identity: quarantine.Identity{Tenant: ragIdentity.Tenant, Application: ragIdentity.Application, Subject: ragIdentity.Subject, Session: env.Metadata["session_binding"]},
+					Policy:   quarantine.Snapshot{ID: policyID, Version: policyVersion}, Evidence: []quarantine.EvidenceRef{{Kind: "rag_decision", Digest: quarantineDigest(ragOutcome.Code + ":" + ragOutcome.Reason)}}, Trusted: env.Metadata["verified_identity"] == "true", IdempotencyKey: env.RequestID + ":rag"})
+			}
+			event := audit.Event{RequestID: env.RequestID, Timestamp: time.Now().UTC(), Direction: core.DirectionRequest, TraceID: traceCtx.TraceID, SpanID: traceCtx.SpanID,
+				Application: env.Application, Tenant: env.Tenant, User: env.User.Subject, Roles: append([]string(nil), env.User.Roles...), Provider: env.Target.Provider,
+				PolicyID: policyID, PolicyVersion: policyVersion, Mode: s.cfg.SecurityMode, Component: "rag_authorization", Action: core.ActionAllow,
+				Code: ragOutcome.Code, Reason: ragOutcome.Reason, RAG: true, RAGChunks: ragOutcome.Chunks, RAGOperation: "retrieve"}
+			if !ragOutcome.Allowed {
+				event.Action = core.ActionBlock
+				event.AppliedAction = core.ActionBlock
+			}
+			if auditErr := s.recordAudit(requestCtx, event); auditErr != nil && s.cfg.DeploymentProfile == ProfileProduction {
+				writeOpenAIError(w, http.StatusServiceUnavailable, "gateway_error", "AUDIT_UNAVAILABLE", "Security audit is unavailable.", env.RequestID)
+				return
+			}
+			if ragErr != nil || !ragOutcome.Allowed {
+				if s.cfg.SecurityMode == ModeEnforce || s.cfg.DeploymentProfile == ProfileProduction {
+					code := ragOutcome.Code
+					if code == "" {
+						code = "RAG_AUTH_DENIED"
+					}
+					writeOpenAIError(w, http.StatusForbidden, "security_policy_violation", code, "Retrieved context was not authorized.", env.RequestID)
+					return
+				}
+			}
+		}
+	}
 	isStream := env.Metadata["stream"] == "true" || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream")
 	if isStream {
-		env.Metadata["skipped_stream"] = "true"
+		env.Metadata["stream"] = "true"
 	}
-
+	var streamCancel context.CancelFunc
+	if isStream {
+		requestCtx, streamCancel = context.WithTimeout(requestCtx, s.cfg.MaxStreamDuration)
+		defer streamCancel()
+		r = r.WithContext(requestCtx)
+	}
 	forwardBody := body
+	routeAction := core.ActionAllow
 	if s.pipeline != nil {
-		dec, perr := s.pipeline.ProcessRequest(env, body)
+		var dec RequestDecision
+		var perr error
+		if contextual, ok := s.pipeline.(contextualPipeline); ok {
+			dec, perr = contextual.ProcessRequestContext(requestCtx, env, body)
+		} else {
+			dec, perr = s.pipeline.ProcessRequest(env, body)
+		}
 		if perr != nil {
 			s.logger.Error("security pipeline failed", "request_id", env.RequestID, "error", perr)
 			writeOpenAIError(w, http.StatusInternalServerError, "gateway_error", "", "Security pipeline failure.", env.RequestID)
 			return
 		}
-		if !isStream {
-			forwardBody = s.applyDecision(w, env, normalizer, dec, forwardBody)
+		if s.cfg.SecurityMode == ModeEnforce {
+			routeAction = dec.Action
 		}
+		forwardBody = s.applyDecision(w, env, normalizer, dec, forwardBody)
 		if forwardBody == nil {
 			return // response already written
 		}
 	}
 
-	resp, ferr := s.proxy.Forward(r, forwardBody)
+	var resp *http.Response
+	var ferr error
+	var selection routing.Selection
+	if s.routed != nil {
+		constraint := s.routeConstraint(routeAction, env.Target.Provider)
+		resp, selection, ferr = s.routed.Forward(r, forwardBody, routeInput(env, r.URL.Path, routeAction, constraint))
+		if ferr == nil {
+			s.recordRoute(env, routeAction, selection)
+		}
+	} else {
+		resp, ferr = s.proxy.Forward(r, forwardBody)
+	}
 	if ferr != nil {
-		s.logger.Error("upstream request failed", "request_id", env.RequestID, "error", ferr)
-		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "", "Upstream gateway request failed.", env.RequestID)
+		if s.routed != nil && strings.HasPrefix(ferr.Error(), "ROUTE_") {
+			if recorder, ok := s.runtimeMetrics.(interface{ ObserveRouteRejected(string, string) }); ok {
+				recorder.ObserveRouteRejected(ferr.Error(), env.Metadata["endpoint_family"])
+			}
+			if recorder, ok := s.runtimeMetrics.(interface{ ObserveRouteUnavailable(string, string) }); ok {
+				class := "cloud"
+				if routeAction == core.ActionForceLocalModel {
+					class = "local"
+				}
+				recorder.ObserveRouteUnavailable(class, env.Metadata["endpoint_family"])
+			}
+			s.writeRouteError(w, ferr, env.RequestID)
+			return
+		}
+		s.writeUpstreamError(w, ferr, env.RequestID)
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusInternalServerError && env.Metadata["verified_identity"] == "true" {
+		s.recordQuarantineSignal(requestCtx, quarantine.Signal{Reason: quarantine.ReasonProviderIntegrity, Identity: identityFromEnvelope(env), Resource: quarantine.Resource{Provider: env.Target.Provider}, Policy: quarantine.Snapshot{ID: func() string {
+			if p := s.currentPolicy(); p != nil {
+				return p.ID
+			}
+			return ""
+		}(), Version: func() int {
+			if p := s.currentPolicy(); p != nil {
+				return p.Version
+			}
+			return 0
+		}()}, Evidence: []quarantine.EvidenceRef{{Kind: "provider_status", Digest: quarantineDigest(resp.Status)}}, Trusted: true, IdempotencyKey: env.RequestID + ":provider:" + resp.Status})
+	}
 
-	// Outbound protection (ticket 07): non-streaming JSON responses are
-	// scanned and policy-filtered before reaching the client. Streaming
-	// follows the deferred plan in architecture §13.
+	// Outbound protection scans buffered JSON here and stateful SSE through the
+	// bounded streaming adapter below.
 	_, embeddingsResponse := normalizer.(openAIEmbeddingsNormalizer)
-	if s.pipeline == nil || s.cfg.SecurityMode == ModeOff || isStream ||
-		embeddingsResponse || resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
-		copyResponseHeaders(w, resp.Header)
-		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+	if isStream {
+		s.copyStreamResponse(w, resp, env, normalizer)
 		return
 	}
 
-	bodyBytes, rerr := io.ReadAll(io.LimitReader(resp.Body, s.cfg.MaxBodyBytes))
+	bodyBytes, tooLarge, rerr := readBounded(resp.Body, s.cfg.MaxResponseBytes)
 	if rerr != nil {
-		s.logger.Error("upstream response read failed", "request_id", env.RequestID, "error", rerr)
-		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "", "Upstream response read failed.", env.RequestID)
+		s.proxy.RecordFailure()
+		s.writeUpstreamError(w, rerr, env.RequestID)
+		return
+	}
+	if tooLarge {
+		s.runtimeMetrics.ObserveResponseTooLarge()
+		writeOpenAIError(w, http.StatusBadGateway, "upstream_error", "UPSTREAM_RESPONSE_TOO_LARGE", "Upstream response exceeds the configured limit.", env.RequestID)
+		return
+	}
+	if s.pipeline == nil || s.cfg.SecurityMode == ModeOff ||
+		embeddingsResponse || resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "application/json") {
+		copyResponseHeaders(w, resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, bytes.NewReader(bodyBytes))
 		return
 	}
 
@@ -237,6 +976,64 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 	copyResponseHeaders(w, resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, bytes.NewReader(out))
+}
+
+func (s *Server) observeRAG(outcome ragauth.Outcome) {
+	if recorder, ok := s.runtimeMetrics.(interface{ ObserveRAG(string, string) }); ok {
+		state := "allowed"
+		if !outcome.Allowed {
+			state = "denied"
+		}
+		recorder.ObserveRAG(state, outcome.Code)
+	}
+}
+
+func promptChars(env *core.InspectionEnvelope) int {
+	n := 0
+	for _, part := range env.TextParts() {
+		n += len([]rune(part.Text))
+	}
+	return n
+}
+
+func readBounded(body io.Reader, max int64) ([]byte, bool, error) {
+	if max <= 0 {
+		max = 1
+	}
+	data, err := io.ReadAll(io.LimitReader(body, max+1))
+	return data, int64(len(data)) > max, err
+}
+
+func (s *Server) writeUpstreamError(w http.ResponseWriter, err error, requestID string) {
+	status := http.StatusBadGateway
+	code := "UPSTREAM_REQUEST_FAILED"
+	message := "Upstream gateway request failed."
+	switch {
+	case errors.Is(err, ErrUpstreamBreakerOpen):
+		status, code, message = http.StatusServiceUnavailable, "UPSTREAM_BREAKER_OPEN", "Upstream dependency is temporarily unavailable."
+		s.runtimeMetrics.ObserveBreakerOpen()
+	case upstreamTimeout(err):
+		status, code, message = http.StatusGatewayTimeout, "UPSTREAM_TIMEOUT", "Upstream gateway request timed out."
+		s.runtimeMetrics.ObserveUpstreamTimeout()
+	}
+	writeOpenAIError(w, status, "upstream_error", code, message, requestID)
+}
+
+func (s *Server) writeRouteError(w http.ResponseWriter, err error, requestID string) {
+	code := err.Error()
+	status := http.StatusServiceUnavailable
+	message := "No configured upstream route is available."
+	switch code {
+	case "ROUTE_MODEL_REJECTED":
+		status, message = http.StatusBadRequest, "Requested model is not allowed for the configured route."
+	case "ROUTE_CAPABILITY_REJECTED":
+		status, message = http.StatusBadRequest, "Requested endpoint capability is not available on the configured route."
+	case "ROUTE_PROVIDER_REJECTED":
+		status, message = http.StatusForbidden, "Verified provider boundary rejected the route."
+	case "ROUTE_LOCAL_UNAVAILABLE":
+		status, message = http.StatusServiceUnavailable, "A healthy local model route is unavailable."
+	}
+	writeOpenAIError(w, status, "routing_error", code, message, requestID)
 }
 
 // processOutbound applies the response outcome for the current mode; a
@@ -337,6 +1134,30 @@ func (s *Server) applyDecision(w http.ResponseWriter, env *core.InspectionEnvelo
 }
 
 func (s *Server) enrich(env *core.InspectionEnvelope, r *http.Request) {
+	if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
+		for _, header := range []string{s.cfg.HeaderApplication, s.cfg.HeaderTenant, s.cfg.HeaderUser, s.cfg.HeaderTargetProvider,
+			"X-Tenant-Id", "X-Application-Id", "X-User-Id", "X-Target-Provider", "Authorization"} {
+			if header != "" {
+				r.Header.Del(header)
+			}
+		}
+		env.Application = principal.Application
+		env.Tenant = principal.Tenant
+		env.User.Subject = principal.Subject
+		env.User.Roles = append([]string(nil), principal.Roles...)
+		if principal.SessionBound {
+			env.Metadata["session_binding"] = principal.SessionID
+		}
+		env.Metadata["verified_identity"] = "true"
+		env.Target.Provider = principal.Provider
+		if env.Target.Provider == "" {
+			env.Target.Provider = s.cfg.DefaultTargetProvider
+		}
+		if principal.Provider != "" {
+			env.Metadata["verified_provider"] = "true"
+		}
+		return
+	}
 	env.Application = headerOr(r, s.cfg.HeaderApplication, "unknown")
 	env.Tenant = r.Header.Get(s.cfg.HeaderTenant)
 	env.User.Subject = r.Header.Get(s.cfg.HeaderUser)

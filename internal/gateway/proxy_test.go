@@ -5,7 +5,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+	"time"
 )
 
 func TestForwardPreservesPathBodyAndContentType(t *testing.T) {
@@ -77,6 +79,51 @@ func TestForwardBearerAuthMode(t *testing.T) {
 	}
 }
 
+func TestForwardBearerCredentialFileRotation(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	path := t.TempDir() + "/credential"
+	if err := os.WriteFile(path, []byte("first-secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewProxy(Config{UpstreamBaseURL: upstream.URL, UpstreamAuthMode: "bearer", UpstreamAPIKeyFile: path, TLSReloadInterval: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	req := httptest.NewRequest(http.MethodPost, "http://g/v1/chat/completions", nil)
+	if _, err := p.Forward(req, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer first-secret" {
+		t.Fatalf("initial auth=%q", gotAuth)
+	}
+	if err := os.WriteFile(path, []byte("second-secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if _, err := p.Forward(req, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer second-secret" {
+		t.Fatalf("rotated auth=%q", gotAuth)
+	}
+	if err := os.WriteFile(path, []byte("\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if _, err := p.Forward(req, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer second-secret" {
+		t.Fatalf("malformed replacement displaced credential=%q", gotAuth)
+	}
+}
+
 func TestForwardStripsConfiguredPathPrefix(t *testing.T) {
 	var gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -117,5 +164,28 @@ func TestNewProxyValidation(t *testing.T) {
 				t.Fatal("expected validation error")
 			}
 		})
+	}
+}
+
+func BenchmarkProxyForward(b *testing.B) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	p, err := NewProxy(Config{UpstreamBaseURL: upstream.URL, UpstreamAuthMode: "none"})
+	if err != nil {
+		b.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://gateway.local/v1/chat/completions", nil)
+	body := []byte(`{"model":"m"}`)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		resp, err := p.Forward(req, body)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 	}
 }

@@ -1,0 +1,10 @@
+# package|target|seed purpose
+./internal/gateway|FuzzChatCompletionsParser|OpenAI structured request parser
+./internal/detectors|FuzzEvasionScannerNoPanic|canonicalization and evasion projection
+./internal/streaming|FuzzParser|SSE framing and bounded event parser
+./internal/policy|FuzzPolicyLoader|strict policy YAML loader
+./internal/policydistribution|FuzzBundlePublicKeyParser|signed bundle key parser
+./internal/audit|FuzzWALRecovery|audit WAL recovery on arbitrary bytes
+./internal/auth|FuzzJWTParser|JWT parser/token placeholder boundary
+./internal/tokenization|FuzzPlaceholderParser|opaque placeholder parser
+./internal/quarantine|FuzzSignalValidation|bounded trusted incident signal validation

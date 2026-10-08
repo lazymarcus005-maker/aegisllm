@@ -1,0 +1,15 @@
+{
+  "schema_version": "aegisllm.coverage/v1",
+  "overall_floor": 0.35,
+  "critical_floors": {
+    "internal/auth": 0.55,
+    "internal/audit": 0.60,
+    "internal/detectors": 0.55,
+    "internal/gateway": 0.55,
+    "internal/policy": 0.60,
+    "internal/tokenization": 0.60,
+    "internal/streaming": 0.60
+  },
+  "exclusions": ["cmd/* with no test files", "web static assets", "generated/fake provider binaries"],
+  "method": "aggregate Go statement coverage from package test profiles; no generated binaries or fake-only code is counted"
+}

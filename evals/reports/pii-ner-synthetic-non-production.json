@@ -1,0 +1,16 @@
+{
+  "schema": "aegisllm.pii-eval/v1",
+  "dataset_sha256": "7438b3cc75be997c36ca0b173a56c10fa7e154805483fc544ec355c46c7d149d",
+  "provider": "fake",
+  "production_eligible": false,
+  "examples": 3,
+  "slices": [
+    {"language":"en","entity":"ADDRESS","gold":1,"predicted":1,"exact_tp":1,"overlap_tp":1,"exact_precision":1,"exact_recall":1,"exact_fnr":0,"overlap_precision":1,"overlap_recall":1,"overlap_fnr":0},
+    {"language":"en","entity":"PERSON","gold":1,"predicted":1,"exact_tp":1,"overlap_tp":1,"exact_precision":1,"exact_recall":1,"exact_fnr":0,"overlap_precision":1,"overlap_recall":1,"overlap_fnr":0},
+    {"language":"mixed","entity":"BANK_ACCOUNT","gold":1,"predicted":1,"exact_tp":1,"overlap_tp":1,"exact_precision":1,"exact_recall":1,"exact_fnr":0,"overlap_precision":1,"overlap_recall":1,"overlap_fnr":0},
+    {"language":"mixed","entity":"PERSON","gold":1,"predicted":1,"exact_tp":1,"overlap_tp":1,"exact_precision":1,"exact_recall":1,"exact_fnr":0,"overlap_precision":1,"overlap_recall":1,"overlap_fnr":0},
+    {"language":"th","entity":"ADDRESS","gold":1,"predicted":1,"exact_tp":1,"overlap_tp":1,"exact_precision":1,"exact_recall":1,"exact_fnr":0,"overlap_precision":1,"overlap_recall":1,"overlap_fnr":0},
+    {"language":"th","entity":"PERSON","gold":1,"predicted":1,"exact_tp":1,"overlap_tp":1,"exact_precision":1,"exact_recall":1,"exact_fnr":0,"overlap_precision":1,"overlap_recall":1,"overlap_fnr":0}
+  ],
+  "calibration_candidates": [0.5, 0.9]
+}

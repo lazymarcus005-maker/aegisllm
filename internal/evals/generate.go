@@ -223,3 +223,15 @@ func MarshalLines(rows []Row) ([]byte, error) {
 	}
 	return buf.Bytes(), nil
 }
+
+// GeneratePIISynthetic is a tiny, deterministic span corpus for CI wiring.
+// It is intentionally marked non-production by the evaluator and contains no
+// real personal data.
+func GeneratePIISynthetic() []PIIExample {
+	rows := []PIIExample{
+		{ID: "synthetic-en-001", Language: "en", Text: "Contact Mr. Somchai Jaidee at 12 Example Road.", Spans: []LabeledSpan{{Entity: "PERSON", Start: 8, End: 26}, {Entity: "ADDRESS", Start: 30, End: 46}}},
+		{ID: "synthetic-th-001", Language: "th", Text: "ลูกค้าชื่อ นายสมชาย ใจดี ที่อยู่ 12 ถนนสุขุมวิท", Spans: []LabeledSpan{{Entity: "PERSON", Start: strings.Index("ลูกค้าชื่อ นายสมชาย ใจดี ที่อยู่ 12 ถนนสุขุมวิท", "นายสมชาย ใจดี"), End: strings.Index("ลูกค้าชื่อ นายสมชาย ใจดี ที่อยู่ 12 ถนนสุขุมวิท", "นายสมชาย ใจดี") + len("นายสมชาย ใจดี")}, {Entity: "ADDRESS", Start: strings.Index("ลูกค้าชื่อ นายสมชาย ใจดี ที่อยู่ 12 ถนนสุขุมวิท", "ที่อยู่"), End: len("ลูกค้าชื่อ นายสมชาย ใจดี ที่อยู่ 12 ถนนสุขุมวิท")}}},
+		{ID: "synthetic-mixed-001", Language: "mixed", Text: "คุณมานะ has bank account 1234567890.", Spans: []LabeledSpan{{Entity: "PERSON", Start: 0, End: len("คุณมานะ")}, {Entity: "BANK_ACCOUNT", Start: strings.Index("คุณมานะ has bank account 1234567890.", "1234567890"), End: strings.Index("คุณมานะ has bank account 1234567890.", "1234567890") + len("1234567890")}}},
+	}
+	return rows
+}

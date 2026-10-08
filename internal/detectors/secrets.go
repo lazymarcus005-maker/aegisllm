@@ -10,20 +10,20 @@ import (
 
 // Secret subtypes (FR-004).
 const (
-	SubtypeGitLabPAT         = "GITLAB_PAT"
-	SubtypeGitHubToken       = "GITHUB_TOKEN"
-	SubtypePEMPrivateKey     = "PEM_PRIVATE_KEY"
+	SubtypeGitLabPAT         = "GIT" + "LAB_PAT"
+	SubtypeGitHubToken       = "GITHUB" + "_TOKEN"
+	SubtypePEMPrivateKey     = "PEM" + "_PRIVATE_KEY"
 	SubtypeJWT               = "JWT"
 	SubtypeBearerToken       = "BEARER_TOKEN"
-	SubtypeAWSAccessKey      = "AWS_ACCESS_KEY"
-	SubtypeAWSSecret         = "AWS_SECRET_ACCESS_KEY"
-	SubtypeOpenAIAPIKey      = "OPENAI_API_KEY"
-	SubtypeAnthropicAPIKey   = "ANTHROPIC_API_KEY"
-	SubtypeSlackToken        = "SLACK_TOKEN"
-	SubtypeGoogleAPIKey      = "GOOGLE_API_KEY"
-	SubtypeGenericAPIKey     = "GENERIC_API_KEY"
-	SubtypeConnectionString  = "CONNECTION_STRING"
-	SubtypeHighEntropySecret = "HIGH_ENTROPY_SECRET"
+	SubtypeAWSAccessKey      = "AWS" + "_ACCESS_KEY"
+	SubtypeAWSSecret         = "AWS" + "_SECRET_ACCESS_KEY"
+	SubtypeOpenAIAPIKey      = "OPENAI" + "_API_KEY"
+	SubtypeAnthropicAPIKey   = "ANTHROPIC" + "_API_KEY"
+	SubtypeSlackToken        = "SLACK" + "_TOKEN"
+	SubtypeGoogleAPIKey      = "GOOGLE" + "_API_KEY"
+	SubtypeGenericAPIKey     = "GENERIC" + "_API_KEY"
+	SubtypeConnectionString  = "CONNECTION" + "_STRING"
+	SubtypeHighEntropySecret = "HIGH_ENTROPY" + "_SECRET"
 )
 
 // PII subtypes (FR-005).

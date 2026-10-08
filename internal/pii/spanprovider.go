@@ -5,6 +5,7 @@
 package pii
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"sort"
@@ -18,6 +19,11 @@ type EntitySpan struct {
 	Start      int    // byte offsets into the scanned text
 	End        int
 	Confidence float64
+	// OffsetUnit is populated by remote adapters before the span reaches the
+	// transformer. Legacy providers leave it empty because their offsets are
+	// already UTF-8 byte offsets.
+	OffsetUnit OffsetUnit
+	Provider   string
 }
 
 // SpanProvider recognizes entity spans regex/NER-style. Implementations must
@@ -26,6 +32,17 @@ type SpanProvider interface {
 	Name() string
 	Spans(text string) []EntitySpan
 }
+
+// ContextSpanProvider is the optional production extension to SpanProvider.
+// It preserves the original interface for local integrations while allowing
+// bounded remote calls, cancellation, language routing, and fail-closed
+// error handling in the gateway.
+type ContextSpanProvider interface {
+	SpanProvider
+	SpansContext(ctx context.Context, text string) ([]EntitySpan, error)
+}
+
+type metricsSpanProvider interface{ SetMetrics(ProviderMetrics) }
 
 // RegexSpanProvider recognizes Thai/English honorific person names and Thai
 // address lead-ins with deterministic patterns. Heuristic by design: spans
@@ -80,6 +97,22 @@ func NewCompositeSpanProvider(providers ...SpanProvider) *CompositeSpanProvider 
 	return &CompositeSpanProvider{providers: providers}
 }
 
+func (c *CompositeSpanProvider) SetMetrics(metrics ProviderMetrics) {
+	for _, p := range c.providers {
+		if target, ok := p.(metricsSpanProvider); ok {
+			target.SetMetrics(metrics)
+		}
+	}
+}
+
+func (c *CompositeSpanProvider) Close() {
+	for _, p := range c.providers {
+		if closer, ok := p.(interface{ Close() }); ok {
+			closer.Close()
+		}
+	}
+}
+
 func (c *CompositeSpanProvider) Name() string { return "composite-span" }
 
 func (c *CompositeSpanProvider) Spans(text string) []EntitySpan {
@@ -88,6 +121,25 @@ func (c *CompositeSpanProvider) Spans(text string) []EntitySpan {
 		out = append(out, p.Spans(text)...)
 	}
 	return out
+}
+
+func (c *CompositeSpanProvider) SpansContext(ctx context.Context, text string) ([]EntitySpan, error) {
+	var out []EntitySpan
+	for _, p := range c.providers {
+		if cp, ok := p.(ContextSpanProvider); ok {
+			spans, err := cp.SpansContext(ctx, text)
+			out = append(out, spans...)
+			if err != nil {
+				if fallback, ok := p.(interface{ ObserveFallback() }); ok {
+					fallback.ObserveFallback()
+				}
+				return out, err
+			}
+			continue
+		}
+		out = append(out, p.Spans(text)...)
+	}
+	return out, nil
 }
 
 // Transformation is one planned replacement inside a message part.

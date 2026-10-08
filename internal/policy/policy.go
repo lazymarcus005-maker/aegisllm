@@ -7,11 +7,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"os"
+	"math"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/aegisllm/gateway/internal/core"
+	"github.com/aegisllm/gateway/internal/securetransport"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,13 +45,20 @@ func (r *ActionRule) UnmarshalYAML(value *yaml.Node) error {
 		r.Action = a
 		return nil
 	case yaml.MappingNode:
-		var raw struct {
-			Action string `yaml:"action"`
-		}
+		var raw map[string]yaml.Node
 		if err := value.Decode(&raw); err != nil {
 			return err
 		}
-		a, err := normalize(raw.Action)
+		for key := range raw {
+			if key != "action" {
+				return fmt.Errorf("action rule: unknown field %q", key)
+			}
+		}
+		node, ok := raw["action"]
+		if !ok || node.Kind != yaml.ScalarNode {
+			return errors.New("action rule.action is required")
+		}
+		a, err := normalize(node.Value)
 		if err != nil {
 			return err
 		}
@@ -146,12 +155,148 @@ type FallbackRule struct {
 // Fallback is the failure-behavior section; behavior wiring lands with the
 // semantic planner (ticket 09).
 type Fallback struct {
-	LayaUnavailable FallbackRule `yaml:"laya_unavailable"`
+	LayaUnavailable FallbackRule           `yaml:"laya_unavailable"`
+	Semantic        []SemanticFallbackRule `yaml:"semantic,omitempty"`
+}
+
+// SemanticFallbackRule is a bounded risk/direction/provider fallback. The
+// dimensions are policy labels, never request content or credentials.
+type SemanticFallbackRule struct {
+	Risk      string     `yaml:"risk"`
+	Direction string     `yaml:"direction,omitempty"`
+	Provider  string     `yaml:"provider,omitempty"`
+	OnError   ActionRule `yaml:"on_error"`
+}
+
+// ValidateSemanticFallbackMatrix ensures strict deployments have an explicit
+// high-risk BLOCK path for every direction/provider unless a more specific
+// rule overrides it.
+func (p *Policy) ValidateSemanticFallbackMatrix() error {
+	if p.Fallback == nil {
+		return errors.New("policy: semantic fallback matrix is required")
+	}
+	hasHighBlock := false
+	for _, rule := range p.Fallback.Semantic {
+		if rule.Risk == "high" && (rule.Direction == "" || rule.Direction == "*") && (rule.Provider == "" || rule.Provider == "*") && rule.OnError.Action == core.ActionBlock {
+			hasHighBlock = true
+		}
+	}
+	if !hasHighBlock {
+		return errors.New("policy: semantic fallback matrix needs a high-risk default BLOCK")
+	}
+	return nil
 }
 
 // ToolRules governs tool definitions the policy may strip on RESTRICT_TOOLS.
 type ToolRules struct {
 	Restricted []string `yaml:"restricted"`
+}
+
+// ProviderOverride refines category and subtype actions at a provider
+// boundary. It is intentionally separate from transport/provider credentials.
+type ProviderOverride struct {
+	Categories map[string]ActionRule `yaml:"categories,omitempty"`
+	Subtypes   map[string]ActionRule `yaml:"subtypes,omitempty"`
+}
+
+// RouteConstraint is the policy-authored boundary for model routing. Route
+// IDs are optional; classes/providers are preferred so policy does not become
+// coupled to transport deployment names. A fallback chain is explicit and is
+// never inferred by the routing engine.
+type RouteConstraint struct {
+	Routes        []string `yaml:"routes,omitempty"`
+	Classes       []string `yaml:"classes,omitempty"`
+	Providers     []string `yaml:"providers,omitempty"`
+	FallbackChain string   `yaml:"fallback_chain,omitempty"`
+}
+
+type RoutingPolicy struct {
+	ForceLocal         RouteConstraint            `yaml:"force_local,omitempty"`
+	Actions            map[string]RouteConstraint `yaml:"actions,omitempty"`
+	ProviderBoundaries map[string]RouteConstraint `yaml:"provider_boundaries,omitempty"`
+}
+
+// RAGPolicy is the reviewed policy control for retrieval authorization. The
+// gateway configuration selects the deployment adapter; this section records
+// the effective content decision and prevents unsound rewrite actions for
+// arbitrary retrieved documents.
+type RAGPolicy struct {
+	Mode                  string     `yaml:"mode"` // disabled | shadow | enforce
+	OnDeny                ActionRule `yaml:"on_deny"`
+	RequirePurpose        bool       `yaml:"require_purpose,omitempty"`
+	RequireCollection     bool       `yaml:"require_collection,omitempty"`
+	RequireClassification bool       `yaml:"require_classification,omitempty"`
+	AllowedOperations     []string   `yaml:"allowed_operations,omitempty"`
+}
+
+// EvasionAllowlist is a stable, content-free exception identifier for one
+// bounded evasion class. Exceptions are deliberately scoped by type/category;
+// raw values are never placed in policy or audit records.
+type EvasionAllowlist struct {
+	ID          string `yaml:"id"`
+	EvasionType string `yaml:"evasion_type"`
+	Category    string `yaml:"category,omitempty"`
+}
+
+// EvasionPolicy controls the canonicalization and decoding stage. Zero limits
+// are filled with conservative runtime defaults by the scanner.
+type EvasionPolicy struct {
+	Enabled             bool                  `yaml:"enabled"`
+	Transforms          []string              `yaml:"transforms,omitempty"`
+	MaxDecodeDepth      int                   `yaml:"max_decode_depth,omitempty"`
+	MaxDecodeWorkBytes  int                   `yaml:"max_decode_work_bytes,omitempty"`
+	MaxDecodedExpansion int                   `yaml:"max_decoded_expansion_ratio,omitempty"`
+	MaxJSONDepth        int                   `yaml:"max_json_depth,omitempty"`
+	MaxJSONNodes        int                   `yaml:"max_json_nodes,omitempty"`
+	MaxJSONStringBytes  int                   `yaml:"max_json_string_bytes,omitempty"`
+	BudgetAction        ActionRule            `yaml:"budget_action,omitempty"`
+	Actions             map[string]ActionRule `yaml:"actions,omitempty"`
+	Allowlists          []EvasionAllowlist    `yaml:"allowlist,omitempty"`
+}
+
+// QuarantinePolicy is the content-free incident containment policy. Duration
+// values are strings so policy files remain portable and are parsed at the
+// gateway boundary with strict upper bounds.
+type QuarantinePolicy struct {
+	Enabled      bool             `yaml:"enabled"`
+	MaxTTL       string           `yaml:"max_ttl,omitempty"`
+	ProbationTTL string           `yaml:"probation_ttl,omitempty"`
+	MaxStates    int              `yaml:"max_states,omitempty"`
+	Default      QuarantineRule   `yaml:"default"`
+	Rules        []QuarantineRule `yaml:"rules,omitempty"`
+}
+
+type QuarantineRule struct {
+	Reason     string `yaml:"reason"`
+	Level      string `yaml:"level"`
+	Scope      string `yaml:"scope"`
+	Threshold  int    `yaml:"threshold"`
+	Window     string `yaml:"window"`
+	Cooldown   string `yaml:"cooldown,omitempty"`
+	TTL        string `yaml:"ttl"`
+	AllowBroad bool   `yaml:"allow_broad,omitempty"`
+}
+
+// ConfidenceEscalation turns detector confidence into a declarative action.
+// Subtype and provider are optional matchers.
+type ConfidenceEscalation struct {
+	ID            string     `yaml:"id"`
+	Category      string     `yaml:"category"`
+	Subtype       string     `yaml:"subtype,omitempty"`
+	Provider      string     `yaml:"provider,omitempty"`
+	MinConfidence float64    `yaml:"min_confidence"`
+	Action        ActionRule `yaml:"action"`
+}
+
+// FindingCountEscalation turns a category/subtype count into an action.
+type FindingCountEscalation struct {
+	ID          string     `yaml:"id"`
+	Category    string     `yaml:"category"`
+	Subtype     string     `yaml:"subtype,omitempty"`
+	Provider    string     `yaml:"provider,omitempty"`
+	MinCount    int        `yaml:"min_count"`
+	Action      ActionRule `yaml:"action"`
+	displayRule string
 }
 
 // Policy is the versioned policy document (FR-012).
@@ -172,6 +317,19 @@ type Policy struct {
 	Semantic     map[string]SemanticRule `yaml:"semantic,omitempty"`
 	Fallback     *Fallback               `yaml:"fallback,omitempty"`
 	Tools        *ToolRules              `yaml:"tools,omitempty"`
+
+	// Declarative effective-policy contract. The legacy sections above remain
+	// accepted and are normalized into these maps at load time.
+	CategoryActions        map[string]ActionRule            `yaml:"category_actions,omitempty"`
+	SubtypeActions         map[string]map[string]ActionRule `yaml:"subtype_actions,omitempty"`
+	ProviderOverrides      map[string]ProviderOverride      `yaml:"provider_overrides,omitempty"`
+	ConfidenceEscalation   []ConfidenceEscalation           `yaml:"confidence_escalation,omitempty"`
+	FindingCountEscalation []FindingCountEscalation         `yaml:"finding_count_escalation,omitempty"`
+	SafeDefault            ActionRule                       `yaml:"safe_default,omitempty"`
+	Routing                *RoutingPolicy                   `yaml:"routing,omitempty"`
+	RAG                    *RAGPolicy                       `yaml:"rag,omitempty"`
+	Evasion                EvasionPolicy                    `yaml:"evasion,omitempty"`
+	Quarantine             *QuarantinePolicy                `yaml:"quarantine,omitempty"`
 }
 
 // RestrictedTools lists tool names RESTRICT_TOOLS may strip from requests.
@@ -180,6 +338,100 @@ func (p *Policy) RestrictedTools() []string {
 		return nil
 	}
 	return p.Tools.Restricted
+}
+
+// RuleSummary is a content-free description suitable for operator tooling.
+type RuleSummary struct {
+	ID        string      `json:"id"`
+	Stage     string      `json:"stage"`
+	Category  string      `json:"category,omitempty"`
+	Subtype   string      `json:"subtype,omitempty"`
+	Provider  string      `json:"provider,omitempty"`
+	Action    core.Action `json:"action"`
+	Threshold *float64    `json:"threshold,omitempty"`
+	MinCount  *int        `json:"min_count,omitempty"`
+}
+
+// Summary is a deterministic, sanitized policy projection. It contains rule
+// identifiers and actions only, never YAML credentials or content values.
+func (p *Policy) Summary() []RuleSummary {
+	var out []RuleSummary
+	for category, rule := range p.CategoryActions {
+		out = append(out, RuleSummary{ID: "category_actions." + category, Stage: "category", Category: category, Action: rule.Action})
+	}
+	for category, subtypes := range p.SubtypeActions {
+		for subtype, rule := range subtypes {
+			out = append(out, RuleSummary{ID: "subtype_actions." + category + "." + subtype, Stage: "subtype", Category: category, Subtype: subtype, Action: rule.Action})
+		}
+	}
+	for provider, override := range p.ProviderOverrides {
+		for category, rule := range override.Categories {
+			out = append(out, RuleSummary{ID: "providers." + provider + ".categories." + category, Stage: "provider_boundary", Category: category, Provider: provider, Action: rule.Action})
+		}
+		for subtype, rule := range override.Subtypes {
+			out = append(out, RuleSummary{ID: "providers." + provider + ".subtypes." + subtype, Stage: "provider_subtype", Subtype: subtype, Provider: provider, Action: rule.Action})
+		}
+	}
+	for _, rule := range p.ConfidenceEscalation {
+		threshold := rule.MinConfidence
+		out = append(out, RuleSummary{ID: "confidence." + rule.ID, Stage: "confidence_escalation", Category: rule.Category, Subtype: rule.Subtype, Provider: rule.Provider, Action: rule.Action.Action, Threshold: &threshold})
+	}
+	for _, rule := range p.FindingCountEscalation {
+		count := rule.MinCount
+		id := "count." + rule.ID
+		if rule.displayRule != "" {
+			id = rule.displayRule
+		}
+		out = append(out, RuleSummary{ID: id, Stage: "finding_count_escalation", Category: rule.Category, Subtype: rule.Subtype, Provider: rule.Provider, Action: rule.Action.Action, MinCount: &count})
+	}
+	for evasionType, rule := range p.Evasion.Actions {
+		out = append(out, RuleSummary{ID: "evasion." + evasionType, Stage: "canonicalization", Category: "EVASION", Subtype: evasionType, Action: rule.Action})
+	}
+	if p.Evasion.BudgetAction.Action != "" {
+		out = append(out, RuleSummary{ID: "evasion.budget", Stage: "canonicalization", Category: "EVASION", Subtype: "budget_exceeded", Action: p.Evasion.BudgetAction.Action})
+	}
+	if p.RAG != nil {
+		out = append(out, RuleSummary{ID: "rag.mode", Stage: "rag_authorization", Category: "RAG", Subtype: strings.ToLower(p.RAG.Mode), Action: p.RAG.OnDeny.Action})
+	}
+	if p.Quarantine != nil {
+		out = append(out, RuleSummary{ID: "quarantine.enabled", Stage: "incident_quarantine", Category: "QUARANTINE", Subtype: "policy_bound", Action: core.ActionReview})
+	}
+	out = append(out, RuleSummary{ID: "safe_default", Stage: "safe_default", Action: p.SafeDefault.Action}, RuleSummary{ID: "default", Stage: "default", Action: p.Default.Action})
+	slices.SortFunc(out, func(a, b RuleSummary) int { return strings.Compare(a.ID, b.ID) })
+	return out
+}
+
+func validateQuarantineRule(rule QuarantineRule, defaultRule bool) error {
+	validReason := map[string]bool{"secret_exfiltration": true, "detector_evasion": true, "rag_cross_scope_access": true, "tool_policy_violation": true, "token_reidentification_abuse": true, "auth_anomaly": true, "provider_integrity_failure": true, "operator_action": true}
+	validLevel := map[string]bool{"observe": true, "throttle": true, "isolate": true, "disable": true, "require_human_review": true}
+	validScope := map[string]bool{"session": true, "user": true, "application": true, "tenant": true, "tool": true, "server": true, "provider": true, "route": true}
+	if defaultRule {
+		if rule.Reason != "default" {
+			return errors.New("reason must be default")
+		}
+	} else if !validReason[rule.Reason] {
+		return errors.New("reason is not a bounded incident code")
+	}
+	if !validLevel[rule.Level] || !validScope[rule.Scope] || rule.Threshold <= 0 || rule.Threshold > 1000 {
+		return errors.New("level, scope, or threshold is invalid")
+	}
+	for name, value := range map[string]string{"window": rule.Window, "ttl": rule.TTL, "cooldown": rule.Cooldown} {
+		if name != "cooldown" && strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s is required", name)
+		}
+		if value != "" {
+			d, err := time.ParseDuration(value)
+			if err != nil || d <= 0 || d > 24*time.Hour {
+				return fmt.Errorf("%s is invalid", name)
+			}
+		}
+	}
+	if rule.Scope == "tenant" || rule.Scope == "provider" {
+		if !rule.AllowBroad || rule.Threshold < 3 {
+			return errors.New("broad scopes require allow_broad and threshold >= 3")
+		}
+	}
+	return nil
 }
 
 // Load parses and validates a policy document. Unknown fields and invalid
@@ -191,6 +443,7 @@ func Load(data []byte) (*Policy, error) {
 	if err := dec.Decode(&p); err != nil {
 		return nil, fmt.Errorf("policy parse error: %w", err)
 	}
+	p.normalizeCompatibility()
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
@@ -199,7 +452,7 @@ func Load(data []byte) (*Policy, error) {
 
 // LoadFile reads and validates a policy file from disk.
 func LoadFile(path string) (*Policy, error) {
-	data, err := os.ReadFile(path)
+	data, err := securetransport.ReadTrustedFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("policy load: %w", err)
 	}
@@ -216,6 +469,145 @@ func (p *Policy) Validate() error {
 	}
 	if p.Default.Action == "" {
 		return errors.New("policy: default.action is required")
+	}
+	if p.Quarantine != nil {
+		if strings.TrimSpace(p.Quarantine.MaxTTL) == "" || strings.TrimSpace(p.Quarantine.ProbationTTL) == "" || p.Quarantine.MaxStates <= 0 {
+			return errors.New("policy: quarantine requires max_ttl, probation_ttl, and positive max_states")
+		}
+		if err := validateQuarantineRule(p.Quarantine.Default, true); err != nil {
+			return fmt.Errorf("policy: quarantine.default: %w", err)
+		}
+		seen := map[string]bool{}
+		for i, rule := range p.Quarantine.Rules {
+			if seen[rule.Reason] {
+				return fmt.Errorf("policy: duplicate quarantine rule %q", rule.Reason)
+			}
+			seen[rule.Reason] = true
+			if err := validateQuarantineRule(rule, false); err != nil {
+				return fmt.Errorf("policy: quarantine.rules[%d]: %w", i, err)
+			}
+		}
+	}
+	if p.SafeDefault.Action == "" {
+		return errors.New("policy: safe_default.action is required")
+	}
+	if p.RAG != nil {
+		mode := strings.ToLower(strings.TrimSpace(p.RAG.Mode))
+		if mode != "disabled" && mode != "shadow" && mode != "enforce" {
+			return errors.New("policy: rag.mode must be disabled, shadow, or enforce")
+		}
+		if p.RAG.OnDeny.Action != core.ActionBlock && p.RAG.OnDeny.Action != core.ActionReview {
+			return errors.New("policy: rag.on_deny must be block or review")
+		}
+		seenOps := map[string]bool{}
+		for _, operation := range p.RAG.AllowedOperations {
+			operation = strings.ToLower(strings.TrimSpace(operation))
+			if (operation != "retrieve" && operation != "retrieve_result") || seenOps[operation] {
+				return errors.New("policy: rag.allowed_operations contains an invalid or duplicate operation")
+			}
+			seenOps[operation] = true
+		}
+	}
+	if p.Evasion.BudgetAction.Action != "" && !isValidAction(p.Evasion.BudgetAction.Action) {
+		return errors.New("policy: evasion.budget_action is invalid")
+	}
+	seenEvasionIDs := map[string]bool{}
+	for i, exception := range p.Evasion.Allowlists {
+		if strings.TrimSpace(exception.ID) == "" || strings.TrimSpace(exception.EvasionType) == "" {
+			return fmt.Errorf("policy: evasion.allowlist[%d] requires id and evasion_type", i)
+		}
+		if seenEvasionIDs[exception.ID] {
+			return fmt.Errorf("policy: duplicate evasion allowlist id %q", exception.ID)
+		}
+		seenEvasionIDs[exception.ID] = true
+	}
+	for evasionType, rule := range p.Evasion.Actions {
+		if strings.TrimSpace(evasionType) == "" || rule.Action == "" || !isValidAction(rule.Action) {
+			return fmt.Errorf("policy: evasion.actions.%s.action is invalid", evasionType)
+		}
+	}
+	for i, transform := range p.Evasion.Transforms {
+		switch strings.ToLower(strings.TrimSpace(transform)) {
+		case "nfkc", "controls", "confusable_skeleton", "base64", "percent", "json_unicode", "hex":
+		default:
+			return fmt.Errorf("policy: evasion.transforms[%d] %q is unknown", i, transform)
+		}
+	}
+	for name, limit := range map[string]int{
+		"max_decode_depth": p.Evasion.MaxDecodeDepth, "max_decode_work_bytes": p.Evasion.MaxDecodeWorkBytes,
+		"max_decoded_expansion_ratio": p.Evasion.MaxDecodedExpansion, "max_json_depth": p.Evasion.MaxJSONDepth,
+		"max_json_nodes": p.Evasion.MaxJSONNodes, "max_json_string_bytes": p.Evasion.MaxJSONStringBytes,
+	} {
+		if limit < 0 {
+			return fmt.Errorf("policy: evasion.%s must not be negative", name)
+		}
+	}
+	for category, rule := range p.CategoryActions {
+		if strings.TrimSpace(category) == "" || rule.Action == "" {
+			return fmt.Errorf("policy: category_actions.%s.action is required", category)
+		}
+	}
+	for category, subtypes := range p.SubtypeActions {
+		if strings.TrimSpace(category) == "" {
+			return errors.New("policy: subtype_actions has an empty category")
+		}
+		for subtype, rule := range subtypes {
+			if strings.TrimSpace(subtype) == "" || rule.Action == "" {
+				return fmt.Errorf("policy: subtype_actions.%s.%s.action is required", category, subtype)
+			}
+		}
+	}
+	for provider, override := range p.ProviderOverrides {
+		if strings.TrimSpace(provider) == "" {
+			return errors.New("policy: provider_overrides has an empty provider")
+		}
+		for category, rule := range override.Categories {
+			if strings.TrimSpace(category) == "" || rule.Action == "" {
+				return fmt.Errorf("policy: provider_overrides.%s.categories.%s.action is required", provider, category)
+			}
+		}
+		for subtype, rule := range override.Subtypes {
+			if strings.TrimSpace(subtype) == "" || rule.Action == "" {
+				return fmt.Errorf("policy: provider_overrides.%s.subtypes.%s.action is required", provider, subtype)
+			}
+		}
+	}
+	seenIDs := map[string]bool{}
+	for i, rule := range p.ConfidenceEscalation {
+		if strings.TrimSpace(rule.ID) == "" || strings.TrimSpace(rule.Category) == "" {
+			return fmt.Errorf("policy: confidence_escalation[%d] requires id and category", i)
+		}
+		if seenIDs[rule.ID] {
+			return fmt.Errorf("policy: duplicate escalation id %q", rule.ID)
+		}
+		seenIDs[rule.ID] = true
+		if !isValidFindingCategory(rule.Category) {
+			return fmt.Errorf("policy: confidence_escalation[%d].category %q is unknown", i, rule.Category)
+		}
+		if math.IsNaN(rule.MinConfidence) || math.IsInf(rule.MinConfidence, 0) || rule.MinConfidence < 0 || rule.MinConfidence > 1 {
+			return fmt.Errorf("policy: confidence_escalation[%d].min_confidence must be within [0,1]", i)
+		}
+		if rule.Action.Action == "" {
+			return fmt.Errorf("policy: confidence_escalation[%d].action is required", i)
+		}
+	}
+	for i, rule := range p.FindingCountEscalation {
+		if strings.TrimSpace(rule.ID) == "" || strings.TrimSpace(rule.Category) == "" {
+			return fmt.Errorf("policy: finding_count_escalation[%d] requires id and category", i)
+		}
+		if seenIDs[rule.ID] {
+			return fmt.Errorf("policy: duplicate escalation id %q", rule.ID)
+		}
+		seenIDs[rule.ID] = true
+		if !isValidFindingCategory(rule.Category) {
+			return fmt.Errorf("policy: finding_count_escalation[%d].category %q is unknown", i, rule.Category)
+		}
+		if rule.MinCount <= 0 {
+			return fmt.Errorf("policy: finding_count_escalation[%d].min_count must be positive", i)
+		}
+		if rule.Action.Action == "" {
+			return fmt.Errorf("policy: finding_count_escalation[%d].action is required", i)
+		}
 	}
 	for i, rule := range p.Deny {
 		if rule.Application == "" && rule.Tenant == "" && rule.UserSubject == "" && rule.Role == "" {
@@ -235,6 +627,27 @@ func (p *Policy) Validate() error {
 			return fmt.Errorf("policy: semantic.%s has no configured risk levels", name)
 		}
 	}
+	if p.Routing != nil {
+		for action, constraint := range p.Routing.Actions {
+			if !isValidAction(core.Action(strings.ToUpper(action))) {
+				return fmt.Errorf("policy: routing.actions.%s uses an invalid action", action)
+			}
+			if err := validateRouteConstraint("routing.actions."+action, constraint); err != nil {
+				return err
+			}
+		}
+		if err := validateRouteConstraint("routing.force_local", p.Routing.ForceLocal); err != nil {
+			return err
+		}
+		for provider, constraint := range p.Routing.ProviderBoundaries {
+			if strings.TrimSpace(provider) == "" {
+				return errors.New("policy: routing.provider_boundaries has an empty provider")
+			}
+			if err := validateRouteConstraint("routing.provider_boundaries."+provider, constraint); err != nil {
+				return err
+			}
+		}
+	}
 	if p.Fallback != nil {
 		f := p.Fallback.LayaUnavailable
 		if f.HighRisk.Action == "" && f.LowRisk == "" {
@@ -243,8 +656,128 @@ func (p *Policy) Validate() error {
 		if f.LowRisk != "" && f.LowRisk != lowRiskDeterministicOnly && !isValidAction(core.Action(strings.ToUpper(f.LowRisk))) {
 			return fmt.Errorf("policy: fallback.laya_unavailable.low_risk %q is not an action or %q", f.LowRisk, lowRiskDeterministicOnly)
 		}
+		seen := map[string]bool{}
+		for i, rule := range p.Fallback.Semantic {
+			if rule.Risk != "high" && rule.Risk != "medium" && rule.Risk != "low" {
+				return fmt.Errorf("policy: fallback.semantic[%d].risk must be high, medium, or low", i)
+			}
+			if rule.Direction != "" && rule.Direction != "*" && !validFallbackDirection(rule.Direction) {
+				return fmt.Errorf("policy: fallback.semantic[%d].direction is invalid", i)
+			}
+			if rule.OnError.Action == "" {
+				return fmt.Errorf("policy: fallback.semantic[%d].on_error is required", i)
+			}
+			key := rule.Risk + "\x00" + rule.Direction + "\x00" + rule.Provider
+			if seen[key] {
+				return fmt.Errorf("policy: duplicate fallback.semantic rule %q", key)
+			}
+			seen[key] = true
+		}
 	}
 	return nil
+}
+
+func validateRouteConstraint(name string, c RouteConstraint) error {
+	for _, value := range append(append(append([]string{}, c.Routes...), c.Classes...), c.Providers...) {
+		if strings.TrimSpace(value) == "" || strings.ContainsAny(value, "\r\n") {
+			return fmt.Errorf("policy: %s contains an invalid route constraint", name)
+		}
+	}
+	if c.FallbackChain != "" && strings.ContainsAny(c.FallbackChain, "\r\n") {
+		return fmt.Errorf("policy: %s has an invalid fallback_chain", name)
+	}
+	return nil
+}
+
+func validFallbackDirection(value string) bool {
+	return value == "request" || value == "response" || value == "tool_call" || value == "tool_result"
+}
+
+// normalizeCompatibility makes the v7 policy vocabulary part of the same
+// declarative contract consumed by the engine. No detector subtype is
+// special-cased by the evaluator.
+func (p *Policy) normalizeCompatibility() {
+	for i := range p.ConfidenceEscalation {
+		p.ConfidenceEscalation[i].Category = strings.ToUpper(strings.TrimSpace(p.ConfidenceEscalation[i].Category))
+	}
+	for i := range p.FindingCountEscalation {
+		p.FindingCountEscalation[i].Category = strings.ToUpper(strings.TrimSpace(p.FindingCountEscalation[i].Category))
+	}
+	legacy := len(p.CategoryActions) == 0 && len(p.SubtypeActions) == 0 &&
+		len(p.ProviderOverrides) == 0 && len(p.ConfidenceEscalation) == 0 &&
+		len(p.FindingCountEscalation) == 0 && p.SafeDefault.Action == ""
+	if p.CategoryActions == nil {
+		p.CategoryActions = map[string]ActionRule{}
+	}
+	if p.SubtypeActions == nil {
+		p.SubtypeActions = map[string]map[string]ActionRule{}
+	}
+	if p.ProviderOverrides == nil {
+		p.ProviderOverrides = map[string]ProviderOverride{}
+	}
+	if legacy {
+		p.CategoryActions[string(core.CategorySecret)] = ActionRule{Action: core.ActionRedact}
+		if len(p.PII) > 0 {
+			p.CategoryActions[string(core.CategoryPII)] = ActionRule{Action: core.ActionAllow}
+		}
+		p.SafeDefault = ActionRule{Action: core.ActionBlock}
+		p.ConfidenceEscalation = append(p.ConfidenceEscalation, ConfidenceEscalation{
+			ID: "compat-high-confidence-finding", Category: string(core.CategorySecret),
+			MinConfidence: 0.9, Action: ActionRule{Action: core.ActionBlock},
+		})
+	}
+	if p.SafeDefault.Action == "" {
+		p.SafeDefault = ActionRule{Action: core.ActionBlock}
+	}
+	if _, exists := p.CategoryActions[string(core.CategorySecret)]; !exists && len(p.Secrets) > 0 {
+		p.CategoryActions[string(core.CategorySecret)] = ActionRule{Action: core.ActionRedact}
+	}
+	if _, exists := p.CategoryActions[string(core.CategoryPII)]; !exists && len(p.PII) > 0 {
+		p.CategoryActions[string(core.CategoryPII)] = ActionRule{Action: core.ActionAllow}
+	}
+	for subtype, rule := range p.Secrets {
+		p.ensureSubtypeAction(string(core.CategorySecret), subtype, rule)
+	}
+	for subtype, rule := range p.PII {
+		for provider, action := range rule.Providers {
+			override := p.ProviderOverrides[provider]
+			if override.Subtypes == nil {
+				override.Subtypes = map[string]ActionRule{}
+			}
+			if _, exists := override.Subtypes[subtype]; !exists {
+				override.Subtypes[subtype] = action
+			}
+			p.ProviderOverrides[provider] = override
+		}
+	}
+	for provider, target := range p.Targets {
+		override := p.ProviderOverrides[provider]
+		if override.Categories == nil {
+			override.Categories = map[string]ActionRule{}
+		}
+		if _, exists := override.Categories[string(core.CategoryPII)]; !exists && target.ConfidentialData.Action != "" {
+			override.Categories[string(core.CategoryPII)] = target.ConfidentialData
+		}
+		p.ProviderOverrides[provider] = override
+	}
+	if multiple, ok := p.PII["MULTIPLE_PII"]; ok {
+		for provider, action := range multiple.Providers {
+			p.FindingCountEscalation = append(p.FindingCountEscalation, FindingCountEscalation{
+				ID: "compat-multiple-pii-" + provider, Category: string(core.CategoryPII),
+				Provider: provider, MinCount: 3, Action: action,
+				displayRule: "pii.MULTIPLE_PII." + provider,
+			})
+		}
+	}
+}
+
+func (p *Policy) ensureSubtypeAction(category, subtype string, rule ActionRule) {
+	if p.SubtypeActions[category] == nil {
+		p.SubtypeActions[category] = map[string]ActionRule{}
+	}
+	if _, exists := p.SubtypeActions[category][subtype]; !exists {
+		p.SubtypeActions[category][subtype] = rule
+	}
 }
 
 func isValidAction(a core.Action) bool {
@@ -254,4 +787,14 @@ func isValidAction(a core.Action) bool {
 		return true
 	}
 	return false
+}
+
+func isValidFindingCategory(category string) bool {
+	switch core.FindingCategory(strings.ToUpper(strings.TrimSpace(category))) {
+	case core.CategoryPII, core.CategorySecret, core.CategoryPromptSecurity,
+		core.CategoryToolSecurity, core.CategoryConfidentialData, core.CategoryPolicy:
+		return true
+	default:
+		return false
+	}
 }

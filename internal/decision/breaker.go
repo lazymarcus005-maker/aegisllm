@@ -15,12 +15,13 @@ var ErrCircuitOpen = errors.New("semantic provider circuit open")
 // CircuitBreaker sheds calls after repeated provider failures and retries
 // after a cooldown.
 type CircuitBreaker struct {
-	mu        sync.Mutex
-	failures  int
-	threshold int
-	cooldown  time.Duration
-	openUntil time.Time
-	now       func() time.Time
+	mu            sync.Mutex
+	failures      int
+	threshold     int
+	cooldown      time.Duration
+	openUntil     time.Time
+	halfOpenProbe bool
+	now           func() time.Time
 }
 
 func NewCircuitBreaker(threshold int, cooldown time.Duration) *CircuitBreaker {
@@ -47,7 +48,15 @@ func (b *CircuitBreaker) Allow() bool {
 	if b.failures < b.threshold {
 		return true
 	}
-	return b.now().After(b.openUntil)
+	now := b.now()
+	if now.Before(b.openUntil) {
+		return false
+	}
+	if b.halfOpenProbe {
+		return false
+	}
+	b.halfOpenProbe = true
+	return true
 }
 
 // Record reports a call outcome; the threshold-th consecutive failure opens
@@ -57,12 +66,29 @@ func (b *CircuitBreaker) Record(success bool) {
 	defer b.mu.Unlock()
 	if success {
 		b.failures = 0
+		b.openUntil = time.Time{}
+		b.halfOpenProbe = false
 		return
 	}
 	b.failures++
 	if b.failures >= b.threshold {
 		b.openUntil = b.now().Add(b.cooldown)
+		b.halfOpenProbe = false
 	}
+}
+
+// State is a sanitized readiness/diagnostic state. It contains no endpoint
+// or identity data.
+func (b *CircuitBreaker) State() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.failures < b.threshold {
+		return "closed"
+	}
+	if b.now().Before(b.openUntil) {
+		return "open"
+	}
+	return "half_open"
 }
 
 // ResilientProvider wraps a DecisionProvider with the circuit breaker so that
@@ -78,7 +104,7 @@ func NewResilientProvider(inner DecisionProvider, breaker *CircuitBreaker) *Resi
 	return &ResilientProvider{inner: inner, breaker: breaker}
 }
 
-func (r *ResilientProvider) Name() string { return "resilient-" + r.inner.Name() }
+func (r *ResilientProvider) Name() string { return r.inner.Name() }
 
 func (r *ResilientProvider) Evaluate(ctx context.Context, req DecisionRequest, ids []string) (DecisionEvidence, error) {
 	if !r.breaker.Allow() {

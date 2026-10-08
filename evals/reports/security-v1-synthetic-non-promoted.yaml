@@ -1,0 +1,26 @@
+# Example machine-readable report. Synthetic/noop only; never production.
+artifact_id: semantic-thresholds-security-v1
+artifact_version: 1
+question_schema:
+  id: security-v1
+  version: "1"
+  sha256: 7b1024695d60926d10de6efcfd5a4f51876bed2cd806559b6e0522f789d25819
+dataset:
+  id: security-v1-held-out
+  version: "2026-10-05"
+  sha256: 4fdd2710ab3c5ac34ef20480dbb96a58faf8faa87cc215048c9a6e74616d7592
+provider: noop
+checkpoint: synthetic-noop
+model_revision: synthetic-noop
+calibration_timestamp: "2026-10-05T00:00:00Z"
+evaluation_timestamp: "2026-10-05T00:00:00Z"
+tool_version: evaltool-synthetic-noop
+evaluated: false
+promoted: false
+slices: []
+promotion_criteria:
+  max_false_positive_rate: 0.05
+  max_false_negative_rate: 0.20
+  min_precision: 0.90
+  min_recall: 0.90
+  min_samples: 30

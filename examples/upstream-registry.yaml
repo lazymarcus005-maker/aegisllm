@@ -1,0 +1,40 @@
+# Development smoke registry. The mock services are intentionally HTTP and
+# have no credentials. Do not use this file for production.
+schema: aegisllm.upstreams/v1
+version: 1
+
+upstreams:
+  - id: local-mock
+    class: local
+    provider: local
+    family: openai
+    base_url: http://mock-local:9090
+    model_allow: ["local/*", "mock-local"]
+    model_deny: ["*-blocked"]
+    aliases: {local-chat: local/mock-model}
+    priority: 10
+    weight: 1
+    enabled: true
+    auth: {mode: none}
+    tls: {min_version: "1.2"}
+    health: {endpoint: /health, interval: 10s, timeout: 2s}
+    breaker: {threshold: 3, open_interval: 30s}
+    capabilities: {chat: true, responses: true, messages: false, embeddings: true, streaming: true, tools: true}
+
+  - id: cloud-mock
+    class: cloud
+    provider: cloud
+    family: openai
+    base_url: http://mock-cloud:9090
+    model_allow: ["cloud/*", "mock-model"]
+    priority: 20
+    weight: 1
+    enabled: true
+    auth: {mode: none}
+    health: {endpoint: /health, interval: 10s, timeout: 2s}
+    breaker: {threshold: 3, open_interval: 30s}
+    capabilities: {chat: true, responses: true, messages: false, embeddings: true, streaming: true, tools: true}
+
+fallback_chains:
+  - id: cloud-then-local
+    routes: [cloud-mock, local-mock]

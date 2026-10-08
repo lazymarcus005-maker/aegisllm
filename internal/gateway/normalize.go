@@ -221,6 +221,16 @@ func appendResponsesInput(env *core.InspectionEnvelope, raw json.RawMessage) err
 		env.Messages = append(env.Messages, core.Message{Role: core.RoleUser, Parts: []core.ContentPart{{Type: core.PartText, Text: object.InputText}}})
 		return nil
 	}
+	if json.Unmarshal(raw, &object) == nil && len(object.Content) > 0 {
+		parts, err := parseContent(object.Content)
+		if err != nil {
+			return err
+		}
+		if len(parts) > 0 {
+			env.Messages = append(env.Messages, core.Message{Role: core.RoleUser, Parts: parts})
+			return nil
+		}
+	}
 	return fmt.Errorf("input must be a string or array of messages")
 }
 
@@ -437,12 +447,17 @@ func (genericSupersetNormalizer) ParseRequest(raw []byte) (*core.InspectionEnvel
 		return nil, err
 	}
 	model, _, _ := rawString(doc, "model")
-	for _, key := range []string{"prompt", "input", "text", "content"} {
+	for _, key := range []string{"prompt", "input", "text", "content", "attachments"} {
 		if value, ok := doc[key]; ok {
 			text, ok := valueAsText(value)
 			if ok && text != "" {
 				env := requestEnvelope(model, "generic", false)
 				env.Messages = []core.Message{{Role: core.RoleUser, Parts: []core.ContentPart{{Type: core.PartText, Text: text}}}}
+				return env, nil
+			}
+			if parts, parseErr := parseContent(value); parseErr == nil && len(parts) > 0 {
+				env := requestEnvelope(model, "generic", false)
+				env.Messages = []core.Message{{Role: core.RoleUser, Parts: parts}}
 				return env, nil
 			}
 		}
@@ -841,7 +856,10 @@ func parseStructuredResponse(raw []byte, shape string) (*core.InspectionEnvelope
 		}
 		if json.Unmarshal(values, &output) == nil {
 			for _, item := range output {
-				parts, _ := parseContent(item.Content)
+				parts, parseErr := parseContent(item.Content)
+				if parseErr != nil {
+					return nil, fmt.Errorf("response output content: %w", parseErr)
+				}
 				if item.Text != "" {
 					parts = append(parts, core.ContentPart{Type: core.PartText, Text: item.Text})
 				}
@@ -856,7 +874,10 @@ func parseStructuredResponse(raw []byte, shape string) (*core.InspectionEnvelope
 			}
 		}
 	case "anthropic":
-		parts, _ := parseContent(doc["content"])
+		parts, parseErr := parseContent(doc["content"])
+		if parseErr != nil {
+			return nil, fmt.Errorf("response content: %w", parseErr)
+		}
 		if text, ok, _ := rawString(doc, "completion"); ok {
 			parts = append(parts, core.ContentPart{Type: core.PartText, Text: text})
 		}

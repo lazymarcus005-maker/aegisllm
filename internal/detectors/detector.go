@@ -5,10 +5,10 @@
 package detectors
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"time"
 
 	"github.com/aegisllm/gateway/internal/core"
@@ -33,6 +33,20 @@ func NewRegistry(hook TimingHook) *Registry {
 	return &Registry{timing: hook}
 }
 
+// ProductionRegistry returns the detector set used by the gateway runtime.
+// Keeping this constructor shared prevents simulators and runtime from
+// silently drifting in subtype coverage.
+func ProductionRegistry(telemetryKey string, hook TimingHook) *Registry {
+	r := NewRegistry(hook)
+	for _, d := range SecretDetectors(telemetryKey) {
+		r.Register(d)
+	}
+	for _, d := range PiiDetectors(telemetryKey) {
+		r.Register(d)
+	}
+	return r
+}
+
 // Register appends a detector; order defines evaluation order.
 func (r *Registry) Register(d Detector) {
 	r.detectors = append(r.detectors, d)
@@ -50,19 +64,7 @@ func (r *Registry) Names() []string {
 // RunAll executes every detector against the envelope, timing each one, and
 // assigns deterministic sequential finding IDs scoped to the request.
 func (r *Registry) RunAll(env *core.InspectionEnvelope) []core.SecurityFinding {
-	var out []core.SecurityFinding
-	for _, d := range r.detectors {
-		start := time.Now()
-		findings := d.Detect(env)
-		if r.timing != nil {
-			r.timing(d.Name(), time.Since(start))
-		}
-		for _, f := range findings {
-			f.ID = fmt.Sprintf("finding-%s-%d", env.RequestID, len(out))
-			out = append(out, f)
-		}
-	}
-	return out
+	return r.RunAllContext(context.Background(), env, DefaultEvasionConfig())
 }
 
 // HashValue returns a keyed hash for finding correlation (T-006): HMAC-SHA256

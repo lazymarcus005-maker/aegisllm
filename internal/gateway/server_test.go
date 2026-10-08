@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/dashboard"
@@ -43,8 +45,10 @@ func newTestGateway(t *testing.T, mutate func(*Config), upstream http.HandlerFun
 	if err != nil {
 		t.Fatal(err)
 	}
+	srv.SetMetricsHandler(observability.New().Handler())
 	gw := httptest.NewServer(srv.Handler())
 	t.Cleanup(gw.Close)
+	t.Cleanup(srv.Close)
 	return srv, gw, up
 }
 
@@ -203,14 +207,12 @@ func TestUniversalBadBodyAndSecretBlock(t *testing.T) {
 	}
 }
 
-func TestStreamingIsForwardedVerbatim(t *testing.T) {
+func TestStreamingRequestIsInspectedBeforeUpstream(t *testing.T) {
 	called := false
 	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		body, _ := io.ReadAll(r.Body)
-		if string(body) != `{"model":"m","stream":true,"messages":[{"role":"user","content":"sk-abcdefghijklmnopqrstuvwxyz123456"}]}` {
-			t.Fatalf("stream body changed: %s", body)
-		}
+		_ = body
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
@@ -227,8 +229,32 @@ func TestStreamingIsForwardedVerbatim(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !called {
-		t.Fatalf("stream was not forwarded: status=%d called=%v", resp.StatusCode, called)
+	if resp.StatusCode != http.StatusForbidden || called {
+		t.Fatalf("stream request bypassed policy: status=%d called=%v", resp.StatusCode, called)
+	}
+}
+
+func TestStreamingRequestPIIIsTransformedBeforeUpstream(t *testing.T) {
+	var upstreamBody string
+	srv, gw, _ := newTestGateway(t, func(c *Config) { c.SecurityMode = ModeEnforce }, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	})
+	pipe, _ := newRealPipeline(t)
+	srv.SetPipeline(pipe)
+	body := `{"model":"m","stream":true,"messages":[{"role":"user","content":"call 0812345678"}]}`
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d", resp.StatusCode)
+	}
+	if strings.Contains(upstreamBody, "0812345678") || !strings.Contains(upstreamBody, "PHONE_NUMBER_001") {
+		t.Fatalf("stream request was not transformed: %s", upstreamBody)
 	}
 }
 
@@ -314,7 +340,8 @@ func TestOversizedRequestReturns413(t *testing.T) {
 }
 
 func TestHealthAndReady(t *testing.T) {
-	_, gw, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {})
+	srv, gw, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {})
+	srv.AddReadinessCheck("policy_loaded", func() string { return "" })
 
 	resp, _ := http.Get(gw.URL + "/health")
 	body, _ := io.ReadAll(resp.Body)
@@ -328,6 +355,18 @@ func TestHealthAndReady(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 || !strings.Contains(string(body), "ready") {
 		t.Fatalf("ready: %d %s", resp.StatusCode, body)
+	}
+	var ready struct {
+		Status            string            `json:"status"`
+		DeploymentProfile string            `json:"deployment_profile"`
+		SecurityMode      string            `json:"security_mode"`
+		Dependencies      map[string]string `json:"dependencies"`
+	}
+	if err := json.Unmarshal(body, &ready); err != nil {
+		t.Fatal(err)
+	}
+	if ready.Status != "ready" || ready.DeploymentProfile != string(ProfileDevelopment) || ready.Dependencies["upstream"] != "ready" || ready.Dependencies["policy_loaded"] != "ready" {
+		t.Fatalf("readiness evidence missing: %+v", ready)
 	}
 }
 
@@ -383,6 +422,44 @@ func TestProtectionStatsAndDashboardEndpoints(t *testing.T) {
 	}
 }
 
+func TestDashboardV2IsVersionedOperatorSurfaceWithSecurityHeaders(t *testing.T) {
+	_, gw, _ := newTestGateway(t, nil, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	resp, err := http.Get(gw.URL + "/api/dashboard/v2/overview?window=1h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("overview response: %d cache=%q", resp.StatusCode, resp.Header.Get("Cache-Control"))
+	}
+	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "script-src 'self'") || strings.Contains(resp.Header.Get("Content-Security-Policy"), "unsafe-") {
+		t.Fatalf("unsafe CSP: %q", resp.Header.Get("Content-Security-Policy"))
+	}
+	var overview struct {
+		Version string `json:"version"`
+		KPIs    []struct {
+			ID         string `json:"id"`
+			Definition string `json:"definition"`
+		} `json:"kpis"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&overview); err != nil {
+		t.Fatal(err)
+	}
+	if overview.Version != dashboard.APIVersion || len(overview.KPIs) != 5 || overview.KPIs[0].Definition == "" {
+		t.Fatalf("unstable dashboard contract: %+v", overview)
+	}
+	bad, err := http.Get(gw.URL + "/api/dashboard/v2/timeseries?window=25h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid window status=%d", bad.StatusCode)
+	}
+}
+
 func TestReadyFailsWhenUpstreamUnreachable(t *testing.T) {
 	_, gw, _ := newTestGateway(t, func(c *Config) { c.UpstreamBaseURL = "http://127.0.0.1:1" }, func(w http.ResponseWriter, _ *http.Request) {})
 	resp, err := http.Get(gw.URL + "/ready")
@@ -392,6 +469,226 @@ func TestReadyFailsWhenUpstreamUnreachable(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status: %d", resp.StatusCode)
+	}
+}
+
+func TestPromptBudgetRejectsBeforeUpstream(t *testing.T) {
+	called := false
+	_, gw, _ := newTestGateway(t, func(c *Config) { c.MaxPromptChars = 4 }, func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hello"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge || called {
+		t.Fatalf("prompt budget status=%d upstream_called=%v", resp.StatusCode, called)
+	}
+}
+
+func TestResponseBudgetRejectsWithoutPartialBody(t *testing.T) {
+	_, gw, _ := newTestGateway(t, func(c *Config) { c.MaxResponseBytes = 8 }, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"secret":"must-not-reach-client"}`))
+	})
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadGateway || len(body) == 0 || strings.Contains(string(body), "must-not-reach-client") {
+		t.Fatalf("oversized response status=%d body=%s", resp.StatusCode, body)
+	}
+}
+
+func TestRateLimitReturnsRetryAfterAndIsolatesApplications(t *testing.T) {
+	_, gw, _ := newTestGateway(t, func(c *Config) {
+		c.RequestsPerSecond = 1
+		c.RateBurst = 1
+	}, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	post := func(app string) *http.Response {
+		req, _ := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", strings.NewReader(cleanRequest))
+		req.Header.Set("X-Application-Id", app)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	first := post("app-a")
+	first.Body.Close()
+	second := post("app-a")
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusTooManyRequests || second.Header.Get("Retry-After") == "" {
+		t.Fatalf("rate limit status=%d retry-after=%q", second.StatusCode, second.Header.Get("Retry-After"))
+	}
+	other := post("app-b")
+	defer other.Body.Close()
+	if other.StatusCode != http.StatusOK {
+		t.Fatalf("isolated application status=%d", other.StatusCode)
+	}
+}
+
+func TestConcurrencyLimitReleasesOnCompletion(t *testing.T) {
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	var once sync.Once
+	_, gw, _ := newTestGateway(t, func(c *Config) {
+		c.RequestsPerSecond = 100
+		c.RateBurst = 100
+		c.MaxConcurrentRequests = 1
+	}, func(w http.ResponseWriter, _ *http.Request) {
+		once.Do(func() { close(started) })
+		<-finish
+		w.WriteHeader(http.StatusOK)
+	})
+	firstDone := make(chan *http.Response, 1)
+	go func() {
+		resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
+		if err != nil {
+			t.Errorf("first request: %v", err)
+			return
+		}
+		firstDone <- resp
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first request did not reach upstream")
+	}
+	second, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Body.Close()
+	if second.StatusCode != http.StatusTooManyRequests || second.Header.Get("Retry-After") == "" {
+		t.Fatalf("concurrency status=%d retry-after=%q", second.StatusCode, second.Header.Get("Retry-After"))
+	}
+	close(finish)
+	first := <-firstDone
+	first.Body.Close()
+	third, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	third.Body.Close()
+	if third.StatusCode != http.StatusOK {
+		t.Fatalf("released concurrency status=%d", third.StatusCode)
+	}
+}
+
+func TestUpstreamHeaderTimeoutIsSanitized(t *testing.T) {
+	_, gw, _ := newTestGateway(t, func(c *Config) {
+		c.UpstreamResponseHeaderTimeout = 20 * time.Millisecond
+		c.UpstreamRequestTimeout = 100 * time.Millisecond
+	}, func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	})
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusGatewayTimeout || strings.Contains(string(body), "timeout") && strings.Contains(string(body), "Client.Timeout") {
+		t.Fatalf("timeout response status=%d body=%s", resp.StatusCode, body)
+	}
+}
+
+func TestUpstreamBodyTimeoutIsSanitized(t *testing.T) {
+	_, gw, _ := newTestGateway(t, func(c *Config) {
+		c.UpstreamResponseHeaderTimeout = time.Second
+		c.UpstreamRequestTimeout = 30 * time.Millisecond
+	}, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte(`{"ok":`))
+		flusher.Flush()
+		time.Sleep(100 * time.Millisecond)
+		_, _ = w.Write([]byte(`true}`))
+	})
+	resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusGatewayTimeout || strings.Contains(string(body), "true}") {
+		t.Fatalf("body timeout response status=%d body=%s", resp.StatusCode, body)
+	}
+}
+
+func TestUpstreamBreakerOpensAndReadinessIsNotReady(t *testing.T) {
+	_, gw, _ := newTestGateway(t, func(c *Config) {
+		c.UpstreamBaseURL = "http://127.0.0.1:1"
+		c.UpstreamDialTimeout = 20 * time.Millisecond
+		c.UpstreamRequestTimeout = 50 * time.Millisecond
+		c.UpstreamBreakerThreshold = 1
+		c.UpstreamBreakerOpenInterval = time.Minute
+	}, func(w http.ResponseWriter, _ *http.Request) {})
+	post := func() *http.Response {
+		resp, err := http.Post(gw.URL+"/v1/chat/completions", "application/json", strings.NewReader(cleanRequest))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	first := post()
+	first.Body.Close()
+	second := post()
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("breaker status=%d", second.StatusCode)
+	}
+	ready, err := http.Get(gw.URL + "/ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ready.Body.Close()
+	if ready.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("breaker readiness status=%d", ready.StatusCode)
+	}
+}
+
+func TestStreamDurationCancelsUpstreamWithoutInspection(t *testing.T) {
+	upstreamCanceled := make(chan struct{})
+	_, gw, _ := newTestGateway(t, func(c *Config) {
+		c.MaxStreamDuration = 40 * time.Millisecond
+		c.UpstreamRequestTimeout = time.Second
+	}, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: first\n\n"))
+		flusher.Flush()
+		<-r.Context().Done()
+		close(upstreamCanceled)
+	})
+	req, err := http.NewRequest(http.MethodPost, gw.URL+"/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true,"messages":[{"role":"user","content":"stream me"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "data: first") {
+		t.Fatalf("stream status=%d body=%q", resp.StatusCode, body)
+	}
+	select {
+	case <-upstreamCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("stream context was not cancelled")
 	}
 }
 
