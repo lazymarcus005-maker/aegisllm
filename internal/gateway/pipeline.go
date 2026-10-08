@@ -80,10 +80,16 @@ func (p *SecurityPipeline) recordAudit(ctx context.Context, event audit.Event) e
 // The pointer is swapped once, so readers can never observe a mixed policy,
 // question schema, and threshold configuration.
 type RuntimeSnapshot struct {
-	Engine     *policy.Engine
-	Questions  *decision.QuestionSchema
-	Planner    *decision.Planner
-	Thresholds *policy.SemanticThresholds
+	Engine                   *policy.Engine
+	Questions                *decision.QuestionSchema
+	Planner                  *decision.Planner
+	Thresholds               *policy.SemanticThresholds
+	SemanticModelID          string
+	SemanticModelVersion     string
+	SemanticModelDigest      string
+	ThresholdArtifactID      string
+	ThresholdArtifactVersion int
+	ThresholdArtifactDigest  string
 }
 
 // NewSecurityPipeline constructs a pipeline in OFF mode with no-op metrics.
@@ -109,11 +115,45 @@ func (p *SecurityPipeline) ActivateRuntimeSnapshot(engine *policy.Engine, questi
 	return nil
 }
 
+// ActivateRuntimeSnapshotBound atomically activates a policy, question schema,
+// model, and threshold binding. The binding is metadata-only; model weights
+// remain in Laya/model serving infrastructure.
+func (p *SecurityPipeline) ActivateRuntimeSnapshotBound(engine *policy.Engine, questions *decision.QuestionSchema, thresholds *policy.SemanticThresholds, modelID, modelVersion, modelDigest, thresholdID string, thresholdVersion int, thresholdDigest string) error {
+	if engine == nil || engine.Policy() == nil || modelID == "" || modelVersion == "" || len(modelDigest) != 64 || thresholdID == "" || thresholdVersion <= 0 || len(thresholdDigest) != 64 {
+		return fmt.Errorf("runtime semantic binding is incomplete")
+	}
+	if thresholds == nil || thresholds.ID != thresholdID || thresholds.Version != thresholdVersion || thresholds.ArtifactSHA256 != thresholdDigest {
+		return fmt.Errorf("runtime model/threshold binding mismatch")
+	}
+	p.runtime.Store(&RuntimeSnapshot{Engine: engine, Questions: questions, Planner: decision.NewPlanner(questions), Thresholds: thresholds,
+		SemanticModelID: modelID, SemanticModelVersion: modelVersion, SemanticModelDigest: modelDigest,
+		ThresholdArtifactID: thresholdID, ThresholdArtifactVersion: thresholdVersion, ThresholdArtifactDigest: thresholdDigest})
+	return nil
+}
+
 func (p *SecurityPipeline) SetCandidateRuntimeSnapshot(engine *policy.Engine, questions *decision.QuestionSchema, thresholds *policy.SemanticThresholds) error {
 	if engine == nil || engine.Policy() == nil {
 		return fmt.Errorf("candidate policy snapshot is empty")
 	}
 	p.candidate.Store(&RuntimeSnapshot{Engine: engine, Questions: questions, Planner: decision.NewPlanner(questions), Thresholds: thresholds})
+	return nil
+}
+
+func (p *SecurityPipeline) SetCandidateRuntimeSnapshotBound(engine *policy.Engine, questions *decision.QuestionSchema, thresholds *policy.SemanticThresholds, modelID, modelVersion, modelDigest, thresholdID string, thresholdVersion int, thresholdDigest string) error {
+	if err := p.ActivateRuntimeSnapshotBoundCandidate(engine, questions, thresholds, modelID, modelVersion, modelDigest, thresholdID, thresholdVersion, thresholdDigest); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *SecurityPipeline) ActivateRuntimeSnapshotBoundCandidate(engine *policy.Engine, questions *decision.QuestionSchema, thresholds *policy.SemanticThresholds, modelID, modelVersion, modelDigest, thresholdID string, thresholdVersion int, thresholdDigest string) error {
+	if engine == nil || engine.Policy() == nil || modelID == "" || modelVersion == "" || len(modelDigest) != 64 || thresholdID == "" || thresholdVersion <= 0 || len(thresholdDigest) != 64 {
+		return fmt.Errorf("candidate semantic binding is incomplete")
+	}
+	if thresholds == nil || thresholds.ID != thresholdID || thresholds.Version != thresholdVersion || thresholds.ArtifactSHA256 != thresholdDigest {
+		return fmt.Errorf("candidate model/threshold binding mismatch")
+	}
+	p.candidate.Store(&RuntimeSnapshot{Engine: engine, Questions: questions, Planner: decision.NewPlanner(questions), Thresholds: thresholds, SemanticModelID: modelID, SemanticModelVersion: modelVersion, SemanticModelDigest: modelDigest, ThresholdArtifactID: thresholdID, ThresholdArtifactVersion: thresholdVersion, ThresholdArtifactDigest: thresholdDigest})
 	return nil
 }
 
@@ -220,7 +260,7 @@ func (p *SecurityPipeline) SetDecisionProvider(dp decision.DecisionProvider, qs 
 	p.questions = qs
 	p.planner = decision.NewPlanner(qs)
 	current := p.current()
-	p.runtime.Store(&RuntimeSnapshot{Engine: current.Engine, Questions: qs, Planner: p.planner, Thresholds: current.Thresholds})
+	p.runtime.Store(&RuntimeSnapshot{Engine: current.Engine, Questions: qs, Planner: p.planner, Thresholds: current.Thresholds, SemanticModelID: current.SemanticModelID, SemanticModelVersion: current.SemanticModelVersion, SemanticModelDigest: current.SemanticModelDigest, ThresholdArtifactID: current.ThresholdArtifactID, ThresholdArtifactVersion: current.ThresholdArtifactVersion, ThresholdArtifactDigest: current.ThresholdArtifactDigest})
 }
 
 // EnableSemanticEnforce opts into calibrated semantic enforcement.
@@ -230,7 +270,7 @@ func (p *SecurityPipeline) EnableSemanticEnforce() { p.semanticEnforce = true }
 func (p *SecurityPipeline) SetSemanticThresholds(t *policy.SemanticThresholds) {
 	p.thresholds = t
 	current := p.current()
-	p.runtime.Store(&RuntimeSnapshot{Engine: current.Engine, Questions: current.Questions, Planner: current.Planner, Thresholds: t})
+	p.runtime.Store(&RuntimeSnapshot{Engine: current.Engine, Questions: current.Questions, Planner: current.Planner, Thresholds: t, SemanticModelID: current.SemanticModelID, SemanticModelVersion: current.SemanticModelVersion, SemanticModelDigest: current.SemanticModelDigest, ThresholdArtifactID: current.ThresholdArtifactID, ThresholdArtifactVersion: current.ThresholdArtifactVersion, ThresholdArtifactDigest: current.ThresholdArtifactDigest})
 }
 
 // RestrictedTools returns the policy's deterministic tool deny set to the MCP

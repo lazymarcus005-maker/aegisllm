@@ -31,6 +31,7 @@ import (
 	"github.com/aegisllm/gateway/internal/quarantine"
 	"github.com/aegisllm/gateway/internal/ragauth"
 	"github.com/aegisllm/gateway/internal/securetransport"
+	semanticcontrol "github.com/aegisllm/gateway/internal/semantic"
 	"github.com/aegisllm/gateway/internal/tokenization"
 )
 
@@ -517,6 +518,7 @@ func main() {
 		pipe.SetDecisionProvider(&decision.NoopProvider{}, questionSchema)
 	}
 	var thresholds *policy.SemanticThresholds
+	var semanticRegistry *semanticcontrol.Manager
 	if initialSnapshot != nil {
 		thresholds = initialSnapshot.Thresholds
 		if thresholds != nil {
@@ -537,6 +539,29 @@ func main() {
 	}
 	if cfg.SemanticEnforce {
 		pipe.EnableSemanticEnforce()
+	}
+	if cfg.SemanticRegistryStateFile != "" {
+		registry, registryErr := semanticcontrol.NewManager(semanticcontrol.Config{StatePath: cfg.SemanticRegistryStateFile, TrustStorePath: cfg.SemanticRegistryTrustStoreFile, Production: cfg.DeploymentProfile == gateway.ProfileProduction, RuntimeVersion: cfg.GatewayVersion, Observer: func(t semanticcontrol.Transition) {
+			sink.Record(audit.Event{RequestID: "semantic-registry", Timestamp: time.Now().UTC(), Component: "semantic-registry", Mode: cfg.SecurityMode, Action: core.ActionReview, Code: "SEMANTIC_LIFECYCLE_TRANSITION", ReasonID: t.Provenance, SemanticModelID: t.Model.ID, SemanticModelVersion: t.Model.Version, SemanticModelDigest: t.Model.Digest, SemanticLifecycleFrom: string(t.From), SemanticLifecycleState: string(t.To), SemanticLifecycleRevision: t.Revision, SemanticLifecycleActor: t.Actor})
+		}})
+		if registryErr != nil {
+			logger.Error("semantic registry configuration failed")
+			os.Exit(1)
+		}
+		semanticRegistry = registry
+		registry.SetActivator(func(binding semanticcontrol.Activation) error {
+			if thresholds == nil {
+				return errors.New("semantic threshold artifact unavailable")
+			}
+			return pipe.ActivateRuntimeSnapshotBound(policy.NewEngine(pol), questionSchema, thresholds, binding.Model.ID, binding.Model.Version, binding.Model.Digest, binding.ThresholdID, binding.ThresholdVersion, binding.ThresholdDigest)
+		})
+		srv.SetSemanticRegistry(registry)
+		if _, active := registry.Active(); active {
+			if err := registry.ActivateCurrent(); err != nil {
+				logger.Error("active semantic model could not be activated")
+				os.Exit(1)
+			}
+		}
 	}
 	checkpoint, thresholdID, thresholdVersion, calibrationTimestamp := "", "", 0, ""
 	if thresholds != nil {
@@ -563,7 +588,43 @@ func main() {
 		}
 		return gateway.SemanticReadiness{Status: status, Provider: providerName, SchemaVersion: questionSchema.Schema,
 			ThresholdPolicyID: thresholdID, ThresholdPolicyVersion: thresholdVersion,
-			CheckpointID: checkpoint, CalibrationTimestamp: calibrationTimestamp}
+			CheckpointID: checkpoint, CalibrationTimestamp: calibrationTimestamp,
+			ModelID: func() string {
+				if semanticRegistry == nil {
+					return ""
+				}
+				if r, ok := semanticRegistry.Active(); ok {
+					return r.Artifact.Metadata.ModelID
+				}
+				return ""
+			}(),
+			ModelVersion: func() string {
+				if semanticRegistry == nil {
+					return ""
+				}
+				if r, ok := semanticRegistry.Active(); ok {
+					return r.Artifact.Metadata.Version
+				}
+				return ""
+			}(),
+			ModelDigest: func() string {
+				if semanticRegistry == nil {
+					return ""
+				}
+				if r, ok := semanticRegistry.Active(); ok {
+					return r.Artifact.Metadata.Digest
+				}
+				return ""
+			}(),
+			ThresholdArtifactDigest: func() string {
+				if semanticRegistry == nil {
+					return ""
+				}
+				if r, ok := semanticRegistry.Active(); ok {
+					return r.Artifact.Metadata.ThresholdDigest
+				}
+				return ""
+			}()}
 	})
 
 	pipe.SetRecorder(metrics)
@@ -573,7 +634,7 @@ func main() {
 	srv.SetPolicy(pol)
 	if distribution != nil {
 		pipe.SetCanaryAssignment(func(env *core.InspectionEnvelope) bool {
-			return distribution.IsCanary(cfg.GatewayInstanceID, env.Tenant, env.Application)
+			return env.Metadata["verified_identity"] == "true" && distribution.IsCanary(cfg.GatewayInstanceID, env.Tenant, env.Application)
 		})
 		pipe.SetCanaryObserver(func(disagreement bool) {
 			distribution.ObserveCanary(cfg.GatewayInstanceID, disagreement)
@@ -582,8 +643,22 @@ func main() {
 			}
 		})
 		distribution.SetApply(func(snapshot *policydistribution.Snapshot) error {
-			if err := pipe.ActivateRuntimeSnapshot(policy.NewEngine(snapshot.Policy), snapshot.Questions, snapshot.Thresholds); err != nil {
-				return err
+			if semanticRegistry != nil && snapshot.SemanticModel.ID != "" {
+				if err := semanticRegistry.BindPolicy(semanticcontrol.PolicyBinding{PolicyID: snapshot.Policy.ID, PolicyVersion: snapshot.Policy.Version, PolicyDigest: snapshot.Bundle.Manifest.PolicySHA256}, semanticcontrol.ModelRef{ID: snapshot.SemanticModel.ID, Version: snapshot.SemanticModel.Version, Digest: snapshot.SemanticModel.Digest}); err != nil {
+					return err
+				}
+			}
+			var activationErr error
+			if snapshot.SemanticModel.ID != "" {
+				if snapshot.Thresholds == nil {
+					return errors.New("semantic policy bundle has no threshold artifact")
+				}
+				activationErr = pipe.ActivateRuntimeSnapshotBound(policy.NewEngine(snapshot.Policy), snapshot.Questions, snapshot.Thresholds, snapshot.SemanticModel.ID, snapshot.SemanticModel.Version, snapshot.SemanticModel.Digest, snapshot.Thresholds.ID, snapshot.Thresholds.Version, snapshot.Bundle.Manifest.ThresholdSHA256)
+			} else {
+				activationErr = pipe.ActivateRuntimeSnapshot(policy.NewEngine(snapshot.Policy), snapshot.Questions, snapshot.Thresholds)
+			}
+			if activationErr != nil {
+				return activationErr
 			}
 			srv.SetRuntimePolicy(snapshot.Policy)
 			return nil
@@ -592,6 +667,17 @@ func main() {
 			if snapshot == nil {
 				pipe.ClearCandidateRuntimeSnapshot()
 				return nil
+			}
+			if semanticRegistry != nil && snapshot.SemanticModel.ID != "" {
+				if err := semanticRegistry.BindPolicy(semanticcontrol.PolicyBinding{PolicyID: snapshot.Policy.ID, PolicyVersion: snapshot.Policy.Version, PolicyDigest: snapshot.Bundle.Manifest.PolicySHA256}, semanticcontrol.ModelRef{ID: snapshot.SemanticModel.ID, Version: snapshot.SemanticModel.Version, Digest: snapshot.SemanticModel.Digest}); err != nil {
+					return err
+				}
+			}
+			if snapshot.SemanticModel.ID != "" {
+				if snapshot.Thresholds == nil {
+					return errors.New("semantic policy bundle has no threshold artifact")
+				}
+				return pipe.SetCandidateRuntimeSnapshotBound(policy.NewEngine(snapshot.Policy), snapshot.Questions, snapshot.Thresholds, snapshot.SemanticModel.ID, snapshot.SemanticModel.Version, snapshot.SemanticModel.Digest, snapshot.Thresholds.ID, snapshot.Thresholds.Version, snapshot.Bundle.Manifest.ThresholdSHA256)
 			}
 			return pipe.SetCandidateRuntimeSnapshot(policy.NewEngine(snapshot.Policy), snapshot.Questions, snapshot.Thresholds)
 		})

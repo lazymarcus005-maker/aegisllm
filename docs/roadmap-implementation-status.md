@@ -56,7 +56,7 @@ separate feature-roadmap file).
   integration/race-oriented coverage. Evidence class: local deterministic and
   fake/shared-store contract tests only; production Redis/IdP/SIEM/provider
   conformance and signal calibration remain external validation.
-- [ ] P2.4 Richer entity detection and multi-tenant vault namespaces (bounded cross-message detection moved into P1.4).
+- [x] P2.4 Semantic model lifecycle and drift monitoring: signed metadata-only registry, rotating trust and anti-replay gates, deterministic lifecycle/CAS/idempotency/history, exact atomic model-threshold runtime binding, verified-identity rollout surfaces, bounded drift metrics/guardrails, operator APIs/CLI, readiness/audit/metrics privacy, and fuzz/race-oriented contract tests. Evidence class: contract, deterministic fake, unit, and gateway integration only; real model quality, production drift, signer governance, and external Laya connectivity remain promotion dependencies.
 
 P0.1 is marked complete only after the repository acceptance commands and the
 container smoke test pass on this branch.

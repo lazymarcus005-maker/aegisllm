@@ -1,0 +1,28 @@
+{
+  "metadata": {
+    "format_version": 1,
+    "model_id": "fake-laya-security",
+    "version": "2026.10.0-fake",
+    "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "detector": "laya",
+    "task": "prompt_security",
+    "runtime_compatibility": ["gateway-dev"],
+    "api_version": "semantic/v1",
+    "dataset_provenance_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "evaluation_provenance_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "training_window_start": "2026-10-01T00:00:00Z",
+    "training_window_end": "2026-10-02T00:00:00Z",
+    "owner": "security",
+    "approval": "fake-fixture-only",
+    "threshold_artifact_id": "fake-thresholds",
+    "threshold_artifact_version": 1,
+    "threshold_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "signer": "fixture",
+    "key_id": "fixture-key",
+    "created": "2026-10-02T00:00:00Z",
+    "expires": "2026-12-31T00:00:00Z",
+    "rollout_state": "registered",
+    "synthetic": true
+  },
+  "signature": ""
+}

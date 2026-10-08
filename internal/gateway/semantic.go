@@ -167,6 +167,7 @@ func (p *SecurityPipeline) evaluateSemantic(ctx context.Context, env *core.Inspe
 	req := decision.DecisionRequest{
 		RequestID: env.RequestID, Direction: strings.ToLower(string(env.Direction)),
 		Role: string(role), Content: content, Application: env.Application,
+		ModelID: runtime.SemanticModelID, ModelVersion: runtime.SemanticModelVersion,
 	}
 	evidence, err := p.provider.Evaluate(ctx, req, plan.QuestionIDs)
 	if err != nil {
@@ -216,6 +217,10 @@ func (p *SecurityPipeline) validateEvidence(evidence decision.DecisionEvidence, 
 			return fmt.Errorf("semantic provider mismatch")
 		}
 	}
+	if runtime.SemanticModelID != "" && (evidence.ModelID != runtime.SemanticModelID || evidence.ModelVersion != runtime.SemanticModelVersion || evidence.ModelDigest != runtime.SemanticModelDigest) {
+		p.recorder.ObserveSemanticRejected("model_binding")
+		return fmt.Errorf("semantic model binding mismatch")
+	}
 	wanted := make(map[string]bool, len(required))
 	for _, id := range required {
 		wanted[id] = true
@@ -241,7 +246,7 @@ func (p *SecurityPipeline) validateEvidence(evidence decision.DecisionEvidence, 
 }
 
 func layaAuditInfo(ev *decision.DecisionEvidence, schema *decision.QuestionSchema) *audit.LayaInfo {
-	info := &audit.LayaInfo{Provider: safeSemanticMetadata(ev.Provider), Checkpoint: safeSemanticMetadata(ev.Checkpoint), SchemaVersion: safeSemanticMetadata(ev.SchemaVersion), Route: safeSemanticMetadata(ev.Route)}
+	info := &audit.LayaInfo{Provider: safeSemanticMetadata(ev.Provider), Checkpoint: safeSemanticMetadata(ev.Checkpoint), SchemaVersion: safeSemanticMetadata(ev.SchemaVersion), Route: safeSemanticMetadata(ev.Route), ModelID: safeSemanticMetadata(ev.ModelID), ModelVersion: safeSemanticMetadata(ev.ModelVersion), ModelDigest: safeSemanticMetadata(ev.ModelDigest)}
 	for id, d := range ev.Decisions {
 		if schema == nil || schema.RiskOf(id) == "" {
 			continue

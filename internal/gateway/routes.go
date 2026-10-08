@@ -42,6 +42,21 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/policies/status", s.protect(http.HandlerFunc(s.handlePolicyStatus), auth.RoleOperator))
 	mux.Handle("POST /api/policies/activate", s.protect(http.HandlerFunc(s.handlePolicyActivate), auth.RoleOperator))
 	mux.Handle("POST /api/policies/rollback", s.protect(http.HandlerFunc(s.handlePolicyRollback), auth.RoleOperator))
+	if s.semanticRegistry != nil {
+		mux.Handle("GET /api/semantic/models", s.protect(http.HandlerFunc(s.handleSemanticModels), auth.RoleOperator))
+		mux.Handle("GET /api/semantic/status", s.protect(http.HandlerFunc(s.handleSemanticStatus), auth.RoleOperator))
+		mux.Handle("GET /api/semantic/history", s.protect(http.HandlerFunc(s.handleSemanticHistory), auth.RoleOperator))
+		mux.Handle("POST /api/semantic/validate", s.protect(http.HandlerFunc(s.handleSemanticValidate), auth.RoleOperator))
+		mux.Handle("POST /api/semantic/register", s.protect(http.HandlerFunc(s.handleSemanticRegister), auth.RoleOperator))
+		mux.Handle("POST /api/semantic/transition", s.protect(http.HandlerFunc(s.handleSemanticTransition), auth.RoleOperator))
+		for _, action := range []string{"shadow", "canary", "promote", "pause", "rollback", "retire", "revoke"} {
+			mux.Handle("POST /api/semantic/"+action, s.protect(http.HandlerFunc(s.handleSemanticTransition), auth.RoleOperator))
+		}
+		mux.Handle("GET /api/semantic/compare", s.protect(http.HandlerFunc(s.handleSemanticCompare), auth.RoleOperator))
+	}
+	if s.semanticDrift != nil {
+		mux.Handle("GET /api/semantic/drift", s.protect(http.HandlerFunc(s.handleSemanticDrift), auth.RoleOperator))
+	}
 	mux.Handle("GET /api/routes", s.protect(http.HandlerFunc(s.handleRoutes), "aegis.operator"))
 	mux.Handle("GET /api/providers/conformance", s.protect(http.HandlerFunc(s.handleProviderConformance), "aegis.operator"))
 	mux.Handle("GET /api/pii/providers", s.protect(http.HandlerFunc(s.handlePIIProviders), "aegis.operator"))

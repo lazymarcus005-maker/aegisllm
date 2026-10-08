@@ -191,3 +191,22 @@ and promotion is an authenticated operator action. A signed rollback
 authorization is required to restore a retained complete snapshot. Bundle
 manifests and operational metrics intentionally contain no prompts, traffic,
 secrets, private keys, or sensitive policy conditions.
+
+# P2.4 semantic lifecycle and drift threats
+
+The model registry treats metadata, signatures, timestamps, digests, signer
+keys, policy bindings, and lifecycle requests as hostile. Ed25519 verification
+uses the existing rotating trust store; future/expired, replayed, downgraded,
+incompatible, digest-mismatched, unapproved, revoked, or synthetic production
+artifacts are rejected. Immutable records, CAS revisions, idempotency, signed
+policy binding, and atomic runtime snapshots prevent mixed model/threshold
+activation and stale operator writes.
+
+Drift inputs are trusted aggregate buckets rather than raw traffic. Validation,
+fixed cardinality, minimum samples, confidence guardrails, fixed windows,
+sustained breach/cooldown/hysteresis, healthy-target checks, and two-scope
+corroboration prevent one tenant, a label outage, or a transient distribution
+from causing fleet rollback. Durable audit/SIEM and metrics contain bounded
+references/action classes only. Fixtures are contract/fake evidence; real model
+quality, production distributions, label trust, signer governance, and Laya
+connectivity remain external promotion dependencies.

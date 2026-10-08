@@ -150,6 +150,8 @@ type Config struct {
 	PolicyFile                     string
 	QuestionsFile                  string
 	ThresholdsFile                 string
+	SemanticRegistryStateFile      string
+	SemanticRegistryTrustStoreFile string
 	PolicyBundleDir                string
 	PolicyBundlePath               string
 	PolicyControlPlaneURL          string
@@ -350,6 +352,8 @@ func configFrom(get func(string) string) Config {
 		PolicyFile:                     getenvDefault(get, "POLICY_FILE", "policies/enterprise-default.yaml"),
 		QuestionsFile:                  getenvDefault(get, "QUESTIONS_FILE", "questions/security-v1.yaml"),
 		ThresholdsFile:                 getenvDefault(get, "THRESHOLDS_FILE", "policies/thresholds-security-v1.yaml"),
+		SemanticRegistryStateFile:      get("SEMANTIC_REGISTRY_STATE_FILE"),
+		SemanticRegistryTrustStoreFile: get("SEMANTIC_REGISTRY_TRUST_STORE_FILE"),
 		PolicyBundleDir:                get("POLICY_BUNDLE_DIR"),
 		PolicyBundlePath:               get("POLICY_BUNDLE_PATH"),
 		PolicyControlPlaneURL:          get("POLICY_CONTROL_PLANE_URL"),
@@ -828,6 +832,12 @@ func validateSemanticConfig(cfg Config) error {
 	}
 	if err := thresholds.ValidateForEnforcement(qs.Schema, qs.Version, questionIDs, "laya"); err != nil {
 		return errors.New("THRESHOLDS_FILE is not promotion-ready")
+	}
+	if cfg.profile() == ProfileProduction && (strings.TrimSpace(cfg.SemanticRegistryStateFile) == "" || strings.TrimSpace(cfg.SemanticRegistryTrustStoreFile) == "") {
+		return errors.New("production semantic enforcement requires SEMANTIC_REGISTRY_STATE_FILE and SEMANTIC_REGISTRY_TRUST_STORE_FILE")
+	}
+	if (cfg.SemanticRegistryStateFile == "") != (cfg.SemanticRegistryTrustStoreFile == "") {
+		return errors.New("semantic registry state and trust store must be configured together")
 	}
 	return nil
 }

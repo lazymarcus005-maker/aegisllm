@@ -2,6 +2,8 @@ package policy
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -53,6 +55,9 @@ type PromotionCriteria struct {
 // continue to load the existing artifact. ValidateForEnforcement is the
 // stricter P0.5 contract used before semantic enforcement is enabled.
 type SemanticThresholds struct {
+	// ArtifactSHA256 is populated from the exact signed file bytes by the
+	// loader. It is not part of the YAML payload and is never caller-settable.
+	ArtifactSHA256        string                    `yaml:"-" json:"-"`
 	ID                    string                    `yaml:"id"`
 	Version               int                       `yaml:"version"`
 	ArtifactVersion       int                       `yaml:"artifact_version,omitempty"`
@@ -93,8 +98,11 @@ func LoadSemanticThresholds(data []byte) (*SemanticThresholds, error) {
 	if err := t.Validate(); err != nil {
 		return nil, err
 	}
+	t.ArtifactSHA256 = sha256Hex(data)
 	return &t, nil
 }
+
+func sha256Hex(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
 
 func LoadSemanticThresholdsFile(path string) (*SemanticThresholds, error) {
 	data, err := securetransport.ReadTrustedFile(path)

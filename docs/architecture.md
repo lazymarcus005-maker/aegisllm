@@ -1197,6 +1197,26 @@ history; release is optimistic-revision checked and never destructive.
 - Laya GitHub: https://github.com/NandhaKishorM/laya
 - OWASP LLM02: Sensitive Information Disclosure: https://genai.owasp.org/llmrisk/llm022025-sensitive-information-disclosure/
 - OWASP LLM07: System Prompt Leakage: https://genai.owasp.org/llmrisk/llm072025-system-prompt-leakage/
+
+## P2.4 Semantic model lifecycle and drift
+
+`internal/semantic` is the metadata-only lifecycle control plane. Signed model
+records bind detector/task, runtime/API compatibility, dataset/evaluation
+provenance digests, training window, owner/approval, threshold artifact
+identity, signer/key, validity, rollout state, and rollback history. Registry
+mutations use optimistic revisions, idempotency keys, verified operator actor
+provenance, durable transition history, and explicit confirmation for broad
+actions. The existing signed policy bundle carries an exact promoted-model
+reference; an unpromoted reference is rejected before activation.
+
+The gateway's atomic runtime snapshot includes exact model and threshold
+artifact references. Requests pin one snapshot, semantic evidence must echo
+the model binding when lifecycle enforcement is active, and audit/readiness
+expose only bounded references. The registry never stores weights or dataset
+content. Shadow/canary cohorts derive from verified identity, and drift accepts
+only bounded aggregate distributions. Low volume, missing labels, transient
+breaches, unhealthy rollback targets, and single-tenant signals cannot
+authorize fleet rollback.
 # P0.7 encrypted service links and rotation
 
 All outbound HTTPS and `rediss://` links are constructed through

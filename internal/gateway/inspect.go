@@ -157,6 +157,8 @@ func (p *SecurityPipeline) auditEvent(ins *inspection) audit.Event {
 		Application: ins.env.Application, Tenant: ins.env.Tenant, User: ins.env.User.Subject,
 		Roles: append([]string(nil), ins.env.User.Roles...), Provider: ins.env.Target.Provider,
 		PolicyID: ins.dec.PolicyID, PolicyVersion: ins.dec.PolicyVersion, Mode: p.mode,
+		SemanticModelID: p.current().SemanticModelID, SemanticModelVersion: p.current().SemanticModelVersion, SemanticModelDigest: p.current().SemanticModelDigest,
+		ThresholdArtifactID: p.current().ThresholdArtifactID, ThresholdArtifactVersion: p.current().ThresholdArtifactVersion, ThresholdArtifactDigest: p.current().ThresholdArtifactDigest,
 		Action: ins.dec.Action,
 		Code:   ins.dec.Code, MatchedRule: ins.dec.MatchedRule,
 		PrecedenceStage: string(ins.dec.PrecedenceStage), Reason: ins.dec.Reason,

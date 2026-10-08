@@ -12,7 +12,9 @@ import (
 
 type request struct {
 	State struct {
-		Content string `json:"content"`
+		Content      string `json:"content"`
+		ModelID      string `json:"model_id,omitempty"`
+		ModelVersion string `json:"model_version,omitempty"`
 	} `json:"state"`
 	Questions []string `json:"questions"`
 }
@@ -48,7 +50,11 @@ func main() {
 			decisions[id] = map[string]any{"value": triggered, "answer_confidence": confidence}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"provider": "laya", "checkpoint": "fake-checkpoint", "schema_version": "security-v1", "route": "fake", "decisions": decisions})
+		response := map[string]any{"provider": "laya", "checkpoint": "fake-checkpoint", "schema_version": "security-v1", "route": "fake", "decisions": decisions}
+		if in.State.ModelID != "" {
+			response["model_id"], response["model_version"], response["model_digest"] = in.State.ModelID, in.State.ModelVersion, strings.Repeat("a", 64)
+		}
+		_ = json.NewEncoder(w).Encode(response)
 	})
 	if err := securetransport.ServeHTTPServer(securetransport.NewHTTPServer(":8300", http.DefaultServeMux), "", ""); err != nil {
 		panic(err)

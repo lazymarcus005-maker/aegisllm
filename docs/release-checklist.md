@@ -23,3 +23,8 @@
       bounded-state/DoS coverage.
 - [ ] Release evidence manifest hashes are attached; signing is only recorded
       when a real keyless identity is available.
+- [ ] P2.4 semantic lifecycle checks pass: signed metadata/trust rotation,
+      anti-replay/downgrade, policy promoted-model binding, model-threshold
+      atomicity, stale revision/concurrency, cohort isolation, low-volume and
+      sustained drift guardrails, tenant corroboration, safe rollback target,
+      restart recovery, audit privacy, and metric cardinality.

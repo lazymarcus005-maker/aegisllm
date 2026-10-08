@@ -36,6 +36,9 @@ type LayaInfo struct {
 	Route         string         `json:"route,omitempty"`
 	Decisions     []LayaDecision `json:"decisions,omitempty"`
 	Error         string         `json:"error,omitempty"`
+	ModelID       string         `json:"model_id,omitempty"`
+	ModelVersion  string         `json:"model_version,omitempty"`
+	ModelDigest   string         `json:"model_digest,omitempty"`
 }
 
 // MarshalJSON keeps the historical semantic evidence shape while the
@@ -65,8 +68,11 @@ func (l LayaInfo) MarshalJSON() ([]byte, error) {
 		Route         string          `json:"route,omitempty"`
 		Decisions     json.RawMessage `json:"decisions,omitempty"`
 		Error         string          `json:"error,omitempty"`
+		ModelID       string          `json:"model_id,omitempty"`
+		ModelVersion  string          `json:"model_version,omitempty"`
+		ModelDigest   string          `json:"model_digest,omitempty"`
 	}
-	return json.Marshal(wire{l.Provider, l.Checkpoint, l.SchemaVersion, l.Route, decisions.Bytes(), l.Error})
+	return json.Marshal(wire{l.Provider, l.Checkpoint, l.SchemaVersion, l.Route, decisions.Bytes(), l.Error, l.ModelID, l.ModelVersion, l.ModelDigest})
 }
 
 func (l *LayaInfo) UnmarshalJSON(data []byte) error {
@@ -77,12 +83,16 @@ func (l *LayaInfo) UnmarshalJSON(data []byte) error {
 		Route         string          `json:"route"`
 		Decisions     json.RawMessage `json:"decisions"`
 		Error         string          `json:"error"`
+		ModelID       string          `json:"model_id"`
+		ModelVersion  string          `json:"model_version"`
+		ModelDigest   string          `json:"model_digest"`
 	}
 	var in wire
 	if err := json.Unmarshal(data, &in); err != nil {
 		return err
 	}
 	l.Provider, l.Checkpoint, l.SchemaVersion, l.Route, l.Error = in.Provider, in.Checkpoint, in.SchemaVersion, in.Route, in.Error
+	l.ModelID, l.ModelVersion, l.ModelDigest = in.ModelID, in.ModelVersion, in.ModelDigest
 	if len(in.Decisions) == 0 || string(in.Decisions) == "null" {
 		return nil
 	}
@@ -121,65 +131,75 @@ type Integrity struct {
 // Event is the only production audit payload. Keep additions explicit and
 // reviewed: arbitrary maps and raw data fields are deliberately absent.
 type Event struct {
-	Schema             string                  `json:"schema"`
-	EventID            string                  `json:"event_id"`
-	RequestID          string                  `json:"request_id"`
-	Timestamp          time.Time               `json:"timestamp"`
-	TraceID            string                  `json:"trace_id,omitempty"`
-	SpanID             string                  `json:"span_id,omitempty"`
-	TraceFlags         string                  `json:"trace_flags,omitempty"`
-	Direction          core.Direction          `json:"direction"`
-	Application        string                  `json:"application,omitempty"`
-	Tenant             string                  `json:"tenant,omitempty"`
-	User               string                  `json:"user,omitempty"`
-	Roles              []string                `json:"roles,omitempty"`
-	Provider           string                  `json:"provider,omitempty"`
-	PolicyID           string                  `json:"policy_id,omitempty"`
-	PolicyVersion      int                     `json:"policy_version,omitempty"`
-	PolicySequence     uint64                  `json:"policy_sequence,omitempty"`
-	PolicyHash         string                  `json:"policy_hash,omitempty"`
-	Mode               string                  `json:"mode"`
-	Component          string                  `json:"component,omitempty"`
-	Action             core.Action             `json:"action"`
-	Code               string                  `json:"code,omitempty"`
-	ReasonID           string                  `json:"reason_id,omitempty"`
-	MatchedRule        string                  `json:"matched_rule,omitempty"`
-	PrecedenceStage    string                  `json:"precedence_stage,omitempty"`
-	Reason             string                  `json:"reason,omitempty"`
-	FindingTypes       []string                `json:"finding_types,omitempty"`
-	FindingCount       int                     `json:"finding_count,omitempty"`
-	FindingSummary     []policy.FindingSummary `json:"finding_summary,omitempty"`
-	EvasionTypes       []string                `json:"evasion_types,omitempty"`
-	EncodingDepth      int                     `json:"encoding_depth,omitempty"`
-	BudgetRejected     bool                    `json:"budget_rejected,omitempty"`
-	Latencies          Latencies               `json:"latency_ms"`
-	Laya               *LayaInfo               `json:"laya,omitempty"`
-	PIIFallback        bool                    `json:"pii_fallback,omitempty"`
-	PIIUnavailable     bool                    `json:"pii_unavailable,omitempty"`
-	PredictedAction    core.Action             `json:"predicted_action,omitempty"`
-	AppliedAction      core.Action             `json:"applied_action,omitempty"`
-	Stream             bool                    `json:"stream,omitempty"`
-	EndpointFamily     string                  `json:"endpoint_family,omitempty"`
-	RouteID            string                  `json:"route_id,omitempty"`
-	RouteClass         string                  `json:"route_class,omitempty"`
-	RouteProvider      string                  `json:"route_provider,omitempty"`
-	RequestedModel     string                  `json:"requested_model,omitempty"`
-	RoutedModel        string                  `json:"routed_model,omitempty"`
-	RouteReason        string                  `json:"route_reason,omitempty"`
-	RouteFailover      bool                    `json:"route_failover,omitempty"`
-	RAG                bool                    `json:"rag,omitempty"`
-	RAGOperation       string                  `json:"rag_operation,omitempty"`
-	RAGChunks          int                     `json:"rag_chunks,omitempty"`
-	ToolProvider       string                  `json:"tool_provider,omitempty"`
-	BytesInspected     int64                   `json:"bytes_inspected,omitempty"`
-	EventsInspected    int                     `json:"events_inspected,omitempty"`
-	DistributionEvent  string                  `json:"distribution_event,omitempty"`
-	DistributionKeyID  string                  `json:"distribution_key_id,omitempty"`
-	QuarantineID       string                  `json:"quarantine_id,omitempty"`
-	QuarantineScope    string                  `json:"quarantine_scope,omitempty"`
-	QuarantineStatus   string                  `json:"quarantine_status,omitempty"`
-	QuarantineRevision uint64                  `json:"quarantine_revision,omitempty"`
-	Integrity          Integrity               `json:"integrity,omitempty"`
+	Schema                    string                  `json:"schema"`
+	EventID                   string                  `json:"event_id"`
+	RequestID                 string                  `json:"request_id"`
+	Timestamp                 time.Time               `json:"timestamp"`
+	TraceID                   string                  `json:"trace_id,omitempty"`
+	SpanID                    string                  `json:"span_id,omitempty"`
+	TraceFlags                string                  `json:"trace_flags,omitempty"`
+	Direction                 core.Direction          `json:"direction"`
+	Application               string                  `json:"application,omitempty"`
+	Tenant                    string                  `json:"tenant,omitempty"`
+	User                      string                  `json:"user,omitempty"`
+	Roles                     []string                `json:"roles,omitempty"`
+	Provider                  string                  `json:"provider,omitempty"`
+	PolicyID                  string                  `json:"policy_id,omitempty"`
+	PolicyVersion             int                     `json:"policy_version,omitempty"`
+	PolicySequence            uint64                  `json:"policy_sequence,omitempty"`
+	PolicyHash                string                  `json:"policy_hash,omitempty"`
+	SemanticModelID           string                  `json:"semantic_model_id,omitempty"`
+	SemanticModelVersion      string                  `json:"semantic_model_version,omitempty"`
+	SemanticModelDigest       string                  `json:"semantic_model_digest,omitempty"`
+	ThresholdArtifactID       string                  `json:"threshold_artifact_id,omitempty"`
+	ThresholdArtifactVersion  int                     `json:"threshold_artifact_version,omitempty"`
+	ThresholdArtifactDigest   string                  `json:"threshold_artifact_digest,omitempty"`
+	SemanticLifecycleFrom     string                  `json:"semantic_lifecycle_from,omitempty"`
+	SemanticLifecycleState    string                  `json:"semantic_lifecycle_state,omitempty"`
+	SemanticLifecycleRevision uint64                  `json:"semantic_lifecycle_revision,omitempty"`
+	SemanticLifecycleActor    string                  `json:"semantic_lifecycle_actor,omitempty"`
+	Mode                      string                  `json:"mode"`
+	Component                 string                  `json:"component,omitempty"`
+	Action                    core.Action             `json:"action"`
+	Code                      string                  `json:"code,omitempty"`
+	ReasonID                  string                  `json:"reason_id,omitempty"`
+	MatchedRule               string                  `json:"matched_rule,omitempty"`
+	PrecedenceStage           string                  `json:"precedence_stage,omitempty"`
+	Reason                    string                  `json:"reason,omitempty"`
+	FindingTypes              []string                `json:"finding_types,omitempty"`
+	FindingCount              int                     `json:"finding_count,omitempty"`
+	FindingSummary            []policy.FindingSummary `json:"finding_summary,omitempty"`
+	EvasionTypes              []string                `json:"evasion_types,omitempty"`
+	EncodingDepth             int                     `json:"encoding_depth,omitempty"`
+	BudgetRejected            bool                    `json:"budget_rejected,omitempty"`
+	Latencies                 Latencies               `json:"latency_ms"`
+	Laya                      *LayaInfo               `json:"laya,omitempty"`
+	PIIFallback               bool                    `json:"pii_fallback,omitempty"`
+	PIIUnavailable            bool                    `json:"pii_unavailable,omitempty"`
+	PredictedAction           core.Action             `json:"predicted_action,omitempty"`
+	AppliedAction             core.Action             `json:"applied_action,omitempty"`
+	Stream                    bool                    `json:"stream,omitempty"`
+	EndpointFamily            string                  `json:"endpoint_family,omitempty"`
+	RouteID                   string                  `json:"route_id,omitempty"`
+	RouteClass                string                  `json:"route_class,omitempty"`
+	RouteProvider             string                  `json:"route_provider,omitempty"`
+	RequestedModel            string                  `json:"requested_model,omitempty"`
+	RoutedModel               string                  `json:"routed_model,omitempty"`
+	RouteReason               string                  `json:"route_reason,omitempty"`
+	RouteFailover             bool                    `json:"route_failover,omitempty"`
+	RAG                       bool                    `json:"rag,omitempty"`
+	RAGOperation              string                  `json:"rag_operation,omitempty"`
+	RAGChunks                 int                     `json:"rag_chunks,omitempty"`
+	ToolProvider              string                  `json:"tool_provider,omitempty"`
+	BytesInspected            int64                   `json:"bytes_inspected,omitempty"`
+	EventsInspected           int                     `json:"events_inspected,omitempty"`
+	DistributionEvent         string                  `json:"distribution_event,omitempty"`
+	DistributionKeyID         string                  `json:"distribution_key_id,omitempty"`
+	QuarantineID              string                  `json:"quarantine_id,omitempty"`
+	QuarantineScope           string                  `json:"quarantine_scope,omitempty"`
+	QuarantineStatus          string                  `json:"quarantine_status,omitempty"`
+	QuarantineRevision        uint64                  `json:"quarantine_revision,omitempty"`
+	Integrity                 Integrity               `json:"integrity,omitempty"`
 
 	// Deprecated compatibility input. It is copied into Latencies by
 	// SanitizeEvent and cannot enter JSON directly.
@@ -248,6 +268,12 @@ func SanitizeEvent(in Event, opts SanitizeOptions) Event {
 	out.TraceID, out.SpanID, out.TraceFlags = BoundedLabel(out.TraceID), BoundedLabel(out.SpanID), BoundedLabel(out.TraceFlags)
 	out.Application, out.Tenant, out.User = principal(out.Application, opts), principal(out.Tenant, opts), principal(out.User, opts)
 	out.Provider, out.PolicyID, out.PolicyHash = BoundedLabel(out.Provider), BoundedLabel(out.PolicyID), BoundedLabel(out.PolicyHash)
+	out.SemanticModelID, out.SemanticModelVersion, out.SemanticModelDigest = BoundedLabel(out.SemanticModelID), BoundedLabel(out.SemanticModelVersion), BoundedLabel(out.SemanticModelDigest)
+	out.ThresholdArtifactID, out.ThresholdArtifactDigest = BoundedLabel(out.ThresholdArtifactID), BoundedLabel(out.ThresholdArtifactDigest)
+	out.SemanticLifecycleFrom, out.SemanticLifecycleState, out.SemanticLifecycleActor = BoundedLabel(out.SemanticLifecycleFrom), BoundedLabel(out.SemanticLifecycleState), BoundedLabel(out.SemanticLifecycleActor)
+	if out.ThresholdArtifactVersion < 0 {
+		out.ThresholdArtifactVersion = 0
+	}
 	out.Mode, out.Component, out.Code, out.ReasonID, out.MatchedRule, out.PrecedenceStage, out.Reason = BoundedLabel(out.Mode), BoundedLabel(out.Component), ReasonID(out.Code), ReasonID(out.ReasonID), BoundedLabel(out.MatchedRule), BoundedLabel(out.PrecedenceStage), ReasonID(out.Reason)
 	if out.ReasonID == "" {
 		out.ReasonID = out.Code
@@ -281,6 +307,7 @@ func SanitizeEvent(in Event, opts SanitizeOptions) Event {
 	if out.Laya != nil {
 		l := *out.Laya
 		l.Provider, l.Checkpoint, l.SchemaVersion, l.Route, l.Error = BoundedLabel(l.Provider), BoundedLabel(l.Checkpoint), BoundedLabel(l.SchemaVersion), BoundedLabel(l.Route), ReasonID(l.Error)
+		l.ModelID, l.ModelVersion, l.ModelDigest = BoundedLabel(l.ModelID), BoundedLabel(l.ModelVersion), BoundedLabel(l.ModelDigest)
 		if len(l.Decisions) > 64 {
 			l.Decisions = l.Decisions[:64]
 		}

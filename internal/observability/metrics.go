@@ -101,6 +101,7 @@ type Metrics struct {
 	activeRequests      prometheus.Gauge
 	activeLaya          prometheus.Gauge
 	calibrationInfo     *prometheus.GaugeVec
+	semanticDriftEvents *prometheus.CounterVec
 	semanticRejected    *prometheus.CounterVec
 	schemaMismatch      prometheus.Counter
 	checkpointMismatch  prometheus.Counter
@@ -248,6 +249,7 @@ func New() *Metrics {
 		activeRequests:      prometheus.NewGauge(prometheus.GaugeOpts{Name: "active_requests", Help: "Current admitted gateway requests."}),
 		activeLaya:          prometheus.NewGauge(prometheus.GaugeOpts{Name: "active_laya_evaluations", Help: "Current in-flight Laya evaluations."}),
 		calibrationInfo:     prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "semantic_calibration_artifact_info", Help: "Bounded metadata for the loaded semantic calibration artifact."}, []string{"artifact_id", "artifact_version", "provider", "checkpoint", "schema_version", "state", "calibration_timestamp"}),
+		semanticDriftEvents: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "semantic_drift_events_total", Help: "Semantic drift outcomes with bounded action and suppression labels."}, []string{"action", "suppressed"}),
 		semanticRejected:    prometheus.NewCounterVec(prometheus.CounterOpts{Name: "semantic_rejected_evidence_total", Help: "Semantic evidence rejected for a bounded reason."}, []string{"reason"}),
 		schemaMismatch:      prometheus.NewCounter(prometheus.CounterOpts{Name: "semantic_schema_mismatch_total", Help: "Semantic question schema binding mismatches."}),
 		checkpointMismatch:  prometheus.NewCounter(prometheus.CounterOpts{Name: "semantic_checkpoint_mismatch_total", Help: "Semantic checkpoint binding mismatches."}),
@@ -288,7 +290,7 @@ func New() *Metrics {
 		m.layaLatency, m.scannerLatency, m.securityLatency, m.shadowDisagreements,
 		m.falsePositiveSample, m.fallbackTotal, m.transformations, m.rateLimited,
 		m.concurrencyRejected, m.promptRejected, m.responseTooLarge, m.upstreamTimeout,
-		m.breakerOpen, m.activeRequests, m.activeLaya, m.calibrationInfo, m.semanticRejected,
+		m.breakerOpen, m.activeRequests, m.activeLaya, m.calibrationInfo, m.semanticDriftEvents, m.semanticRejected,
 		m.schemaMismatch, m.checkpointMismatch, m.missingDecisions, m.fallbackReasons, m.distribution,
 		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring, m.routeSelected, m.routeFailover, m.routeHealth, m.routeRejected, m.routeUnavailable, m.nerCalls, m.nerLatency, m.evasion,
 		m.attachments, m.ragDecisions, m.auditEnqueued, m.auditDurable, m.auditExported, m.auditRetried, m.auditDeadLetter, m.auditCorruption, m.auditDropped, m.auditQueueBytes, m.auditOldestAge, m.auditExporterState, m.quarantineEvents, m.quarantineDecisions)
@@ -615,6 +617,15 @@ func (m *Metrics) ObserveMissingDecision() {
 func (m *Metrics) ObserveCalibrationArtifact(id string, version int, provider, checkpoint, schemaVersion, state, timestamp string) {
 	m.calibrationInfo.Reset()
 	m.calibrationInfo.WithLabelValues(boundedMetadata(id), fmt.Sprintf("%d", version), boundedMetadata(provider), boundedMetadata(checkpoint), boundedMetadata(schemaVersion), boundedMetadata(state), boundedMetadata(timestamp)).Set(1)
+}
+
+func (m *Metrics) ObserveSemanticDrift(action string, suppressed bool) {
+	switch action {
+	case "none", "warning", "freeze_promotion", "pause_canary", "rollback_champion", "incident_quarantine":
+	default:
+		action = "other"
+	}
+	m.semanticDriftEvents.WithLabelValues(action, fmt.Sprintf("%t", suppressed)).Inc()
 }
 
 func (m *Metrics) ObserveTokens(n int, action string) {

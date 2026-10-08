@@ -27,6 +27,7 @@ import (
 	"github.com/aegisllm/gateway/internal/ragauth"
 	"github.com/aegisllm/gateway/internal/routing"
 	"github.com/aegisllm/gateway/internal/securetransport"
+	semanticcontrol "github.com/aegisllm/gateway/internal/semantic"
 	"github.com/aegisllm/gateway/internal/trace"
 	"github.com/aegisllm/gateway/web/leaderboard"
 )
@@ -55,32 +56,34 @@ type contextualPipeline interface {
 
 // Server is the OpenAI-compatible security gateway HTTP server (FR-001).
 type Server struct {
-	cfg            Config
-	proxy          *Proxy
-	routed         *RoutedProxy
-	pipeline       Pipeline
-	logger         *slog.Logger
-	readyFns       map[string]func() string
-	readyOrder     []string
-	metrics        http.Handler
-	runtimeMetrics observability.RuntimeRecorder
-	limiter        *limiter.Limiter
-	dashboard      *dashboard.Dashboard
-	dashboardV2    *dashboard.V2
-	authn          *auth.Authenticator
-	policy         *policy.Policy
-	policyRef      atomic.Pointer[policy.Policy]
-	distribution   *policydistribution.Manager
-	mcp            *mcpGateway
-	semanticStatus func() SemanticReadiness
-	materials      map[string]func() securetransport.Status
-	piiStatus      func() []pii.ProviderStatus
-	auditWAL       *audit.WAL
-	auditExporter  *audit.Exporter
-	auditSink      audit.Sink
-	rag            *ragauth.Gateway
-	quarantine     *quarantine.Manager
-	buildInfo      BuildInfo
+	cfg              Config
+	proxy            *Proxy
+	routed           *RoutedProxy
+	pipeline         Pipeline
+	logger           *slog.Logger
+	readyFns         map[string]func() string
+	readyOrder       []string
+	metrics          http.Handler
+	runtimeMetrics   observability.RuntimeRecorder
+	limiter          *limiter.Limiter
+	dashboard        *dashboard.Dashboard
+	dashboardV2      *dashboard.V2
+	authn            *auth.Authenticator
+	policy           *policy.Policy
+	policyRef        atomic.Pointer[policy.Policy]
+	distribution     *policydistribution.Manager
+	mcp              *mcpGateway
+	semanticStatus   func() SemanticReadiness
+	materials        map[string]func() securetransport.Status
+	piiStatus        func() []pii.ProviderStatus
+	auditWAL         *audit.WAL
+	auditExporter    *audit.Exporter
+	auditSink        audit.Sink
+	rag              *ragauth.Gateway
+	quarantine       *quarantine.Manager
+	semanticRegistry *semanticcontrol.Manager
+	semanticDrift    *semanticcontrol.Monitor
+	buildInfo        BuildInfo
 }
 
 // BuildInfo is sanitized provenance embedded in release readiness evidence.
@@ -94,13 +97,18 @@ type BuildInfo struct {
 // It intentionally contains no URL, credentials, raw artifact data, or
 // request content.
 type SemanticReadiness struct {
-	Status                 string `json:"status"`
-	Provider               string `json:"provider,omitempty"`
-	SchemaVersion          string `json:"schema_version,omitempty"`
-	ThresholdPolicyID      string `json:"threshold_policy_id,omitempty"`
-	ThresholdPolicyVersion int    `json:"threshold_policy_version,omitempty"`
-	CheckpointID           string `json:"checkpoint_id,omitempty"`
-	CalibrationTimestamp   string `json:"calibration_timestamp,omitempty"`
+	Status                  string `json:"status"`
+	Provider                string `json:"provider,omitempty"`
+	SchemaVersion           string `json:"schema_version,omitempty"`
+	ThresholdPolicyID       string `json:"threshold_policy_id,omitempty"`
+	ThresholdPolicyVersion  int    `json:"threshold_policy_version,omitempty"`
+	CheckpointID            string `json:"checkpoint_id,omitempty"`
+	CalibrationTimestamp    string `json:"calibration_timestamp,omitempty"`
+	ModelID                 string `json:"model_id,omitempty"`
+	ModelVersion            string `json:"model_version,omitempty"`
+	ModelDigest             string `json:"model_digest,omitempty"`
+	ThresholdArtifactDigest string `json:"threshold_artifact_digest,omitempty"`
+	DriftStatus             string `json:"drift_status,omitempty"`
 }
 
 type AuditStatus struct {
@@ -340,6 +348,25 @@ func (s *Server) applyRAGPolicy(p *policy.Policy) {
 }
 
 func (s *Server) SetPolicyDistribution(m *policydistribution.Manager) { s.distribution = m }
+
+// SetSemanticRegistry mounts the signed semantic lifecycle control plane. It
+// is optional in development/shadow deployments; semantic enforcement remains
+// governed by the existing threshold and provider gates.
+func (s *Server) SetSemanticRegistry(m *semanticcontrol.Manager) {
+	s.semanticRegistry = m
+	s.AddReadinessCheck("semantic_registry", func() string {
+		if m == nil {
+			return "semantic registry unavailable"
+		}
+		if s.cfg.SemanticEnforce {
+			if _, ok := m.Active(); !ok {
+				return "no verified semantic champion"
+			}
+		}
+		return ""
+	})
+}
+func (s *Server) SetSemanticDrift(m *semanticcontrol.Monitor) { s.semanticDrift = m }
 
 func (s *Server) currentPolicy() *policy.Policy {
 	if p := s.policyRef.Load(); p != nil {
@@ -600,6 +627,12 @@ func (s *Server) dashboardStatus() dashboard.RuntimeStatus {
 		status.Readiness.State = "degraded"
 	}
 	status.Components = append(status.Components, dashboard.ComponentStatus{Name: "semantic", State: semanticState, Detail: semantic.Status})
+	status.Semantic = dashboard.SemanticStatus{State: semantic.Status, ModelID: semantic.ModelID, ModelVersion: semantic.ModelVersion, ThresholdArtifactID: semantic.ThresholdPolicyID}
+	if s.semanticDrift != nil {
+		drift := s.semanticDrift.Status()
+		status.Semantic.DriftAction = drift.Action
+		status.Semantic.DriftSuppressed = drift.Suppressed
+	}
 	status.Components = append(status.Components, dashboard.ComponentStatus{Name: "streaming", State: "healthy", Detail: "bounded response inspection is available"})
 	if s.piiStatus == nil {
 		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "ner", State: "disabled", Detail: "no NER provider registry is configured", DetailURL: "/api/pii/providers"})
@@ -727,6 +760,11 @@ func sanitizeSemanticReadiness(in SemanticReadiness) SemanticReadiness {
 	in.ThresholdPolicyID = safeSemanticMetadata(in.ThresholdPolicyID)
 	in.CheckpointID = safeSemanticMetadata(in.CheckpointID)
 	in.CalibrationTimestamp = safeSemanticMetadata(in.CalibrationTimestamp)
+	in.ModelID = safeSemanticMetadata(in.ModelID)
+	in.ModelVersion = safeSemanticMetadata(in.ModelVersion)
+	in.ModelDigest = safeSemanticMetadata(in.ModelDigest)
+	in.ThresholdArtifactDigest = safeSemanticMetadata(in.ThresholdArtifactDigest)
+	in.DriftStatus = safeSemanticMetadata(in.DriftStatus)
 	return in
 }
 
