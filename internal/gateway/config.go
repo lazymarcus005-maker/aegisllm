@@ -185,6 +185,11 @@ type Config struct {
 	TokenVaultMaxRetrievals        int
 	TokenVaultSingleUse            bool
 	TokenVaultVisibleCategory      bool
+	QuarantineRedisURL             string
+	QuarantineRedisCAFile          string
+	QuarantineRedisCertFile        string
+	QuarantineRedisKeyFile         string
+	QuarantineRedisServerName      string
 	TelemetryHMACKey               string
 	TelemetryHMACKeyFile           string
 	AuditDir                       string
@@ -380,6 +385,11 @@ func configFrom(get func(string) string) Config {
 		TokenVaultMaxRetrievals:        getenvInt(get, "TOKEN_VAULT_MAX_RETRIEVALS", 10),
 		TokenVaultSingleUse:            getenvBool(get, "TOKEN_VAULT_SINGLE_USE", false),
 		TokenVaultVisibleCategory:      getenvBool(get, "TOKEN_VAULT_VISIBLE_CATEGORY", false),
+		QuarantineRedisURL:             get("QUARANTINE_REDIS_URL"),
+		QuarantineRedisCAFile:          get("QUARANTINE_REDIS_CA_FILE"),
+		QuarantineRedisCertFile:        get("QUARANTINE_REDIS_CERT_FILE"),
+		QuarantineRedisKeyFile:         get("QUARANTINE_REDIS_KEY_FILE"),
+		QuarantineRedisServerName:      get("QUARANTINE_REDIS_SERVER_NAME"),
 		TelemetryHMACKey:               get("TELEMETRY_HMAC_KEY"),
 		TelemetryHMACKeyFile:           get("TELEMETRY_HMAC_KEY_FILE"),
 		AuditDir:                       getenvDefault(get, "AUDIT_WAL_DIR", "/tmp/aegisllm-audit"),

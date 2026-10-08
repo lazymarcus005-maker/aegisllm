@@ -15,6 +15,7 @@ import (
 	"github.com/aegisllm/gateway/internal/observability"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/quarantine"
 	"github.com/aegisllm/gateway/internal/tokenization"
 )
 
@@ -44,6 +45,7 @@ type SecurityPipeline struct {
 	canaryEligible  func(*core.InspectionEnvelope) bool
 	canaryObserve   func(bool)
 	attachments     *attachment.Inspector
+	quarantine      *quarantine.Manager
 }
 
 // SetAttachmentInspector mounts the bounded multimodal boundary. It is kept
@@ -124,6 +126,20 @@ func (p *SecurityPipeline) SetCanaryObserver(fn func(bool)) { p.canaryObserve = 
 // SetSecurityMode sets the deployment mode. The HTTP server is the owner of
 // this value and propagates it when it attaches the pipeline.
 func (p *SecurityPipeline) SetSecurityMode(mode string) { p.mode = mode }
+
+func (p *SecurityPipeline) SetQuarantine(manager *quarantine.Manager) { p.quarantine = manager }
+
+func (p *SecurityPipeline) recordQuarantineSignal(ctx context.Context, signal quarantine.Signal) {
+	if p.quarantine == nil || !signal.Trusted {
+		return
+	}
+	state, created, _ := p.quarantine.Observe(ctx, signal)
+	if created {
+		if observer, ok := p.recorder.(interface{ ObserveQuarantine(string, string, string) }); ok {
+			observer.ObserveQuarantine(state.Reason, state.Level, state.Scope)
+		}
+	}
+}
 
 // SetRecorder attaches content-free pipeline metrics.
 func (p *SecurityPipeline) SetRecorder(r observability.Recorder) { p.recorder = r }

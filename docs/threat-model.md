@@ -158,6 +158,26 @@ declaration is a reviewed, SHA-256-bound artifact; a remote report cannot
 automatically enable streaming or tools. Deviations not represented in the
 versioned spec require an explicit profile update and review.
 
+# P2.3 automated quarantine threats
+
+The quarantine threat model assumes request bodies, headers, tool arguments,
+RAG metadata, provider responses, and client-supplied labels are hostile.
+Only trusted detector/RAG/MCP/provider findings and verified identity claims
+can produce automated signals. The signal validator rejects unknown reasons,
+raw evidence, missing tenant identity, forged provenance, and oversized
+collections. Digest-keyed state, per-tenant key construction, bounded state
+capacity, and fixed-cardinality metrics prevent evidence disclosure, cross-
+tenant containment, and state/label exhaustion.
+
+Broad tenant/provider isolation is not a single-event response: policy must
+explicitly authorize the scope and threshold, and operator emergency actions
+require confirmation and a reason. Redis outages fail closed in production.
+Expiry is followed by health/conformance/policy-gated probation, so recovery
+cannot silently restore a compromised dependency. Fakes and local memory
+prove contracts and failure paths only; IdP, Redis ACL/TLS, SIEM durability,
+provider conformance, and production signal calibration remain external
+validation requirements.
+
 # P1.5 distribution threats
 
 Policy distribution treats the control plane as untrusted transport: Ed25519

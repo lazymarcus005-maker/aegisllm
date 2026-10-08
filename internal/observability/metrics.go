@@ -47,6 +47,13 @@ type RuntimeRecorder interface {
 	DecActiveRequests()
 }
 
+// QuarantineObserver is optional and intentionally has no identity or
+// resource labels.
+type QuarantineObserver interface {
+	ObserveQuarantine(reason, level, scope string)
+	ObserveQuarantineDecision(outcome string)
+}
+
 // AttachmentObserver is optional so existing custom Recorder implementations
 // remain source-compatible. Labels are fixed contract metadata only.
 type AttachmentObserver interface{ ObserveAttachment(outcome, adapter string) }
@@ -125,6 +132,8 @@ type Metrics struct {
 	auditQueueBytes     prometheus.Gauge
 	auditOldestAge      prometheus.Gauge
 	auditExporterState  *prometheus.GaugeVec
+	quarantineEvents    *prometheus.CounterVec
+	quarantineDecisions *prometheus.CounterVec
 	registry            *prometheus.Registry
 	dashboardMu         sync.RWMutex
 	dashboardObserver   DashboardObserver
@@ -270,6 +279,8 @@ func New() *Metrics {
 		auditQueueBytes:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "audit_queue_bytes", Help: "Durable audit WAL bytes."}),
 		auditOldestAge:      prometheus.NewGauge(prometheus.GaugeOpts{Name: "audit_oldest_age_seconds", Help: "Age of oldest durable audit event."}),
 		auditExporterState:  prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "audit_exporter_state", Help: "Current audit exporter state."}, []string{"state"}),
+		quarantineEvents:    prometheus.NewCounterVec(prometheus.CounterOpts{Name: "quarantine_events_total", Help: "Automated quarantine events by bounded reason, level, and scope."}, []string{"reason", "level", "scope"}),
+		quarantineDecisions: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "quarantine_decisions_total", Help: "Requests affected by quarantine by bounded outcome."}, []string{"outcome"}),
 		registry:            reg,
 	}
 	reg.MustRegister(m.requestsTotal, m.blockedTotal, m.tokenizedTotal, m.redactedTotal,
@@ -280,8 +291,52 @@ func New() *Metrics {
 		m.breakerOpen, m.activeRequests, m.activeLaya, m.calibrationInfo, m.semanticRejected,
 		m.schemaMismatch, m.checkpointMismatch, m.missingDecisions, m.fallbackReasons, m.distribution,
 		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring, m.routeSelected, m.routeFailover, m.routeHealth, m.routeRejected, m.routeUnavailable, m.nerCalls, m.nerLatency, m.evasion,
-		m.attachments, m.ragDecisions, m.auditEnqueued, m.auditDurable, m.auditExported, m.auditRetried, m.auditDeadLetter, m.auditCorruption, m.auditDropped, m.auditQueueBytes, m.auditOldestAge, m.auditExporterState)
+		m.attachments, m.ragDecisions, m.auditEnqueued, m.auditDurable, m.auditExported, m.auditRetried, m.auditDeadLetter, m.auditCorruption, m.auditDropped, m.auditQueueBytes, m.auditOldestAge, m.auditExporterState, m.quarantineEvents, m.quarantineDecisions)
 	return m
+}
+
+func (m *Metrics) ObserveQuarantine(reason, level, scope string) {
+	if !boundedQuarantineReason(reason) {
+		reason = "other"
+	}
+	if !boundedQuarantineLevel(level) {
+		level = "other"
+	}
+	if !boundedQuarantineScope(scope) {
+		scope = "other"
+	}
+	m.quarantineEvents.WithLabelValues(reason, level, scope).Inc()
+}
+
+func (m *Metrics) ObserveQuarantineDecision(outcome string) {
+	switch outcome {
+	case "allowed", "throttled", "blocked", "probation", "unavailable":
+	default:
+		outcome = "other"
+	}
+	m.quarantineDecisions.WithLabelValues(outcome).Inc()
+}
+
+func boundedQuarantineReason(value string) bool {
+	switch value {
+	case "secret_exfiltration", "detector_evasion", "rag_cross_scope_access", "tool_policy_violation", "token_reidentification_abuse", "auth_anomaly", "provider_integrity_failure", "operator_action":
+		return true
+	}
+	return false
+}
+func boundedQuarantineLevel(value string) bool {
+	switch value {
+	case "observe", "throttle", "isolate", "disable", "require_human_review":
+		return true
+	}
+	return false
+}
+func boundedQuarantineScope(value string) bool {
+	switch value {
+	case "session", "user", "application", "tenant", "tool", "server", "provider", "route":
+		return true
+	}
+	return false
 }
 
 // ObserveRAG records only fixed outcome/reason labels; identities, resource

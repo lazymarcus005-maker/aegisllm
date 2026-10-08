@@ -6,6 +6,22 @@ version: 8
 owner: security-team
 effective_date: "2026-10-07"
 
+quarantine:
+  enabled: true
+  max_ttl: 30m
+  probation_ttl: 10m
+  max_states: 10000
+  default: {reason: default, level: observe, scope: session, threshold: 3, window: 1m, cooldown: 1m, ttl: 10m}
+  rules:
+    - {reason: secret_exfiltration, level: isolate, scope: user, threshold: 3, window: 5m, cooldown: 1m, ttl: 15m}
+    - {reason: detector_evasion, level: isolate, scope: session, threshold: 3, window: 5m, cooldown: 1m, ttl: 10m}
+    - {reason: rag_cross_scope_access, level: require_human_review, scope: user, threshold: 2, window: 5m, cooldown: 1m, ttl: 15m}
+    - {reason: tool_policy_violation, level: isolate, scope: application, threshold: 3, window: 5m, cooldown: 1m, ttl: 15m}
+    - {reason: token_reidentification_abuse, level: isolate, scope: session, threshold: 2, window: 5m, cooldown: 1m, ttl: 15m}
+    - {reason: auth_anomaly, level: require_human_review, scope: user, threshold: 3, window: 5m, cooldown: 1m, ttl: 15m}
+    - {reason: provider_integrity_failure, level: disable, scope: provider, threshold: 3, window: 10m, cooldown: 5m, ttl: 15m, allow_broad: true}
+    - {reason: operator_action, level: isolate, scope: session, threshold: 1, window: 1m, cooldown: 1s, ttl: 15m}
+
 rag:
   mode: enforce
   on_deny: block

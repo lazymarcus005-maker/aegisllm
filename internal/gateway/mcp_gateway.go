@@ -22,6 +22,7 @@ import (
 	"github.com/aegisllm/gateway/internal/auth"
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/credentialbroker"
+	"github.com/aegisllm/gateway/internal/quarantine"
 	"github.com/aegisllm/gateway/internal/securetransport"
 	"github.com/aegisllm/gateway/internal/streaming"
 	"github.com/aegisllm/gateway/internal/trace"
@@ -181,6 +182,19 @@ func (g *mcpGateway) handler(w http.ResponseWriter, r *http.Request) {
 		writeMCPError(w, nil, http.StatusNotFound, -32602, "MCP server unavailable")
 		return
 	}
+	principal, verified := auth.PrincipalFromContext(r.Context())
+	if verified && g.server.quarantine != nil {
+		env := &core.InspectionEnvelope{Tenant: principal.Tenant, Application: principal.Application, User: core.User{Subject: principal.Subject}, Metadata: map[string]string{"session_binding": principal.SessionID}}
+		decision, checkErr := g.server.checkQuarantine(r.Context(), r, env, quarantine.Resource{Server: cfg.ID})
+		if checkErr != nil {
+			writeMCPError(w, nil, http.StatusServiceUnavailable, -32001, "MCP security state unavailable")
+			return
+		}
+		if !decision.Allowed {
+			writeMCPError(w, nil, http.StatusForbidden, -32003, "MCP request is quarantined")
+			return
+		}
+	}
 	if r.Method == http.MethodGet {
 		g.handleSSE(w, r, cfg)
 		return
@@ -284,7 +298,21 @@ func (g *mcpGateway) handleToolsCall(w http.ResponseWriter, r *http.Request, cfg
 		writeMCPError(w, request.ID, http.StatusBadRequest, -32602, "MCP tool call arguments are invalid")
 		return
 	}
+	if principal, verified := auth.PrincipalFromContext(r.Context()); verified && g.server.quarantine != nil {
+		env := &core.InspectionEnvelope{Tenant: principal.Tenant, Application: principal.Application, User: core.User{Subject: principal.Subject}, Metadata: map[string]string{"session_binding": principal.SessionID}}
+		decision, checkErr := g.server.checkQuarantine(r.Context(), r, env, quarantine.Resource{Server: cfg.ID, Tool: params.Name})
+		if checkErr != nil {
+			writeMCPError(w, request.ID, http.StatusServiceUnavailable, -32001, "MCP security state unavailable")
+			return
+		}
+		if !decision.Allowed {
+			writeMCPError(w, request.ID, http.StatusForbidden, -32003, "MCP tool is quarantined")
+			return
+		}
+	}
 	if !g.toolAllowed(cfg, params.Name) {
+		principal, _ := auth.PrincipalFromContext(r.Context())
+		g.server.recordQuarantineSignal(r.Context(), quarantine.Signal{Reason: quarantine.ReasonToolPolicyViolation, Identity: quarantine.Identity{Tenant: principal.Tenant, Application: principal.Application, Subject: principal.Subject, Session: principal.SessionID}, Resource: quarantine.Resource{Server: cfg.ID, Tool: params.Name}, Evidence: []quarantine.EvidenceRef{{Kind: "tool_policy", Digest: quarantineDigest(cfg.ID + "\x00" + params.Name)}}, Trusted: true, IdempotencyKey: "mcp:" + cfg.ID + ":" + params.Name})
 		g.recordAudit(cfg.ID, params.Name, "BLOCK", "tool_allowlist", "tool_not_allowed", "", "blocked")
 		writeMCPError(w, request.ID, http.StatusForbidden, -32003, "MCP tool is not permitted")
 		return

@@ -405,6 +405,21 @@ for a 1,632-byte, 32-event OpenAI-shaped input on the verification host.
 Treat this as a baseline; production capacity planning must include detector and
 policy latency in addition to framing overhead.
 
+## Automated incident quarantine
+
+Production sets `QUARANTINE_REDIS_URL=rediss://...` and, when required by the
+private PKI, its CA/client certificate/server-name files. The gateway refuses
+to bootstrap production without shared quarantine state and marks readiness
+degraded when Redis becomes unavailable. Development and shadow may use the
+memory store, but its restart loss is explicitly non-production evidence.
+
+Use the operator-only `/api/quarantine` aggregate endpoint and the opaque-ID
+inspection/lifecycle endpoints. Every mutation includes an optimistic
+`expected_revision`; broad emergency containment requires `confirm=true` and
+a reason. Release only after provider health/conformance, policy, IdP, and
+RAG gates are green. Expired provider/tool/route states remain in probation
+until those gates pass. Preserve WAL, SIEM, vault, and provider evidence.
+
 ## MCP operations
 
 Development compose includes a fake MCP server for smoke testing. Configure

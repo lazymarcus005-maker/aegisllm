@@ -28,6 +28,7 @@ import (
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
 	"github.com/aegisllm/gateway/internal/policydistribution"
+	"github.com/aegisllm/gateway/internal/quarantine"
 	"github.com/aegisllm/gateway/internal/ragauth"
 	"github.com/aegisllm/gateway/internal/securetransport"
 	"github.com/aegisllm/gateway/internal/tokenization"
@@ -215,6 +216,49 @@ func main() {
 
 	metrics := observability.New()
 	srv.SetSecureMaterialMetrics(metrics)
+	var quarantineStore quarantine.Store
+	var quarantineRedis *redis.Client
+	if cfg.DeploymentProfile == gateway.ProfileProduction {
+		if strings.TrimSpace(cfg.QuarantineRedisURL) == "" || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(cfg.QuarantineRedisURL)), "rediss://") {
+			logger.Error("production requires QUARANTINE_REDIS_URL=rediss://")
+			os.Exit(1)
+		}
+	}
+	if cfg.QuarantineRedisURL != "" {
+		opts, parseErr := redis.ParseURL(cfg.QuarantineRedisURL)
+		if parseErr != nil {
+			logger.Error("quarantine Redis URL is invalid")
+			os.Exit(1)
+		}
+		if strings.HasPrefix(strings.ToLower(cfg.QuarantineRedisURL), "rediss://") && (cfg.QuarantineRedisCAFile != "" || cfg.QuarantineRedisCertFile != "" || cfg.QuarantineRedisKeyFile != "") {
+			tlsConfig, certFiles, tlsErr := (securetransport.ClientTLSOptions{CAFile: cfg.QuarantineRedisCAFile, CertificateFile: cfg.QuarantineRedisCertFile, KeyFile: cfg.QuarantineRedisKeyFile, ServerName: cfg.QuarantineRedisServerName, MinVersion: cfg.TLSMinVersion, MaxVersion: cfg.TLSMaxVersion, PollInterval: cfg.TLSReloadInterval, Metrics: metrics}).TLSConfig()
+			if tlsErr != nil {
+				logger.Error("quarantine Redis TLS configuration invalid")
+				os.Exit(1)
+			}
+			opts.TLSConfig = tlsConfig
+			for i, file := range certFiles {
+				srv.AddMaterialReadiness(fmt.Sprintf("quarantine_redis_client_certificate_%d", i+1), file.Status)
+				defer file.Close()
+			}
+		}
+		quarantineRedis = redis.NewClient(opts)
+		quarantineStore, err = quarantine.NewRedisStore(quarantineRedis, "aegis-quarantine")
+		if err != nil {
+			logger.Error("quarantine Redis store unavailable")
+			os.Exit(1)
+		}
+		defer quarantineRedis.Close()
+	} else {
+		quarantineStore = quarantine.NewMemoryStore()
+		logger.Warn("QUARANTINE_REDIS_URL not set; using process-local quarantine state (development/shadow only)")
+	}
+	quarantineManager, qErr := quarantine.NewManager(quarantineStore, gateway.QuarantinePolicyForPolicy(pol), cfg.DeploymentProfile == gateway.ProfileProduction)
+	if qErr != nil {
+		logger.Error("quarantine policy invalid")
+		os.Exit(1)
+	}
+	srv.SetQuarantine(quarantineManager)
 	var ragAuthorizer ragauth.Authorizer = ragauth.DenyByDefault{}
 	var ragClose func()
 	if cfg.RAGAuthAdapter == ragauth.AdapterHTTP && cfg.RAGAuthURL != "" {

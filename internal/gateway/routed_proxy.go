@@ -29,6 +29,7 @@ type RoutedProxy struct {
 	metrics interface {
 		ObserveRouteHealth(string, string, string, bool)
 	}
+	quarantineCheck func(context.Context, *http.Request, routing.Upstream) (bool, error)
 }
 
 func NewRoutedProxy(cfg Config, manager *routing.Manager) (*RoutedProxy, error) {
@@ -105,6 +106,16 @@ func (p *RoutedProxy) Forward(r *http.Request, body []byte, in routing.Input) (*
 		if i > 0 && !in.AllowFailover {
 			break
 		}
+		if p.quarantineCheck != nil {
+			allowed, checkErr := p.quarantineCheck(r.Context(), r, candidate.Route)
+			if checkErr != nil {
+				return nil, routing.Selection{}, checkErr
+			}
+			if !allowed {
+				p.manager.Record(candidate.Route.ID, false)
+				continue
+			}
+		}
 		proxy, err := p.proxyFor(candidate.Route)
 		if err != nil {
 			continue
@@ -135,6 +146,12 @@ func (p *RoutedProxy) Forward(r *http.Request, body []byte, in routing.Input) (*
 		return nil, routing.Selection{}, errors.New("ROUTE_LOCAL_UNAVAILABLE")
 	}
 	return nil, routing.Selection{}, errors.New("ROUTE_UNAVAILABLE")
+}
+
+func (p *RoutedProxy) SetQuarantineCheck(check func(context.Context, *http.Request, routing.Upstream) (bool, error)) {
+	p.mu.Lock()
+	p.quarantineCheck = check
+	p.mu.Unlock()
 }
 
 func safeToRetryBeforeDelivery(err error) bool {

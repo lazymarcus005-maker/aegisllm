@@ -121,61 +121,65 @@ type Integrity struct {
 // Event is the only production audit payload. Keep additions explicit and
 // reviewed: arbitrary maps and raw data fields are deliberately absent.
 type Event struct {
-	Schema            string                  `json:"schema"`
-	EventID           string                  `json:"event_id"`
-	RequestID         string                  `json:"request_id"`
-	Timestamp         time.Time               `json:"timestamp"`
-	TraceID           string                  `json:"trace_id,omitempty"`
-	SpanID            string                  `json:"span_id,omitempty"`
-	TraceFlags        string                  `json:"trace_flags,omitempty"`
-	Direction         core.Direction          `json:"direction"`
-	Application       string                  `json:"application,omitempty"`
-	Tenant            string                  `json:"tenant,omitempty"`
-	User              string                  `json:"user,omitempty"`
-	Roles             []string                `json:"roles,omitempty"`
-	Provider          string                  `json:"provider,omitempty"`
-	PolicyID          string                  `json:"policy_id,omitempty"`
-	PolicyVersion     int                     `json:"policy_version,omitempty"`
-	PolicySequence    uint64                  `json:"policy_sequence,omitempty"`
-	PolicyHash        string                  `json:"policy_hash,omitempty"`
-	Mode              string                  `json:"mode"`
-	Component         string                  `json:"component,omitempty"`
-	Action            core.Action             `json:"action"`
-	Code              string                  `json:"code,omitempty"`
-	ReasonID          string                  `json:"reason_id,omitempty"`
-	MatchedRule       string                  `json:"matched_rule,omitempty"`
-	PrecedenceStage   string                  `json:"precedence_stage,omitempty"`
-	Reason            string                  `json:"reason,omitempty"`
-	FindingTypes      []string                `json:"finding_types,omitempty"`
-	FindingCount      int                     `json:"finding_count,omitempty"`
-	FindingSummary    []policy.FindingSummary `json:"finding_summary,omitempty"`
-	EvasionTypes      []string                `json:"evasion_types,omitempty"`
-	EncodingDepth     int                     `json:"encoding_depth,omitempty"`
-	BudgetRejected    bool                    `json:"budget_rejected,omitempty"`
-	Latencies         Latencies               `json:"latency_ms"`
-	Laya              *LayaInfo               `json:"laya,omitempty"`
-	PIIFallback       bool                    `json:"pii_fallback,omitempty"`
-	PIIUnavailable    bool                    `json:"pii_unavailable,omitempty"`
-	PredictedAction   core.Action             `json:"predicted_action,omitempty"`
-	AppliedAction     core.Action             `json:"applied_action,omitempty"`
-	Stream            bool                    `json:"stream,omitempty"`
-	EndpointFamily    string                  `json:"endpoint_family,omitempty"`
-	RouteID           string                  `json:"route_id,omitempty"`
-	RouteClass        string                  `json:"route_class,omitempty"`
-	RouteProvider     string                  `json:"route_provider,omitempty"`
-	RequestedModel    string                  `json:"requested_model,omitempty"`
-	RoutedModel       string                  `json:"routed_model,omitempty"`
-	RouteReason       string                  `json:"route_reason,omitempty"`
-	RouteFailover     bool                    `json:"route_failover,omitempty"`
-	RAG               bool                    `json:"rag,omitempty"`
-	RAGOperation      string                  `json:"rag_operation,omitempty"`
-	RAGChunks         int                     `json:"rag_chunks,omitempty"`
-	ToolProvider      string                  `json:"tool_provider,omitempty"`
-	BytesInspected    int64                   `json:"bytes_inspected,omitempty"`
-	EventsInspected   int                     `json:"events_inspected,omitempty"`
-	DistributionEvent string                  `json:"distribution_event,omitempty"`
-	DistributionKeyID string                  `json:"distribution_key_id,omitempty"`
-	Integrity         Integrity               `json:"integrity,omitempty"`
+	Schema             string                  `json:"schema"`
+	EventID            string                  `json:"event_id"`
+	RequestID          string                  `json:"request_id"`
+	Timestamp          time.Time               `json:"timestamp"`
+	TraceID            string                  `json:"trace_id,omitempty"`
+	SpanID             string                  `json:"span_id,omitempty"`
+	TraceFlags         string                  `json:"trace_flags,omitempty"`
+	Direction          core.Direction          `json:"direction"`
+	Application        string                  `json:"application,omitempty"`
+	Tenant             string                  `json:"tenant,omitempty"`
+	User               string                  `json:"user,omitempty"`
+	Roles              []string                `json:"roles,omitempty"`
+	Provider           string                  `json:"provider,omitempty"`
+	PolicyID           string                  `json:"policy_id,omitempty"`
+	PolicyVersion      int                     `json:"policy_version,omitempty"`
+	PolicySequence     uint64                  `json:"policy_sequence,omitempty"`
+	PolicyHash         string                  `json:"policy_hash,omitempty"`
+	Mode               string                  `json:"mode"`
+	Component          string                  `json:"component,omitempty"`
+	Action             core.Action             `json:"action"`
+	Code               string                  `json:"code,omitempty"`
+	ReasonID           string                  `json:"reason_id,omitempty"`
+	MatchedRule        string                  `json:"matched_rule,omitempty"`
+	PrecedenceStage    string                  `json:"precedence_stage,omitempty"`
+	Reason             string                  `json:"reason,omitempty"`
+	FindingTypes       []string                `json:"finding_types,omitempty"`
+	FindingCount       int                     `json:"finding_count,omitempty"`
+	FindingSummary     []policy.FindingSummary `json:"finding_summary,omitempty"`
+	EvasionTypes       []string                `json:"evasion_types,omitempty"`
+	EncodingDepth      int                     `json:"encoding_depth,omitempty"`
+	BudgetRejected     bool                    `json:"budget_rejected,omitempty"`
+	Latencies          Latencies               `json:"latency_ms"`
+	Laya               *LayaInfo               `json:"laya,omitempty"`
+	PIIFallback        bool                    `json:"pii_fallback,omitempty"`
+	PIIUnavailable     bool                    `json:"pii_unavailable,omitempty"`
+	PredictedAction    core.Action             `json:"predicted_action,omitempty"`
+	AppliedAction      core.Action             `json:"applied_action,omitempty"`
+	Stream             bool                    `json:"stream,omitempty"`
+	EndpointFamily     string                  `json:"endpoint_family,omitempty"`
+	RouteID            string                  `json:"route_id,omitempty"`
+	RouteClass         string                  `json:"route_class,omitempty"`
+	RouteProvider      string                  `json:"route_provider,omitempty"`
+	RequestedModel     string                  `json:"requested_model,omitempty"`
+	RoutedModel        string                  `json:"routed_model,omitempty"`
+	RouteReason        string                  `json:"route_reason,omitempty"`
+	RouteFailover      bool                    `json:"route_failover,omitempty"`
+	RAG                bool                    `json:"rag,omitempty"`
+	RAGOperation       string                  `json:"rag_operation,omitempty"`
+	RAGChunks          int                     `json:"rag_chunks,omitempty"`
+	ToolProvider       string                  `json:"tool_provider,omitempty"`
+	BytesInspected     int64                   `json:"bytes_inspected,omitempty"`
+	EventsInspected    int                     `json:"events_inspected,omitempty"`
+	DistributionEvent  string                  `json:"distribution_event,omitempty"`
+	DistributionKeyID  string                  `json:"distribution_key_id,omitempty"`
+	QuarantineID       string                  `json:"quarantine_id,omitempty"`
+	QuarantineScope    string                  `json:"quarantine_scope,omitempty"`
+	QuarantineStatus   string                  `json:"quarantine_status,omitempty"`
+	QuarantineRevision uint64                  `json:"quarantine_revision,omitempty"`
+	Integrity          Integrity               `json:"integrity,omitempty"`
 
 	// Deprecated compatibility input. It is copied into Latencies by
 	// SanitizeEvent and cannot enter JSON directly.
@@ -258,6 +262,7 @@ func SanitizeEvent(in Event, opts SanitizeOptions) Event {
 	}
 	out.RequestedModel, out.RoutedModel, out.RouteReason = BoundedLabel(out.RequestedModel), BoundedLabel(out.RoutedModel), ReasonID(out.RouteReason)
 	out.ToolProvider, out.DistributionEvent, out.DistributionKeyID = BoundedLabel(out.ToolProvider), ReasonID(out.DistributionEvent), BoundedLabel(out.DistributionKeyID)
+	out.QuarantineID, out.QuarantineScope, out.QuarantineStatus = BoundedLabel(out.QuarantineID), ReasonID(out.QuarantineScope), ReasonID(out.QuarantineStatus)
 	if out.LatencyMS != nil {
 		out.Latencies = Latencies{DeterministicMS: nonNegative(out.LatencyMS["deterministic"]), LayaMS: nonNegative(out.LatencyMS["laya"]), TotalSecurityMS: nonNegative(out.LatencyMS["total_security"])}
 	}

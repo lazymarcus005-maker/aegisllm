@@ -312,6 +312,13 @@ type RuntimeStatus struct {
 	Readiness         ComponentStatus   `json:"readiness"`
 	Components        []ComponentStatus `json:"components"`
 	Audit             RuntimeAudit      `json:"audit"`
+	Quarantine        QuarantineStatus  `json:"quarantine"`
+}
+type QuarantineStatus struct {
+	State        string `json:"state"`
+	Active       int    `json:"active"`
+	Acknowledged int    `json:"acknowledged"`
+	Probation    int    `json:"probation"`
 }
 type RuntimeAudit struct {
 	State            string `json:"state"`

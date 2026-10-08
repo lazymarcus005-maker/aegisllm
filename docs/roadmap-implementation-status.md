@@ -48,7 +48,15 @@ separate feature-roadmap file).
   class: contract, unit/adversarial, and deterministic fake-service integration
   only. Real IdP, vector DB, authorization service, PKI, and policy calibration
   remain external promotion dependencies.
-- [ ] P2.3 Richer entity detection and multi-tenant vault namespaces (bounded cross-message detection moved into P1.4).
+- [x] P2.3 Automated incident quarantine: trusted bounded incident signals,
+  policy thresholds and least-disruptive scopes, concurrency-safe memory and
+  Redis CAS state, ingress/route/upstream/stream/RAG/MCP/token enforcement,
+  operator RBAC lifecycle with optimistic revisions, probation recovery,
+  privacy-safe audit/metrics/dashboard/readiness, failure injection, and
+  integration/race-oriented coverage. Evidence class: local deterministic and
+  fake/shared-store contract tests only; production Redis/IdP/SIEM/provider
+  conformance and signal calibration remain external validation.
+- [ ] P2.4 Richer entity detection and multi-tenant vault namespaces (bounded cross-message detection moved into P1.4).
 
 P0.1 is marked complete only after the repository acceptance commands and the
 container smoke test pass on this branch.

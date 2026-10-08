@@ -16,6 +16,7 @@ import (
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/limiter"
 	"github.com/aegisllm/gateway/internal/policydistribution"
+	"github.com/aegisllm/gateway/internal/quarantine"
 	"github.com/aegisllm/gateway/internal/routing"
 	"github.com/aegisllm/gateway/internal/tokenization"
 	"github.com/aegisllm/gateway/internal/trace"
@@ -49,6 +50,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/audit/verify", s.protect(http.HandlerFunc(s.handleAuditVerify), auth.RoleOperator))
 	mux.Handle("POST /v1/session/logout", s.protect(http.HandlerFunc(s.handleSessionLogout), auth.RoleInvoke, auth.RoleOperator))
 	mux.Handle("GET /api/token-vault/status", s.protect(http.HandlerFunc(s.handleTokenVaultStatus), auth.RoleOperator))
+	mux.Handle("GET /api/quarantine", s.protect(http.HandlerFunc(s.handleQuarantineList), auth.RoleOperator))
+	mux.Handle("GET /api/quarantine/{id}", s.protect(http.HandlerFunc(s.handleQuarantineInspect), auth.RoleOperator))
+	for _, action := range []string{"acknowledge", "extend", "narrow", "release"} {
+		mux.Handle("POST /api/quarantine/{id}/"+action, s.protect(http.HandlerFunc(s.handleQuarantineAction), auth.RoleOperator))
+	}
+	mux.Handle("POST /api/quarantine/emergency", s.protect(http.HandlerFunc(s.handleQuarantineEmergency), auth.RoleOperator))
 	if s.mcp != nil {
 		mux.Handle("POST /mcp/{server}", s.protectLimited(http.HandlerFunc(s.mcp.handler), auth.RoleToolInvoke, auth.RoleOperator))
 		mux.Handle("GET /mcp/{server}", s.protect(http.HandlerFunc(s.mcp.handler), auth.RoleToolInvoke, auth.RoleOperator))
@@ -271,6 +278,14 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(requestCtx)
 	env := &core.InspectionEnvelope{RequestID: newRequestID(), Direction: core.DirectionRequest, Target: core.Target{Provider: s.cfg.DefaultTargetProvider}, Metadata: map[string]string{"endpoint_family": "openai", "endpoint_path": r.URL.Path, "trace_id": traceCtx.TraceID, "span_id": traceCtx.SpanID, "trace_flags": traceCtx.Flags}}
 	s.enrich(env, r)
+	if decision, checkErr := s.checkQuarantine(requestCtx, r, env, quarantine.Resource{Provider: env.Target.Provider, Endpoint: "models"}); checkErr != nil {
+		if s.cfg.profile() == ProfileProduction {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "quarantine state unavailable"})
+			return
+		}
+	} else if !s.enforceQuarantine(w, decision, env.RequestID) {
+		return
+	}
 	if auditor, ok := s.pipeline.(interface {
 		AuditPassthrough(*core.InspectionEnvelope)
 	}); ok {

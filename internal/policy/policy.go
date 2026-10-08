@@ -10,6 +10,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/securetransport"
@@ -253,6 +254,29 @@ type EvasionPolicy struct {
 	Allowlists          []EvasionAllowlist    `yaml:"allowlist,omitempty"`
 }
 
+// QuarantinePolicy is the content-free incident containment policy. Duration
+// values are strings so policy files remain portable and are parsed at the
+// gateway boundary with strict upper bounds.
+type QuarantinePolicy struct {
+	Enabled      bool             `yaml:"enabled"`
+	MaxTTL       string           `yaml:"max_ttl,omitempty"`
+	ProbationTTL string           `yaml:"probation_ttl,omitempty"`
+	MaxStates    int              `yaml:"max_states,omitempty"`
+	Default      QuarantineRule   `yaml:"default"`
+	Rules        []QuarantineRule `yaml:"rules,omitempty"`
+}
+
+type QuarantineRule struct {
+	Reason     string `yaml:"reason"`
+	Level      string `yaml:"level"`
+	Scope      string `yaml:"scope"`
+	Threshold  int    `yaml:"threshold"`
+	Window     string `yaml:"window"`
+	Cooldown   string `yaml:"cooldown,omitempty"`
+	TTL        string `yaml:"ttl"`
+	AllowBroad bool   `yaml:"allow_broad,omitempty"`
+}
+
 // ConfidenceEscalation turns detector confidence into a declarative action.
 // Subtype and provider are optional matchers.
 type ConfidenceEscalation struct {
@@ -305,6 +329,7 @@ type Policy struct {
 	Routing                *RoutingPolicy                   `yaml:"routing,omitempty"`
 	RAG                    *RAGPolicy                       `yaml:"rag,omitempty"`
 	Evasion                EvasionPolicy                    `yaml:"evasion,omitempty"`
+	Quarantine             *QuarantinePolicy                `yaml:"quarantine,omitempty"`
 }
 
 // RestrictedTools lists tool names RESTRICT_TOOLS may strip from requests.
@@ -368,9 +393,45 @@ func (p *Policy) Summary() []RuleSummary {
 	if p.RAG != nil {
 		out = append(out, RuleSummary{ID: "rag.mode", Stage: "rag_authorization", Category: "RAG", Subtype: strings.ToLower(p.RAG.Mode), Action: p.RAG.OnDeny.Action})
 	}
+	if p.Quarantine != nil {
+		out = append(out, RuleSummary{ID: "quarantine.enabled", Stage: "incident_quarantine", Category: "QUARANTINE", Subtype: "policy_bound", Action: core.ActionReview})
+	}
 	out = append(out, RuleSummary{ID: "safe_default", Stage: "safe_default", Action: p.SafeDefault.Action}, RuleSummary{ID: "default", Stage: "default", Action: p.Default.Action})
 	slices.SortFunc(out, func(a, b RuleSummary) int { return strings.Compare(a.ID, b.ID) })
 	return out
+}
+
+func validateQuarantineRule(rule QuarantineRule, defaultRule bool) error {
+	validReason := map[string]bool{"secret_exfiltration": true, "detector_evasion": true, "rag_cross_scope_access": true, "tool_policy_violation": true, "token_reidentification_abuse": true, "auth_anomaly": true, "provider_integrity_failure": true, "operator_action": true}
+	validLevel := map[string]bool{"observe": true, "throttle": true, "isolate": true, "disable": true, "require_human_review": true}
+	validScope := map[string]bool{"session": true, "user": true, "application": true, "tenant": true, "tool": true, "server": true, "provider": true, "route": true}
+	if defaultRule {
+		if rule.Reason != "default" {
+			return errors.New("reason must be default")
+		}
+	} else if !validReason[rule.Reason] {
+		return errors.New("reason is not a bounded incident code")
+	}
+	if !validLevel[rule.Level] || !validScope[rule.Scope] || rule.Threshold <= 0 || rule.Threshold > 1000 {
+		return errors.New("level, scope, or threshold is invalid")
+	}
+	for name, value := range map[string]string{"window": rule.Window, "ttl": rule.TTL, "cooldown": rule.Cooldown} {
+		if name != "cooldown" && strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s is required", name)
+		}
+		if value != "" {
+			d, err := time.ParseDuration(value)
+			if err != nil || d <= 0 || d > 24*time.Hour {
+				return fmt.Errorf("%s is invalid", name)
+			}
+		}
+	}
+	if rule.Scope == "tenant" || rule.Scope == "provider" {
+		if !rule.AllowBroad || rule.Threshold < 3 {
+			return errors.New("broad scopes require allow_broad and threshold >= 3")
+		}
+	}
+	return nil
 }
 
 // Load parses and validates a policy document. Unknown fields and invalid
@@ -408,6 +469,24 @@ func (p *Policy) Validate() error {
 	}
 	if p.Default.Action == "" {
 		return errors.New("policy: default.action is required")
+	}
+	if p.Quarantine != nil {
+		if strings.TrimSpace(p.Quarantine.MaxTTL) == "" || strings.TrimSpace(p.Quarantine.ProbationTTL) == "" || p.Quarantine.MaxStates <= 0 {
+			return errors.New("policy: quarantine requires max_ttl, probation_ttl, and positive max_states")
+		}
+		if err := validateQuarantineRule(p.Quarantine.Default, true); err != nil {
+			return fmt.Errorf("policy: quarantine.default: %w", err)
+		}
+		seen := map[string]bool{}
+		for i, rule := range p.Quarantine.Rules {
+			if seen[rule.Reason] {
+				return fmt.Errorf("policy: duplicate quarantine rule %q", rule.Reason)
+			}
+			seen[rule.Reason] = true
+			if err := validateQuarantineRule(rule, false); err != nil {
+				return fmt.Errorf("policy: quarantine.rules[%d]: %w", i, err)
+			}
+		}
 	}
 	if p.SafeDefault.Action == "" {
 		return errors.New("policy: safe_default.action is required")

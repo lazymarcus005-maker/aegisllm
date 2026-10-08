@@ -1168,7 +1168,26 @@ mode; production promotion requires enforce mode, private PKI, a real
 authorization service, a real IdP/vector DB integration, and reviewed policy
 calibration.
 
-## 23. References
+## 23. Automated incident quarantine (P2.3)
+
+Automated quarantine is a policy-bound control plane attached to the verified
+gateway identity and every request/tool/retrieval/provider boundary. Signals
+are restricted to eight reason codes and digest-only evidence references. A
+bounded aggregation window, threshold, cooldown, duplicate suppression, and
+hysteresis protect against a client manufacturing broad containment. The
+default response is observe; tenant/provider disable actions require explicit
+policy thresholds and broad-scope authorization.
+
+State is revisioned and atomically updated in a process-safe memory store for
+development/shadow and a Redis CAS implementation for production. Keys always
+include the verified tenant digest. Ingress checks cover API aliases and stale
+sessions; route/provider selection, streaming/upstream forwarding, RAG,
+MCP/tool execution, credential access, and token re-identification perform
+their own checks. Expiry of risky resource containment enters health-gated
+probation. Operator lifecycle endpoints are RBAC-protected and preserve
+history; release is optimistic-revision checked and never destructive.
+
+## 24. References
 
 - Laya documentation: https://nandhakishorm.github.io/laya/
 - Laya staged adoption: https://nandhakishorm.github.io/laya/staged-adoption/

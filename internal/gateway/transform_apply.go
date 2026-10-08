@@ -13,6 +13,7 @@ import (
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/quarantine"
 	"github.com/aegisllm/gateway/internal/tokenization"
 )
 
@@ -103,6 +104,12 @@ func hasAttachmentFinding(env *core.InspectionEnvelope, findings []core.Security
 }
 
 func (p *SecurityPipeline) storeTokenMappings(env *core.InspectionEnvelope, plan []pii.Transformation, dec policy.Decision) error {
+	if p.quarantine != nil {
+		decision, err := p.quarantine.Check(context.Background(), identityFromEnvelope(env), quarantine.Resource{Provider: env.Target.Provider})
+		if err != nil || !decision.Allowed {
+			return quarantine.ErrStoreUnavailable
+		}
+	}
 	if p.scopedVault != nil {
 		for i := range plan {
 			category := "PII:" + plan[i].Subtype
@@ -221,6 +228,15 @@ type StreamTextOutcome struct {
 // transformation machinery as buffered responses. The transport owns SSE
 // framing and rolling holdback; this method owns security meaning.
 func (p *SecurityPipeline) ProcessStreamText(reqEnv *core.InspectionEnvelope, text, kind string) (StreamTextOutcome, error) {
+	if p.quarantine != nil {
+		decision, err := p.quarantine.Check(context.Background(), identityFromEnvelope(reqEnv), quarantine.Resource{Provider: reqEnv.Target.Provider})
+		if err != nil {
+			return StreamTextOutcome{Predicted: core.ActionBlock, Applied: core.ActionBlock, Code: "QUARANTINE_STATE_UNAVAILABLE"}, nil
+		}
+		if !decision.Allowed {
+			return StreamTextOutcome{Predicted: core.ActionBlock, Applied: core.ActionBlock, Code: decision.Code}, nil
+		}
+	}
 	if p.mode == ModeOff {
 		return StreamTextOutcome{Predicted: core.ActionAllow, Applied: core.ActionAllow, Text: text}, nil
 	}
@@ -327,6 +343,15 @@ func routeReason(action core.Action) string {
 
 // ProcessResponse scans and transforms an upstream response before delivery.
 func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw []byte) (ResponseOutcome, error) {
+	if p.quarantine != nil {
+		decision, err := p.quarantine.Check(context.Background(), identityFromEnvelope(reqEnv), quarantine.Resource{Provider: reqEnv.Target.Provider})
+		if err != nil {
+			return ResponseOutcome{}, err
+		}
+		if !decision.Allowed {
+			return ResponseOutcome{Action: core.ActionBlock, Code: decision.Code}, nil
+		}
+	}
 	if p.mode == ModeOff {
 		return ResponseOutcome{Action: core.ActionAllow}, nil
 	}
@@ -376,6 +401,7 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 			}
 			value, err := p.scopedVault.Retrieve(context.Background(), scope, label)
 			if err != nil {
+				p.recordTokenReidentificationSignal(reqEnv, label)
 				return "", false
 			}
 			return value, true
@@ -392,6 +418,7 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 			value, rerr := reid.Reidentify(context.Background(), reqEnv.RequestID, label,
 				tokenization.Caller{Application: reqEnv.Application, Subject: reqEnv.User.Subject})
 			if rerr != nil {
+				p.recordTokenReidentificationSignal(reqEnv, label)
 				return "", false
 			}
 			return value, true
@@ -407,6 +434,13 @@ func (p *SecurityPipeline) ProcessResponse(reqEnv *core.InspectionEnvelope, raw 
 		return ResponseOutcome{}, err
 	}
 	return outcome, nil
+}
+
+func (p *SecurityPipeline) recordTokenReidentificationSignal(env *core.InspectionEnvelope, label string) {
+	if p.quarantine == nil || env == nil || env.Metadata["verified_identity"] != "true" {
+		return
+	}
+	p.recordQuarantineSignal(context.Background(), quarantine.Signal{Reason: quarantine.ReasonTokenReidentification, Identity: identityFromEnvelope(env), Resource: quarantine.Resource{Provider: env.Target.Provider}, Evidence: []quarantine.EvidenceRef{{Kind: "token_retrieval", Digest: quarantineDigest(label)}}, Trusted: true, IdempotencyKey: env.RequestID + ":token:" + label})
 }
 
 func (p *SecurityPipeline) observeAttachment(outcome string) {

@@ -23,6 +23,7 @@ import (
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
 	"github.com/aegisllm/gateway/internal/policydistribution"
+	"github.com/aegisllm/gateway/internal/quarantine"
 	"github.com/aegisllm/gateway/internal/ragauth"
 	"github.com/aegisllm/gateway/internal/routing"
 	"github.com/aegisllm/gateway/internal/securetransport"
@@ -78,6 +79,7 @@ type Server struct {
 	auditExporter  *audit.Exporter
 	auditSink      audit.Sink
 	rag            *ragauth.Gateway
+	quarantine     *quarantine.Manager
 	buildInfo      BuildInfo
 }
 
@@ -114,6 +116,9 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 	}
 	if cfg.profile() == ProfileProduction && strings.TrimSpace(cfg.UpstreamRegistryFile) == "" {
 		return nil, errors.New("production requires UPSTREAM_REGISTRY_FILE")
+	}
+	if cfg.profile() == ProfileProduction && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(cfg.QuarantineRedisURL)), "rediss://") {
+		return nil, errors.New("production requires QUARANTINE_REDIS_URL=rediss://")
 	}
 	var proxy *Proxy
 	var routed *RoutedProxy
@@ -228,6 +233,9 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 func (s *Server) SetPipeline(p Pipeline) {
 	s.pipeline = p
 	p.SetSecurityMode(s.cfg.SecurityMode)
+	if q, ok := p.(interface{ SetQuarantine(*quarantine.Manager) }); ok && s.quarantine != nil {
+		q.SetQuarantine(s.quarantine)
+	}
 }
 
 // SetRAGAuthorization replaces the default deny-by-default adapter with the
@@ -310,9 +318,14 @@ func (s *Server) SetPolicy(p *policy.Policy) {
 	s.policy = p
 	s.policyRef.Store(p)
 	s.applyRAGPolicy(p)
+	s.SetPolicyQuarantine(p)
 }
 
-func (s *Server) SetRuntimePolicy(p *policy.Policy) { s.policyRef.Store(p); s.applyRAGPolicy(p) }
+func (s *Server) SetRuntimePolicy(p *policy.Policy) {
+	s.policyRef.Store(p)
+	s.applyRAGPolicy(p)
+	s.SetPolicyQuarantine(p)
+}
 
 func (s *Server) applyRAGPolicy(p *policy.Policy) {
 	if s.rag == nil {
@@ -564,6 +577,17 @@ func (s *Server) dashboardStatus() dashboard.RuntimeStatus {
 		status.Audit.ExporterState = auditStatus.Exporter.State
 		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "audit", State: "healthy", DetailURL: "/api/audit/status"})
 	}
+	if s.quarantine == nil {
+		status.Quarantine.State = "disabled"
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "quarantine", State: "disabled", Detail: "incident quarantine is not configured", DetailURL: "/api/quarantine"})
+	} else if summary, err := s.quarantine.ListSummary(context.Background()); err != nil {
+		status.Quarantine.State = "degraded"
+		status.Readiness.State = "degraded"
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "quarantine", State: "degraded", Detail: "quarantine shared state is unavailable", DetailURL: "/api/quarantine"})
+	} else {
+		status.Quarantine = dashboard.QuarantineStatus{State: "healthy", Active: summary.Active, Acknowledged: summary.Acknowledged, Probation: summary.Probation}
+		status.Components = append(status.Components, dashboard.ComponentStatus{Name: "quarantine", State: "healthy", Detail: "sanitized aggregate containment status", DetailURL: "/api/quarantine"})
+	}
 	semantic := SemanticReadiness{Status: "disabled"}
 	if s.semanticStatus != nil {
 		semantic = sanitizeSemanticReadiness(s.semanticStatus())
@@ -784,6 +808,14 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 	env.Metadata["span_id"] = traceCtx.SpanID
 	env.Metadata["trace_flags"] = traceCtx.Flags
 	env.Metadata["endpoint_path"] = r.URL.Path
+	if decision, checkErr := s.checkQuarantine(requestCtx, r, env, quarantine.Resource{Provider: env.Target.Provider, Endpoint: env.Metadata["endpoint_family"]}); checkErr != nil {
+		if s.cfg.profile() == ProfileProduction {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "gateway_error", "QUARANTINE_STATE_UNAVAILABLE", "Security quarantine state is unavailable.", env.RequestID)
+			return
+		}
+	} else if !s.enforceQuarantine(w, decision, env.RequestID) {
+		return
+	}
 	if promptChars(env) > s.cfg.MaxPromptChars {
 		s.runtimeMetrics.ObservePromptBudgetRejected()
 		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "PROMPT_TOO_LARGE", "Prompt exceeds the configured character limit.", env.RequestID)
@@ -802,6 +834,11 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 		ragOutcome, ragErr := s.rag.Authorize(requestCtx, body, ragIdentity, env.RequestID, policyID, policyVersion)
 		if ragOutcome.Detected {
 			s.observeRAG(ragOutcome)
+			if !ragOutcome.Allowed && ragIdentity.Tenant != "" {
+				s.recordQuarantineSignal(requestCtx, quarantine.Signal{Reason: quarantine.ReasonRAGCrossScope,
+					Identity: quarantine.Identity{Tenant: ragIdentity.Tenant, Application: ragIdentity.Application, Subject: ragIdentity.Subject, Session: env.Metadata["session_binding"]},
+					Policy:   quarantine.Snapshot{ID: policyID, Version: policyVersion}, Evidence: []quarantine.EvidenceRef{{Kind: "rag_decision", Digest: quarantineDigest(ragOutcome.Code + ":" + ragOutcome.Reason)}}, Trusted: env.Metadata["verified_identity"] == "true", IdempotencyKey: env.RequestID + ":rag"})
+			}
 			event := audit.Event{RequestID: env.RequestID, Timestamp: time.Now().UTC(), Direction: core.DirectionRequest, TraceID: traceCtx.TraceID, SpanID: traceCtx.SpanID,
 				Application: env.Application, Tenant: env.Tenant, User: env.User.Subject, Roles: append([]string(nil), env.User.Roles...), Provider: env.Target.Provider,
 				PolicyID: policyID, PolicyVersion: policyVersion, Mode: s.cfg.SecurityMode, Component: "rag_authorization", Action: core.ActionAllow,
@@ -891,6 +928,19 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusInternalServerError && env.Metadata["verified_identity"] == "true" {
+		s.recordQuarantineSignal(requestCtx, quarantine.Signal{Reason: quarantine.ReasonProviderIntegrity, Identity: identityFromEnvelope(env), Resource: quarantine.Resource{Provider: env.Target.Provider}, Policy: quarantine.Snapshot{ID: func() string {
+			if p := s.currentPolicy(); p != nil {
+				return p.ID
+			}
+			return ""
+		}(), Version: func() int {
+			if p := s.currentPolicy(); p != nil {
+				return p.Version
+			}
+			return 0
+		}()}, Evidence: []quarantine.EvidenceRef{{Kind: "provider_status", Digest: quarantineDigest(resp.Status)}}, Trusted: true, IdempotencyKey: env.RequestID + ":provider:" + resp.Status})
+	}
 
 	// Outbound protection scans buffered JSON here and stateful SSE through the
 	// bounded streaming adapter below.
@@ -1098,6 +1148,7 @@ func (s *Server) enrich(env *core.InspectionEnvelope, r *http.Request) {
 		if principal.SessionBound {
 			env.Metadata["session_binding"] = principal.SessionID
 		}
+		env.Metadata["verified_identity"] = "true"
 		env.Target.Provider = principal.Provider
 		if env.Target.Provider == "" {
 			env.Target.Provider = s.cfg.DefaultTargetProvider

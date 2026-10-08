@@ -10,6 +10,7 @@ import (
 	"github.com/aegisllm/gateway/internal/core"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/quarantine"
 )
 
 // inspection is the shared result of one request, response, tool-call, or
@@ -73,6 +74,7 @@ func (p *SecurityPipeline) inspectContext(ctx context.Context, env *core.Inspect
 		ins.dec.Reason = "body-free endpoint was explicitly marked passthrough"
 	}
 	ins.explanation.Decision = ins.dec
+	p.recordIncidentSignals(ctx, ins)
 	if recorder, ok := p.recorder.(interface {
 		ObserveEvasion(string, int, core.Action, bool)
 	}); ok {
@@ -115,6 +117,27 @@ func (p *SecurityPipeline) inspectContext(ctx context.Context, env *core.Inspect
 		}
 	}
 	return ins
+}
+
+func (p *SecurityPipeline) recordIncidentSignals(ctx context.Context, ins *inspection) {
+	if p.quarantine == nil || ins == nil || ins.env == nil || ins.env.Metadata["verified_identity"] != "true" {
+		return
+	}
+	for _, finding := range ins.findings {
+		reason := ""
+		switch {
+		case finding.Category == core.CategorySecret || (finding.Category == core.CategoryPII && (ins.dec.Action == core.ActionBlock || ins.dec.Action == core.ActionReview)):
+			reason = quarantine.ReasonSecretExfiltration
+		case finding.Attributes != nil && finding.Attributes["evasion_type"] != "":
+			reason = quarantine.ReasonDetectorEvasion
+		case finding.Category == core.CategoryToolSecurity:
+			reason = quarantine.ReasonToolPolicyViolation
+		}
+		if reason == "" {
+			continue
+		}
+		p.recordQuarantineSignal(ctx, signalFromFinding(ins.env, reason, finding, ins.dec.PolicyID, ins.dec.PolicyVersion))
+	}
 }
 
 func (p *SecurityPipeline) auditEvent(ins *inspection) audit.Event {
