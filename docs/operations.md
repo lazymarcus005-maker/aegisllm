@@ -108,6 +108,27 @@ timeouts as `504`, and an open upstream breaker as `503`; POST requests are
 never retried. `GET /v1/models` is also no-retry. `/ready` reports the
 upstream dependency as not ready while its breaker is open.
 
+### Retrieval authorization (P2.2)
+
+Set `RAG_AUTH_MODE=enforce`, `RAG_AUTH_ADAPTER=http`, and point
+`RAG_AUTH_URL` at a private authorization service. Production requires an
+HTTPS endpoint, CA bundle, client certificate/key (mTLS), bounded timeout and
+decision age, and the reviewed `rag.mode: enforce` policy control. The gateway
+authorizes both the retrieval request and every returned chunk/document before
+the existing normalization path. A single denied, stale, mismatched, or
+malformed result blocks the complete request; vector-store filtering is not
+trusted. Query/document content is not sent to the authorization service;
+sensitive labels and resource IDs are bounded metadata for that private
+decision only and are never logged or exposed in metrics.
+
+Use `docker compose -f docker-compose.yml -f docker-compose.fake-rag.yml up
+--build` for deterministic fake-service contract evidence only. That profile
+uses a deliberately plaintext local link and must not be promoted. Shadow and
+in-process fake/deny modes are for development/calibration; they are not
+production validation. Promotion still requires a real IdP binding, vector DB
+result provenance, authorization-service policy review/calibration, and
+private PKI/rotation validation.
+
 ### Authenticated ingress and RBAC
 
 JWT mode accepts bearer tokens signed with RS256 (RSA PEM) or ES256 (P-256 EC

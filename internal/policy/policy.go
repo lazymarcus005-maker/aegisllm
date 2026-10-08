@@ -215,6 +215,19 @@ type RoutingPolicy struct {
 	ProviderBoundaries map[string]RouteConstraint `yaml:"provider_boundaries,omitempty"`
 }
 
+// RAGPolicy is the reviewed policy control for retrieval authorization. The
+// gateway configuration selects the deployment adapter; this section records
+// the effective content decision and prevents unsound rewrite actions for
+// arbitrary retrieved documents.
+type RAGPolicy struct {
+	Mode                  string     `yaml:"mode"` // disabled | shadow | enforce
+	OnDeny                ActionRule `yaml:"on_deny"`
+	RequirePurpose        bool       `yaml:"require_purpose,omitempty"`
+	RequireCollection     bool       `yaml:"require_collection,omitempty"`
+	RequireClassification bool       `yaml:"require_classification,omitempty"`
+	AllowedOperations     []string   `yaml:"allowed_operations,omitempty"`
+}
+
 // EvasionAllowlist is a stable, content-free exception identifier for one
 // bounded evasion class. Exceptions are deliberately scoped by type/category;
 // raw values are never placed in policy or audit records.
@@ -290,6 +303,7 @@ type Policy struct {
 	FindingCountEscalation []FindingCountEscalation         `yaml:"finding_count_escalation,omitempty"`
 	SafeDefault            ActionRule                       `yaml:"safe_default,omitempty"`
 	Routing                *RoutingPolicy                   `yaml:"routing,omitempty"`
+	RAG                    *RAGPolicy                       `yaml:"rag,omitempty"`
 	Evasion                EvasionPolicy                    `yaml:"evasion,omitempty"`
 }
 
@@ -351,6 +365,9 @@ func (p *Policy) Summary() []RuleSummary {
 	if p.Evasion.BudgetAction.Action != "" {
 		out = append(out, RuleSummary{ID: "evasion.budget", Stage: "canonicalization", Category: "EVASION", Subtype: "budget_exceeded", Action: p.Evasion.BudgetAction.Action})
 	}
+	if p.RAG != nil {
+		out = append(out, RuleSummary{ID: "rag.mode", Stage: "rag_authorization", Category: "RAG", Subtype: strings.ToLower(p.RAG.Mode), Action: p.RAG.OnDeny.Action})
+	}
 	out = append(out, RuleSummary{ID: "safe_default", Stage: "safe_default", Action: p.SafeDefault.Action}, RuleSummary{ID: "default", Stage: "default", Action: p.Default.Action})
 	slices.SortFunc(out, func(a, b RuleSummary) int { return strings.Compare(a.ID, b.ID) })
 	return out
@@ -394,6 +411,23 @@ func (p *Policy) Validate() error {
 	}
 	if p.SafeDefault.Action == "" {
 		return errors.New("policy: safe_default.action is required")
+	}
+	if p.RAG != nil {
+		mode := strings.ToLower(strings.TrimSpace(p.RAG.Mode))
+		if mode != "disabled" && mode != "shadow" && mode != "enforce" {
+			return errors.New("policy: rag.mode must be disabled, shadow, or enforce")
+		}
+		if p.RAG.OnDeny.Action != core.ActionBlock && p.RAG.OnDeny.Action != core.ActionReview {
+			return errors.New("policy: rag.on_deny must be block or review")
+		}
+		seenOps := map[string]bool{}
+		for _, operation := range p.RAG.AllowedOperations {
+			operation = strings.ToLower(strings.TrimSpace(operation))
+			if (operation != "retrieve" && operation != "retrieve_result") || seenOps[operation] {
+				return errors.New("policy: rag.allowed_operations contains an invalid or duplicate operation")
+			}
+			seenOps[operation] = true
+		}
 	}
 	if p.Evasion.BudgetAction.Action != "" && !isValidAction(p.Evasion.BudgetAction.Action) {
 		return errors.New("policy: evasion.budget_action is invalid")

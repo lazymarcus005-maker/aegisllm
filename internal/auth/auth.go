@@ -39,6 +39,7 @@ type Config struct {
 	ApplicationClaim      string
 	SubjectClaim          string
 	RolesClaim            string
+	GroupsClaim           string
 	ProviderClaim         string
 	SessionClaim          string
 	RequireSessionBinding bool
@@ -52,6 +53,7 @@ type Principal struct {
 	Application  string
 	Subject      string
 	Roles        []string
+	Groups       []string
 	Provider     string
 	SessionID    string
 	SessionBound bool
@@ -109,6 +111,9 @@ func New(cfg Config) (*Authenticator, error) {
 	}
 	if cfg.RolesClaim == "" {
 		cfg.RolesClaim = "roles"
+	}
+	if cfg.GroupsClaim == "" {
+		cfg.GroupsClaim = "groups"
 	}
 	if cfg.ProviderClaim == "" {
 		cfg.ProviderClaim = "provider"
@@ -263,6 +268,7 @@ func (a *Authenticator) authenticate(r *http.Request) (Principal, error) {
 		Provider:    claimString(claims, a.cfg.ProviderClaim),
 		SessionID:   claimString(claims, a.cfg.SessionClaim),
 		Roles:       claimRoles(claims, a.cfg.RolesClaim),
+		Groups:      claimRoles(claims, a.cfg.GroupsClaim),
 	}
 	if a.cfg.RequireSessionBinding && p.SessionID == "" {
 		return Principal{}, errors.New("verified session binding required")

@@ -23,6 +23,7 @@ import (
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
 	"github.com/aegisllm/gateway/internal/policydistribution"
+	"github.com/aegisllm/gateway/internal/ragauth"
 	"github.com/aegisllm/gateway/internal/routing"
 	"github.com/aegisllm/gateway/internal/securetransport"
 	"github.com/aegisllm/gateway/internal/trace"
@@ -76,6 +77,7 @@ type Server struct {
 	auditWAL       *audit.WAL
 	auditExporter  *audit.Exporter
 	auditSink      audit.Sink
+	rag            *ragauth.Gateway
 	buildInfo      BuildInfo
 }
 
@@ -160,6 +162,7 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 		TenantClaim: cfg.JWTTenantClaim, ApplicationClaim: cfg.JWTApplicationClaim,
 		SubjectClaim: cfg.JWTSubjectClaim, RolesClaim: cfg.JWTRolesClaim,
 		ProviderClaim: cfg.JWTProviderClaim, SessionClaim: cfg.JWTSessionClaim,
+		GroupsClaim:           cfg.JWTGroupsClaim,
 		RequireSessionBinding: cfg.profile() == ProfileProduction,
 		ClientCertIdentity:    cfg.AuthMode == auth.ModeMTLS,
 	})
@@ -173,6 +176,13 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 			MaxConcurrent: cfg.MaxConcurrentRequests, MaxKeys: cfg.LimiterMaxKeys,
 			KeyIdleTimeout: cfg.LimiterKeyIdleTimeout,
 		})}
+	rag, ragErr := ragauth.NewGateway(ragauth.Config{Mode: cfg.RAGAuthMode, Adapter: cfg.RAGAuthAdapter, Production: cfg.profile() == ProfileProduction,
+		Timeout: cfg.RAGAuthTimeout, Limits: ragauth.Limits{MaxBytes: cfg.MaxBodyBytes, MaxResults: cfg.RAGMaxResults, MaxResultBytes: cfg.RAGMaxResultBytes,
+			MaxDepth: cfg.RAGMaxDepth, MaxNodes: cfg.RAGMaxNodes, MaxConcurrency: cfg.RAGMaxConcurrency, DecisionMaxAge: cfg.RAGDecisionMaxAge}}, ragauth.DenyByDefault{})
+	if ragErr != nil {
+		return nil, ragErr
+	}
+	srv.rag = rag
 	srv.semanticStatus = func() SemanticReadiness {
 		status := "disabled"
 		if cfg.SemanticEnforce {
@@ -218,6 +228,16 @@ func NewServer(cfg Config, logger *slog.Logger) (*Server, error) {
 func (s *Server) SetPipeline(p Pipeline) {
 	s.pipeline = p
 	p.SetSecurityMode(s.cfg.SecurityMode)
+}
+
+// SetRAGAuthorization replaces the default deny-by-default adapter with the
+// configured private or deterministic adapter. The gateway remains the owner
+// of identity and enforcement mode.
+func (s *Server) SetRAGAuthorization(g *ragauth.Gateway) {
+	if g != nil {
+		s.rag = g
+		s.applyRAGPolicy(s.currentPolicy())
+	}
 }
 
 // Close releases reload watchers and pooled dependency transports owned by
@@ -286,9 +306,25 @@ func (s *Server) AuditStatus() AuditStatus {
 
 // SetPolicy attaches the already validated policy for the operator-only
 // effective-policy endpoint. The endpoint exposes only Policy.Summary().
-func (s *Server) SetPolicy(p *policy.Policy) { s.policy = p; s.policyRef.Store(p) }
+func (s *Server) SetPolicy(p *policy.Policy) {
+	s.policy = p
+	s.policyRef.Store(p)
+	s.applyRAGPolicy(p)
+}
 
-func (s *Server) SetRuntimePolicy(p *policy.Policy) { s.policyRef.Store(p) }
+func (s *Server) SetRuntimePolicy(p *policy.Policy) { s.policyRef.Store(p); s.applyRAGPolicy(p) }
+
+func (s *Server) applyRAGPolicy(p *policy.Policy) {
+	if s.rag == nil {
+		return
+	}
+	if p == nil || p.RAG == nil {
+		s.rag.SetControls(ragauth.Controls{})
+		return
+	}
+	s.rag.SetControls(ragauth.Controls{Mode: p.RAG.Mode, RequirePurpose: p.RAG.RequirePurpose, RequireCollection: p.RAG.RequireCollection,
+		RequireClassification: p.RAG.RequireClassification, AllowedOperations: append([]string(nil), p.RAG.AllowedOperations...)})
+}
 
 func (s *Server) SetPolicyDistribution(m *policydistribution.Manager) { s.distribution = m }
 
@@ -470,6 +506,14 @@ func (s *Server) handlePIIProviders(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"version": 1, "providers": s.piiStatus()})
+}
+
+func (s *Server) handleRAGStatus(w http.ResponseWriter, _ *http.Request) {
+	if s.rag == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "RAG authorization unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": 1, "status": s.rag.Status()})
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
@@ -745,6 +789,43 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "PROMPT_TOO_LARGE", "Prompt exceeds the configured character limit.", env.RequestID)
 		return
 	}
+	if s.rag != nil {
+		pol := s.currentPolicy()
+		policyID, policyVersion := "", 0
+		if pol != nil {
+			policyID, policyVersion = pol.ID, pol.Version
+		}
+		ragIdentity := ragauth.Identity{Tenant: env.Tenant, Application: env.Application, Subject: env.User.Subject, Roles: append([]string(nil), env.User.Roles...)}
+		if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
+			ragIdentity.Groups = append([]string(nil), principal.Groups...)
+		}
+		ragOutcome, ragErr := s.rag.Authorize(requestCtx, body, ragIdentity, env.RequestID, policyID, policyVersion)
+		if ragOutcome.Detected {
+			s.observeRAG(ragOutcome)
+			event := audit.Event{RequestID: env.RequestID, Timestamp: time.Now().UTC(), Direction: core.DirectionRequest, TraceID: traceCtx.TraceID, SpanID: traceCtx.SpanID,
+				Application: env.Application, Tenant: env.Tenant, User: env.User.Subject, Roles: append([]string(nil), env.User.Roles...), Provider: env.Target.Provider,
+				PolicyID: policyID, PolicyVersion: policyVersion, Mode: s.cfg.SecurityMode, Component: "rag_authorization", Action: core.ActionAllow,
+				Code: ragOutcome.Code, Reason: ragOutcome.Reason, RAG: true, RAGChunks: ragOutcome.Chunks, RAGOperation: "retrieve"}
+			if !ragOutcome.Allowed {
+				event.Action = core.ActionBlock
+				event.AppliedAction = core.ActionBlock
+			}
+			if auditErr := s.recordAudit(requestCtx, event); auditErr != nil && s.cfg.DeploymentProfile == ProfileProduction {
+				writeOpenAIError(w, http.StatusServiceUnavailable, "gateway_error", "AUDIT_UNAVAILABLE", "Security audit is unavailable.", env.RequestID)
+				return
+			}
+			if ragErr != nil || !ragOutcome.Allowed {
+				if s.cfg.SecurityMode == ModeEnforce || s.cfg.DeploymentProfile == ProfileProduction {
+					code := ragOutcome.Code
+					if code == "" {
+						code = "RAG_AUTH_DENIED"
+					}
+					writeOpenAIError(w, http.StatusForbidden, "security_policy_violation", code, "Retrieved context was not authorized.", env.RequestID)
+					return
+				}
+			}
+		}
+	}
 	isStream := env.Metadata["stream"] == "true" || strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream")
 	if isStream {
 		env.Metadata["stream"] = "true"
@@ -845,6 +926,16 @@ func (s *Server) handleLLMRequest(w http.ResponseWriter, r *http.Request) {
 	copyResponseHeaders(w, resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, bytes.NewReader(out))
+}
+
+func (s *Server) observeRAG(outcome ragauth.Outcome) {
+	if recorder, ok := s.runtimeMetrics.(interface{ ObserveRAG(string, string) }); ok {
+		state := "allowed"
+		if !outcome.Allowed {
+			state = "denied"
+		}
+		recorder.ObserveRAG(state, outcome.Code)
+	}
 }
 
 func promptChars(env *core.InspectionEnvelope) int {

@@ -113,6 +113,7 @@ type Metrics struct {
 	nerLatency          *prometheus.HistogramVec
 	evasion             *prometheus.CounterVec
 	attachments         *prometheus.CounterVec
+	ragDecisions        *prometheus.CounterVec
 	distribution        *prometheus.CounterVec
 	auditEnqueued       prometheus.Counter
 	auditDurable        prometheus.Counter
@@ -257,6 +258,7 @@ func New() *Metrics {
 		nerLatency:          prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "pii_ner_latency_ms", Help: "Local NER latency by bounded provider and language."}, []string{"provider", "language"}),
 		evasion:             prometheus.NewCounterVec(prometheus.CounterOpts{Name: "evasion_events_total", Help: "Bounded canonicalization/evasion events by type, depth, action, and budget outcome."}, []string{"type", "encoding_depth", "action", "budget_rejected"}),
 		attachments:         prometheus.NewCounterVec(prometheus.CounterOpts{Name: "attachment_inspection_total", Help: "Bounded multimodal inspection outcomes by contract result and adapter."}, []string{"outcome", "adapter"}),
+		ragDecisions:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "rag_authorization_total", Help: "Retrieval authorization outcomes by bounded result and reason."}, []string{"outcome", "reason"}),
 		distribution:        prometheus.NewCounterVec(prometheus.CounterOpts{Name: "policy_distribution_events_total", Help: "Signed policy distribution events by bounded event, reason, and key ID."}, []string{"event", "reason", "key_id"}),
 		auditEnqueued:       prometheus.NewCounter(prometheus.CounterOpts{Name: "audit_enqueue_total", Help: "Audit events accepted by the audit API."}),
 		auditDurable:        prometheus.NewCounter(prometheus.CounterOpts{Name: "audit_durable_total", Help: "Audit events durably appended to the WAL."}),
@@ -278,8 +280,17 @@ func New() *Metrics {
 		m.breakerOpen, m.activeRequests, m.activeLaya, m.calibrationInfo, m.semanticRejected,
 		m.schemaMismatch, m.checkpointMismatch, m.missingDecisions, m.fallbackReasons, m.distribution,
 		m.streamActions, m.streamBytes, m.streamEvents, m.reloadFailures, m.certExpiring, m.routeSelected, m.routeFailover, m.routeHealth, m.routeRejected, m.routeUnavailable, m.nerCalls, m.nerLatency, m.evasion,
-		m.attachments, m.auditEnqueued, m.auditDurable, m.auditExported, m.auditRetried, m.auditDeadLetter, m.auditCorruption, m.auditDropped, m.auditQueueBytes, m.auditOldestAge, m.auditExporterState)
+		m.attachments, m.ragDecisions, m.auditEnqueued, m.auditDurable, m.auditExported, m.auditRetried, m.auditDeadLetter, m.auditCorruption, m.auditDropped, m.auditQueueBytes, m.auditOldestAge, m.auditExporterState)
 	return m
+}
+
+// ObserveRAG records only fixed outcome/reason labels; identities, resource
+// IDs, labels, queries, and document content are intentionally excluded.
+func (m *Metrics) ObserveRAG(outcome, reason string) {
+	if outcome != "allowed" && outcome != "denied" {
+		outcome = "other"
+	}
+	m.ragDecisions.WithLabelValues(outcome, boundedReason(reason)).Inc()
 }
 
 func (m *Metrics) ObserveAttachment(outcome, adapter string) {

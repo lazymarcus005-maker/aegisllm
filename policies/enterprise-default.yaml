@@ -4,6 +4,17 @@ version: 7
 owner: security-team
 effective_date: "2026-10-05"
 
+# RAG context is accepted only with a request- and resource-bound decision.
+# The private adapter is selected by deployment configuration; this reviewed
+# policy action is fail-closed and cannot redact arbitrary provider shapes.
+rag:
+  mode: enforce
+  on_deny: block
+  require_purpose: true
+  require_collection: true
+  require_classification: false
+  allowed_operations: [retrieve, retrieve_result]
+
 default:
   action: allow
 

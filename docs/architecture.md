@@ -1138,6 +1138,36 @@ and the embedded page uses same-origin polling with bounded exponential
 backoff. A process restart is explicit in the response reset object until a
 durable aggregate design is approved.
 
+## P2.2 Retrieval authorization gateway
+
+Retrieval context is a separate authorization boundary. After authenticated
+identity enrichment and before the normalizer/pipeline forwards a request, the
+gateway recognizes bounded OpenAI, Anthropic, and generic RAG shapes. It
+extracts only a retrieval query digest and bounded metadata; query text,
+document text, and tokens never cross the private authorization wire. Bounded
+classification/label metadata and resource IDs are sent only to that trusted
+private decision boundary and never enter audit/metrics. A request contract binds tenant,
+application, subject, roles, groups, collection/index, classification/labels,
+purpose, operation, policy ID/version, and request ID. Every result contract
+also binds document/chunk ID and content digest.
+
+The authorization response must contain an allow decision, expiry, decision ID,
+and a deterministic binding over the verified identity, policy snapshot,
+operation, query digest, and resource/chunk digest. The gateway authorizes the
+retrieval request and every returned result with bounded body/shape/count,
+timeout, and concurrency limits. Any missing, denied, stale, substituted,
+cross-tenant/application/subject/collection/purpose/label, or malformed result
+rejects the complete retrieval set. Vector-store/provider filtering is never a
+security decision, and arbitrary result redaction is not claimed to be sound.
+
+Production uses the shared verified TLS/mTLS client transport and fails closed
+on authorization-service unavailability. Development has an explicit
+deny-by-default in-process seam and a deterministic fake service for tests and
+Compose smoke evidence. `RAG_AUTH_MODE=shadow` is a non-production calibration
+mode; production promotion requires enforce mode, private PKI, a real
+authorization service, a real IdP/vector DB integration, and reviewed policy
+calibration.
+
 ## 23. References
 
 - Laya documentation: https://nandhakishorm.github.io/laya/

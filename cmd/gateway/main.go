@@ -28,6 +28,7 @@ import (
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
 	"github.com/aegisllm/gateway/internal/policydistribution"
+	"github.com/aegisllm/gateway/internal/ragauth"
 	"github.com/aegisllm/gateway/internal/securetransport"
 	"github.com/aegisllm/gateway/internal/tokenization"
 )
@@ -214,6 +215,39 @@ func main() {
 
 	metrics := observability.New()
 	srv.SetSecureMaterialMetrics(metrics)
+	var ragAuthorizer ragauth.Authorizer = ragauth.DenyByDefault{}
+	var ragClose func()
+	if cfg.RAGAuthAdapter == ragauth.AdapterHTTP && cfg.RAGAuthURL != "" {
+		authorizer, authErr := ragauth.NewHTTPAuthorizer(ragauth.Config{URL: cfg.RAGAuthURL, Timeout: cfg.RAGAuthTimeout, Production: cfg.DeploymentProfile == gateway.ProfileProduction,
+			TLS: securetransport.ClientTLSOptions{CAFile: cfg.RAGAuthCAFile, CertificateFile: cfg.RAGAuthCertFile, KeyFile: cfg.RAGAuthKeyFile, ServerName: cfg.RAGAuthServerName,
+				MinVersion: cfg.TLSMinVersion, MaxVersion: cfg.TLSMaxVersion, PollInterval: cfg.TLSReloadInterval, Metrics: metrics}, Limits: ragauth.Limits{MaxResultBytes: cfg.RAGMaxResultBytes}})
+		if authErr != nil {
+			logger.Error("RAG authorization TLS configuration invalid")
+			os.Exit(1)
+		}
+		ragAuthorizer = authorizer
+		ragClose = authorizer.Close
+	} else if cfg.RAGAuthAdapter == ragauth.AdapterFake && cfg.DeploymentProfile != gateway.ProfileProduction {
+		ragAuthorizer = &ragauth.FakeAuthorizer{Allow: true}
+	}
+	ragGateway, ragErr := ragauth.NewGateway(ragauth.Config{Mode: cfg.RAGAuthMode, Adapter: cfg.RAGAuthAdapter, Production: cfg.DeploymentProfile == gateway.ProfileProduction,
+		Timeout: cfg.RAGAuthTimeout, Limits: ragauth.Limits{MaxBytes: cfg.MaxBodyBytes, MaxResults: cfg.RAGMaxResults, MaxResultBytes: cfg.RAGMaxResultBytes, MaxDepth: cfg.RAGMaxDepth,
+			MaxNodes: cfg.RAGMaxNodes, MaxConcurrency: cfg.RAGMaxConcurrency, DecisionMaxAge: cfg.RAGDecisionMaxAge}}, ragAuthorizer)
+	if ragErr != nil {
+		logger.Error("RAG authorization configuration invalid")
+		os.Exit(1)
+	}
+	if ragClose != nil {
+		defer ragClose()
+	}
+	srv.SetRAGAuthorization(ragGateway)
+	srv.AddReadinessCheck("rag_authorization", func() string {
+		status := ragGateway.Status()
+		if cfg.DeploymentProfile == gateway.ProfileProduction && cfg.RAGAuthMode == ragauth.ModeEnforce && !status.Available {
+			return "RAG authorization unavailable"
+		}
+		return ""
+	})
 	telemetryKey, telemetryFile, err := loadConfiguredSecret(cfg.TelemetryHMACKey, cfg.TelemetryHMACKeyFile, metrics)
 	if err != nil {
 		logger.Error("telemetry key unavailable")

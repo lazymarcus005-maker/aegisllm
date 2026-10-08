@@ -40,7 +40,14 @@ separate feature-roadmap file).
   promotion dependencies. Evidence: `internal/attachment/attachment_test.go`,
   `internal/gateway/multimodal_test.go`, and
   `docs/multimodal-document-dlp.md`.
-- [ ] P2.2 Credential brokering and deeper MCP/runtime integration.
+- [x] P2.2 RAG authorization gateway: strict tenant/application/subject/
+  role/group/resource/collection/classification/purpose contracts; bounded
+  private HTTP TLS/mTLS adapter; deny-by-default seam; request and per-result
+  binding enforcement; policy/readiness/audit/metrics surfaces; deterministic
+  fake-service Compose evidence; adversarial and gateway-path coverage. Evidence
+  class: contract, unit/adversarial, and deterministic fake-service integration
+  only. Real IdP, vector DB, authorization service, PKI, and policy calibration
+  remain external promotion dependencies.
 - [ ] P2.3 Richer entity detection and multi-tenant vault namespaces (bounded cross-message detection moved into P1.4).
 
 P0.1 is marked complete only after the repository acceptance commands and the

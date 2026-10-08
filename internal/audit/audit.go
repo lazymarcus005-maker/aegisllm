@@ -167,6 +167,9 @@ type Event struct {
 	RoutedModel       string                  `json:"routed_model,omitempty"`
 	RouteReason       string                  `json:"route_reason,omitempty"`
 	RouteFailover     bool                    `json:"route_failover,omitempty"`
+	RAG               bool                    `json:"rag,omitempty"`
+	RAGOperation      string                  `json:"rag_operation,omitempty"`
+	RAGChunks         int                     `json:"rag_chunks,omitempty"`
 	ToolProvider      string                  `json:"tool_provider,omitempty"`
 	BytesInspected    int64                   `json:"bytes_inspected,omitempty"`
 	EventsInspected   int                     `json:"events_inspected,omitempty"`
@@ -246,6 +249,13 @@ func SanitizeEvent(in Event, opts SanitizeOptions) Event {
 		out.ReasonID = out.Code
 	}
 	out.EndpointFamily, out.RouteID, out.RouteClass, out.RouteProvider = BoundedLabel(out.EndpointFamily), BoundedLabel(out.RouteID), BoundedLabel(out.RouteClass), BoundedLabel(out.RouteProvider)
+	out.RAGOperation = BoundedLabel(out.RAGOperation)
+	if out.RAGChunks < 0 {
+		out.RAGChunks = 0
+	}
+	if out.RAGChunks > 10000 {
+		out.RAGChunks = 10000
+	}
 	out.RequestedModel, out.RoutedModel, out.RouteReason = BoundedLabel(out.RequestedModel), BoundedLabel(out.RoutedModel), ReasonID(out.RouteReason)
 	out.ToolProvider, out.DistributionEvent, out.DistributionKeyID = BoundedLabel(out.ToolProvider), ReasonID(out.DistributionEvent), BoundedLabel(out.DistributionKeyID)
 	if out.LatencyMS != nil {

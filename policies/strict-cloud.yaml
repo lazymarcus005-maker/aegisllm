@@ -6,6 +6,13 @@ version: 8
 owner: security-team
 effective_date: "2026-10-07"
 
+rag:
+  mode: enforce
+  on_deny: block
+  require_purpose: true
+  require_collection: true
+  allowed_operations: [retrieve, retrieve_result]
+
 default:
   action: allow
 evasion:

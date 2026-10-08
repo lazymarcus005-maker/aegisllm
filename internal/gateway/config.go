@@ -16,6 +16,7 @@ import (
 	"github.com/aegisllm/gateway/internal/decision"
 	"github.com/aegisllm/gateway/internal/pii"
 	"github.com/aegisllm/gateway/internal/policy"
+	"github.com/aegisllm/gateway/internal/ragauth"
 	"github.com/aegisllm/gateway/internal/routing"
 	"github.com/aegisllm/gateway/internal/securetransport"
 )
@@ -127,6 +128,20 @@ type Config struct {
 	AttachmentTLSCertFile          string
 	AttachmentTLSKeyFile           string
 	AttachmentTLSServerName        string
+	RAGAuthMode                    string
+	RAGAuthAdapter                 string
+	RAGAuthURL                     string
+	RAGAuthTimeout                 time.Duration
+	RAGAuthCAFile                  string
+	RAGAuthCertFile                string
+	RAGAuthKeyFile                 string
+	RAGAuthServerName              string
+	RAGMaxResults                  int
+	RAGMaxResultBytes              int64
+	RAGMaxDepth                    int
+	RAGMaxNodes                    int
+	RAGMaxConcurrency              int
+	RAGDecisionMaxAge              time.Duration
 	HeaderApplication              string
 	HeaderTenant                   string
 	HeaderUser                     string
@@ -200,6 +215,7 @@ type Config struct {
 	JWTApplicationClaim            string
 	JWTSubjectClaim                string
 	JWTRolesClaim                  string
+	JWTGroupsClaim                 string
 	JWTProviderClaim               string
 	JWTSessionClaim                string
 	AllowUnauthenticatedShadow     bool
@@ -307,6 +323,20 @@ func configFrom(get func(string) string) Config {
 		AttachmentTLSCertFile:          get("DLP_ATTACHMENT_TLS_CERT_FILE"),
 		AttachmentTLSKeyFile:           get("DLP_ATTACHMENT_TLS_KEY_FILE"),
 		AttachmentTLSServerName:        get("DLP_ATTACHMENT_TLS_SERVER_NAME"),
+		RAGAuthMode:                    getenvDefault(get, "RAG_AUTH_MODE", ragauth.ModeOff),
+		RAGAuthAdapter:                 getenvDefault(get, "RAG_AUTH_ADAPTER", ragauth.AdapterDeny),
+		RAGAuthURL:                     get("RAG_AUTH_URL"),
+		RAGAuthTimeout:                 getenvDuration(get, "RAG_AUTH_TIMEOUT", 5*time.Second),
+		RAGAuthCAFile:                  get("RAG_AUTH_CA_FILE"),
+		RAGAuthCertFile:                get("RAG_AUTH_CERT_FILE"),
+		RAGAuthKeyFile:                 get("RAG_AUTH_KEY_FILE"),
+		RAGAuthServerName:              get("RAG_AUTH_SERVER_NAME"),
+		RAGMaxResults:                  getenvInt(get, "RAG_MAX_RESULTS", 64),
+		RAGMaxResultBytes:              getenvInt64(get, "RAG_MAX_RESULT_BYTES", 1<<20),
+		RAGMaxDepth:                    getenvInt(get, "RAG_MAX_DEPTH", 8),
+		RAGMaxNodes:                    getenvInt(get, "RAG_MAX_NODES", 512),
+		RAGMaxConcurrency:              getenvInt(get, "RAG_MAX_CONCURRENCY", 4),
+		RAGDecisionMaxAge:              getenvDuration(get, "RAG_DECISION_MAX_AGE", 30*time.Second),
 		HeaderApplication:              getenvDefault(get, "HEADER_APPLICATION", "X-Application-Id"),
 		HeaderTenant:                   getenvDefault(get, "HEADER_TENANT", "X-Tenant-Id"),
 		HeaderUser:                     getenvDefault(get, "HEADER_USER", "X-User-Id"),
@@ -380,6 +410,7 @@ func configFrom(get func(string) string) Config {
 		JWTApplicationClaim:            getenvDefault(get, "JWT_APPLICATION_CLAIM", "azp"),
 		JWTSubjectClaim:                getenvDefault(get, "JWT_SUBJECT_CLAIM", "sub"),
 		JWTRolesClaim:                  getenvDefault(get, "JWT_ROLES_CLAIM", "roles"),
+		JWTGroupsClaim:                 getenvDefault(get, "JWT_GROUPS_CLAIM", "groups"),
 		JWTProviderClaim:               getenvDefault(get, "JWT_PROVIDER_CLAIM", "provider"),
 		JWTSessionClaim:                getenvDefault(get, "JWT_SESSION_CLAIM", "sid"),
 		AllowUnauthenticatedShadow:     strings.EqualFold(get("ALLOW_UNAUTHENTICATED_SHADOW"), "true"),
@@ -520,6 +551,9 @@ func ValidateConfig(cfg Config) error {
 	if err := validateSemanticConfig(cfg); err != nil {
 		return err
 	}
+	if err := validateRAGConfig(cfg, profile); err != nil {
+		return err
+	}
 	if err := validateAttachmentConfig(cfg, profile); err != nil {
 		return err
 	}
@@ -647,6 +681,50 @@ func ValidateConfig(cfg Config) error {
 	// Threshold artifacts are mandatory and strictly validated only when
 	// semantic enforcement is requested. Deterministic-only production may
 	// omit or ignore semantic artifacts and reports semantic=disabled.
+	return nil
+}
+
+func validateRAGConfig(cfg Config, profile DeploymentProfile) error {
+	defaults := configFrom(func(string) string { return "" })
+	mode, adapter := strings.ToLower(strings.TrimSpace(cfg.RAGAuthMode)), strings.ToLower(strings.TrimSpace(cfg.RAGAuthAdapter))
+	if mode == "" {
+		mode = defaults.RAGAuthMode
+	}
+	if adapter == "" {
+		adapter = defaults.RAGAuthAdapter
+	}
+	if mode != ragauth.ModeOff && mode != ragauth.ModeShadow && mode != ragauth.ModeEnforce {
+		return errors.New("RAG_AUTH_MODE must be off, shadow, or enforce")
+	}
+	if adapter != ragauth.AdapterDeny && adapter != ragauth.AdapterFake && adapter != ragauth.AdapterHTTP {
+		return errors.New("RAG_AUTH_ADAPTER must be deny, fake, or http")
+	}
+	if cfg.RAGAuthTimeout < 0 || cfg.RAGMaxResults < 0 || cfg.RAGMaxResultBytes < 0 || cfg.RAGMaxDepth < 0 || cfg.RAGMaxNodes < 0 || cfg.RAGMaxConcurrency < 0 || cfg.RAGDecisionMaxAge < 0 {
+		return errors.New("RAG authorization limits must not be negative")
+	}
+	if (cfg.RAGAuthCertFile == "") != (cfg.RAGAuthKeyFile == "") {
+		return errors.New("RAG_AUTH_CERT_FILE and RAG_AUTH_KEY_FILE must be paired")
+	}
+	if profile == ProfileProduction && mode == ragauth.ModeShadow {
+		return errors.New("production does not permit RAG_AUTH_MODE=shadow")
+	}
+	if profile == ProfileProduction && mode == ragauth.ModeEnforce {
+		if cfg.RAGAuthTimeout <= 0 || cfg.RAGMaxResults <= 0 || cfg.RAGMaxResultBytes <= 0 || cfg.RAGMaxDepth <= 0 || cfg.RAGMaxNodes <= 0 || cfg.RAGMaxConcurrency <= 0 || cfg.RAGDecisionMaxAge <= 0 {
+			return errors.New("production RAG authorization limits must be positive")
+		}
+		if adapter != ragauth.AdapterHTTP {
+			return errors.New("production RAG authorization requires RAG_AUTH_ADAPTER=http")
+		}
+		if strings.TrimSpace(cfg.RAGAuthURL) == "" || strings.TrimSpace(cfg.RAGAuthCAFile) == "" || strings.TrimSpace(cfg.RAGAuthCertFile) == "" || strings.TrimSpace(cfg.RAGAuthKeyFile) == "" {
+			return errors.New("production RAG authorization requires private HTTPS/mTLS configuration")
+		}
+	}
+	if mode == ragauth.ModeEnforce && adapter == ragauth.AdapterHTTP {
+		u, err := url.Parse(strings.TrimSpace(cfg.RAGAuthURL))
+		if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (profile == ProfileProduction && !strings.EqualFold(u.Scheme, "https")) || (profile != ProfileProduction && u.Scheme != "http" && u.Scheme != "https") {
+			return errors.New("RAG_AUTH_URL must be a bounded HTTP endpoint with verified TLS in production")
+		}
+	}
 	return nil
 }
 
@@ -817,6 +895,54 @@ func validateTLSFilePair(name, certFile, keyFile string) error {
 // production validation contract.
 func (c Config) withRuntimeDefaults() Config {
 	defaults := configFrom(func(string) string { return "" })
+	if c.SecurityMode == "" {
+		c.SecurityMode = defaults.SecurityMode
+	}
+	if c.AuthMode == "" {
+		c.AuthMode = defaults.AuthMode
+	}
+	if c.HeaderApplication == "" {
+		c.HeaderApplication = defaults.HeaderApplication
+	}
+	if c.HeaderTenant == "" {
+		c.HeaderTenant = defaults.HeaderTenant
+	}
+	if c.HeaderUser == "" {
+		c.HeaderUser = defaults.HeaderUser
+	}
+	if c.HeaderTargetProvider == "" {
+		c.HeaderTargetProvider = defaults.HeaderTargetProvider
+	}
+	if c.DefaultTargetProvider == "" {
+		c.DefaultTargetProvider = defaults.DefaultTargetProvider
+	}
+	if c.RAGAuthMode == "" {
+		c.RAGAuthMode = defaults.RAGAuthMode
+	}
+	if c.RAGAuthAdapter == "" {
+		c.RAGAuthAdapter = defaults.RAGAuthAdapter
+	}
+	if c.RAGAuthTimeout <= 0 {
+		c.RAGAuthTimeout = defaults.RAGAuthTimeout
+	}
+	if c.RAGMaxResults <= 0 {
+		c.RAGMaxResults = defaults.RAGMaxResults
+	}
+	if c.RAGMaxResultBytes <= 0 {
+		c.RAGMaxResultBytes = defaults.RAGMaxResultBytes
+	}
+	if c.RAGMaxDepth <= 0 {
+		c.RAGMaxDepth = defaults.RAGMaxDepth
+	}
+	if c.RAGMaxNodes <= 0 {
+		c.RAGMaxNodes = defaults.RAGMaxNodes
+	}
+	if c.RAGMaxConcurrency <= 0 {
+		c.RAGMaxConcurrency = defaults.RAGMaxConcurrency
+	}
+	if c.RAGDecisionMaxAge <= 0 {
+		c.RAGDecisionMaxAge = defaults.RAGDecisionMaxAge
+	}
 	if c.UpstreamDialTimeout <= 0 {
 		c.UpstreamDialTimeout = defaults.UpstreamDialTimeout
 	}

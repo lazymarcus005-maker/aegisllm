@@ -57,6 +57,23 @@ func TestEventSerializationCarriesNoRawContent(t *testing.T) {
 	}
 }
 
+func TestRAGAuditProjectionCarriesOnlyBoundedMetadata(t *testing.T) {
+	b, err := json.Marshal(Event{RequestID: "req-rag", Component: "rag_authorization", RAG: true, RAGOperation: "retrieve", RAGChunks: 2,
+		Code: "RAG_AUTH_ALLOWED", Action: core.ActionAllow, Reason: "retrieval authorization succeeded"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	for _, forbidden := range []string{"secret query", "document text", "bearer-token", "sensitive-label", "doc-123"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("RAG audit leaked %q: %s", forbidden, out)
+		}
+	}
+	if !strings.Contains(out, `"rag":true`) || !strings.Contains(out, `"rag_chunks":2`) {
+		t.Fatalf("RAG metadata missing: %s", out)
+	}
+}
+
 func TestFindingTypesDistinctInOrder(t *testing.T) {
 	fs := []core.SecurityFinding{
 		{Subtype: "GITLAB_PAT"},

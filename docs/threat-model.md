@@ -116,6 +116,30 @@ binary reconstruction blocks rather than claiming REDACT/TOKENIZE succeeded.
 Remaining promotion risks are the real OCR/document engine, private PKI and
 rotation, network DNS/redirect operations, and production data calibration.
 
+# P2.2 retrieval authorization
+
+RAG metadata and retrieved results are treated as client-controlled until
+bound to the verified ingress principal. The gateway enforces a content-free
+request/result contract across tenant, application, subject, roles, groups,
+document/chunk, collection/index, classification/labels, purpose, operation,
+query digest, policy snapshot, and expiry. Each result receives an independent
+decision binding; mixed or unauthorized sets fail closed before normalization
+or upstream forwarding. Unsupported shapes, result injection, stale/replayed
+decisions, oversized traversal, timeouts, malformed responses, and service
+outage are rejection conditions. Redaction is not offered for arbitrary RAG
+documents because it cannot be proven to preserve chunk semantics.
+
+The private adapter uses the shared verified TLS/mTLS transport with bounded
+response reads and no caller credentials or identity headers. SSRF controls
+reject production plaintext, credentials, query strings, and fragments in the
+authorization endpoint. Audit and metrics expose only bounded outcome/reason,
+chunk count, policy, and trace metadata; query/document text, sensitive labels,
+tokens, and high-cardinality resource IDs are excluded. The deterministic fake
+service and Compose profile prove contract behavior only. Real IdP claims,
+vector-store result provenance, authorization-service policy correctness,
+production PKI/rotation, replay protection at the service boundary, and
+tenant/classification calibration are external promotion dependencies.
+
 The release boundary treats tool/database outages as blockers, not passes. A
 pinned Debian Go image supplies the race compiler; reproducible hash comparison,
 CycloneDX SBOM, final-image vulnerability scan, secret scan, least-privilege
