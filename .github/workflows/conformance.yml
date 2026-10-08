@@ -27,11 +27,31 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
-      - name: Start non-production fake provider
+      - name: Build and start non-production conformance stack
         run: |
-          go run ./cmd/fakeprovider --port 19090 --profile matrix >/tmp/fakeprovider.log 2>&1 &
-          go run ./cmd/gateway >/tmp/gateway.log 2>&1 &
-          sleep 3
+          go build -o /tmp/aegis-fakeprovider ./cmd/fakeprovider
+          go build -o /tmp/aegis-gateway ./cmd/gateway
+          /tmp/aegis-fakeprovider --port 19090 --profile matrix >/tmp/fakeprovider.log 2>&1 &
+          /tmp/aegis-gateway >/tmp/gateway.log 2>&1 &
+
+          for endpoint in http://127.0.0.1:19090/health http://127.0.0.1:18080/health; do
+            ready=false
+            for _ in $(seq 1 60); do
+              if curl --fail --silent --show-error "$endpoint" >/dev/null; then
+                ready=true
+                break
+              fi
+              sleep 1
+            done
+            if [ "$ready" != true ]; then
+              echo "Conformance service did not become ready: $endpoint" >&2
+              printf '%s\n' '--- fake provider log ---' >&2
+              cat /tmp/fakeprovider.log >&2 || true
+              printf '%s\n' '--- gateway log ---' >&2
+              cat /tmp/gateway.log >&2 || true
+              exit 1
+            fi
+          done
         env:
           LISTEN_ADDR: :18080
           UPSTREAM_BASE_URL: http://127.0.0.1:19090
