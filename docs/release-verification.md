@@ -52,3 +52,13 @@ entries, and treats package-load errors as blocked. Trivy records and validates
 database metadata, image identity, vulnerability count, and severity counts.
 Signing is not fabricated: provenance/checksums are produced, and signing is
 optional until a keyless test identity is available.
+
+## P2.4 semantic lifecycle evidence
+
+The normal, race, fuzz, and focused semantic lanes cover signed metadata,
+trust-root validity, anti-replay/downgrade, lifecycle CAS/idempotency,
+model-threshold binding, cohort isolation, bounded drift suppression and
+sustained actions, safe rollback, restart recovery, audit privacy, and metric
+cardinality. These are contract/fake fixtures only; real Laya quality,
+production distributions/labels, signer governance, and external connectivity
+remain release promotion dependencies.

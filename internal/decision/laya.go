@@ -60,11 +60,13 @@ type layaRequest struct {
 }
 
 type layaState struct {
-	Direction   string   `json:"direction"`
-	Role        string   `json:"role,omitempty"`
-	Content     string   `json:"content"`
-	Application string   `json:"application,omitempty"`
-	ToolContext []string `json:"tool_context,omitempty"`
+	Direction    string   `json:"direction"`
+	Role         string   `json:"role,omitempty"`
+	Content      string   `json:"content"`
+	Application  string   `json:"application,omitempty"`
+	ModelID      string   `json:"model_id,omitempty"`
+	ModelVersion string   `json:"model_version,omitempty"`
+	ToolContext  []string `json:"tool_context,omitempty"`
 }
 
 // layaResponse mirrors laya-serve's normalized result (spec §4).
@@ -73,6 +75,9 @@ type layaResponse struct {
 	Checkpoint    string `json:"checkpoint"`
 	SchemaVersion string `json:"schema_version"`
 	Route         string `json:"route"`
+	ModelID       string `json:"model_id,omitempty"`
+	ModelVersion  string `json:"model_version,omitempty"`
+	ModelDigest   string `json:"model_digest,omitempty"`
 	Decisions     map[string]struct {
 		Value            bool    `json:"value"`
 		AnswerConfidence float64 `json:"answer_confidence"`
@@ -181,6 +186,7 @@ func (l *LayaProvider) Evaluate(ctx context.Context, dreq DecisionRequest, quest
 			Role:        dreq.Role,
 			Content:     dreq.Content,
 			Application: dreq.Application,
+			ModelID:     dreq.ModelID, ModelVersion: dreq.ModelVersion,
 		},
 		QuestionSchema: l.schema,
 		Questions:      questionIDs,
@@ -216,7 +222,8 @@ func (l *LayaProvider) Evaluate(ctx context.Context, dreq DecisionRequest, quest
 		Checkpoint:    lr.Checkpoint,
 		SchemaVersion: lr.SchemaVersion,
 		Route:         lr.Route,
-		Decisions:     map[string]Decision{},
+		ModelID:       lr.ModelID, ModelVersion: lr.ModelVersion, ModelDigest: lr.ModelDigest,
+		Decisions: map[string]Decision{},
 	}
 	for id, d := range lr.Decisions {
 		ev.Decisions[id] = Decision{Value: d.Value, Confidence: d.AnswerConfidence}

@@ -51,6 +51,7 @@ case "$host_go" in
 esac
 
 required normal "gofmt -l . | tee '$out/gofmt.txt'; test ! -s '$out/gofmt.txt'; go test -p 1 ./...; go build ./...; go vet ./...; git diff --check"
+required fleet-contract "go test ./internal/fleet -count=20"
 required race-docker "$root/scripts/release/race-docker.sh"
 required fuzz-smoke "$root/scripts/release/fuzz-smoke.sh"
 required benchmark "$root/scripts/release/benchmark-gate.sh"
@@ -68,7 +69,7 @@ required image-scan "$root/scripts/release/image-scan.sh"
 python3 - "$out/evidence.jsonl" "$out/evidence-manifest.json" <<'PY'
 import json,sys
 rows=[json.loads(x) for x in open(sys.argv[1]) if x.strip()]
-required=["normal","race-docker","fuzz-smoke","benchmark","coverage","chaos","conformance-docker","e2e-docker","reproducible","secret-scan","sbom","static-security","licenses","image-scan"]
+required=["normal","fleet-contract","race-docker","fuzz-smoke","benchmark","coverage","chaos","conformance-docker","e2e-docker","reproducible","secret-scan","sbom","static-security","licenses","image-scan"]
 seen={row["stage"] for row in rows}
 if seen != set(required): raise SystemExit("evidence manifest stage set is incomplete")
 if any(row["exit_code"] == 0 and row["status"] != "pass" for row in rows): raise SystemExit("evidence status disagrees with a zero command exit")

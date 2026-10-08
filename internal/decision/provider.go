@@ -135,11 +135,13 @@ func (qs *QuestionSchema) RiskOf(id string) string {
 
 // DecisionRequest is the normalized semantic evaluation input (spec §4).
 type DecisionRequest struct {
-	RequestID   string
-	Direction   string // lowercase direction label
-	Role        string
-	Content     string
-	Application string
+	RequestID    string
+	Direction    string // lowercase direction label
+	Role         string
+	Content      string
+	Application  string
+	ModelID      string
+	ModelVersion string
 }
 
 // Decision is one normalized answer.
@@ -155,6 +157,9 @@ type DecisionEvidence struct {
 	SchemaVersion string
 	Route         string
 	Decisions     map[string]Decision
+	ModelID       string
+	ModelVersion  string
+	ModelDigest   string
 }
 
 // DecisionProvider asks semantic questions and returns evidence.

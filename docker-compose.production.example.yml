@@ -9,6 +9,19 @@ services:
     environment:
       DEPLOYMENT_PROFILE: "production"
       SECURITY_MODE: "enforce"
+      # P2.5: references only; provision real values/certificates externally.
+      FLEET_CONTROL_PLANE_URL: "https://fleet.example.invalid"
+      FLEET_TENANT: "tenant-from-enrollment"
+      FLEET_REGION: "region-from-enrollment"
+      FLEET_TRUST_DOMAIN: "fleet.example.invalid"
+      FLEET_STATE_FILE: "/var/lib/aegisllm/fleet/state.json"
+      FLEET_TRUST_STORE_FILE: "/run/secrets/aegis-fleet-trust.json"
+      FLEET_CERTIFICATE_ID: "certificate-reference"
+      FLEET_KEY_ID: "gateway-key-reference"
+      FLEET_REQUIRED_STATE: "true"
+      FLEET_TLS_CA_FILE: "/run/secrets/aegis-fleet-ca.pem"
+      FLEET_TLS_CERT_FILE: "/run/secrets/aegis-fleet-client.crt"
+      FLEET_TLS_KEY_FILE: "/run/secrets/aegis-fleet-client.key"
       # Keep false until a real Laya calibration artifact is reviewed and
       # promoted. The committed noop/synthetic artifact is never sufficient.
       SECURITY_SEMANTIC_ENFORCE: "false"

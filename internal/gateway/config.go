@@ -150,6 +150,8 @@ type Config struct {
 	PolicyFile                     string
 	QuestionsFile                  string
 	ThresholdsFile                 string
+	SemanticRegistryStateFile      string
+	SemanticRegistryTrustStoreFile string
 	PolicyBundleDir                string
 	PolicyBundlePath               string
 	PolicyControlPlaneURL          string
@@ -163,6 +165,23 @@ type Config struct {
 	PolicyTLSServerName            string
 	PolicyCanaryPercent            int
 	PolicyCanarySoak               time.Duration
+	FleetControlPlaneURL           string
+	FleetTenant                    string
+	FleetRegion                    string
+	FleetStateFile                 string
+	FleetTrustStoreFile            string
+	FleetCertificateID             string
+	FleetKeyID                     string
+	FleetTrustDomain               string
+	FleetPollInterval              time.Duration
+	FleetTimeout                   time.Duration
+	FleetOfflineGrace              time.Duration
+	FleetRequiredState             bool
+	FleetCapabilities              []string
+	FleetTLSCAFile                 string
+	FleetTLSCertFile               string
+	FleetTLSKeyFile                string
+	FleetTLSServerName             string
 	GatewayVersion                 string
 	GatewayInstanceID              string
 	DeploymentEnvironment          string
@@ -350,6 +369,8 @@ func configFrom(get func(string) string) Config {
 		PolicyFile:                     getenvDefault(get, "POLICY_FILE", "policies/enterprise-default.yaml"),
 		QuestionsFile:                  getenvDefault(get, "QUESTIONS_FILE", "questions/security-v1.yaml"),
 		ThresholdsFile:                 getenvDefault(get, "THRESHOLDS_FILE", "policies/thresholds-security-v1.yaml"),
+		SemanticRegistryStateFile:      get("SEMANTIC_REGISTRY_STATE_FILE"),
+		SemanticRegistryTrustStoreFile: get("SEMANTIC_REGISTRY_TRUST_STORE_FILE"),
 		PolicyBundleDir:                get("POLICY_BUNDLE_DIR"),
 		PolicyBundlePath:               get("POLICY_BUNDLE_PATH"),
 		PolicyControlPlaneURL:          get("POLICY_CONTROL_PLANE_URL"),
@@ -363,6 +384,23 @@ func configFrom(get func(string) string) Config {
 		PolicyTLSServerName:            get("POLICY_TLS_SERVER_NAME"),
 		PolicyCanaryPercent:            getenvInt(get, "POLICY_CANARY_PERCENT", 0),
 		PolicyCanarySoak:               getenvDuration(get, "POLICY_CANARY_SOAK", 0),
+		FleetControlPlaneURL:           get("FLEET_CONTROL_PLANE_URL"),
+		FleetTenant:                    get("FLEET_TENANT"),
+		FleetRegion:                    getenvDefault(get, "FLEET_REGION", "unknown"),
+		FleetStateFile:                 get("FLEET_STATE_FILE"),
+		FleetTrustStoreFile:            get("FLEET_TRUST_STORE_FILE"),
+		FleetCertificateID:             get("FLEET_CERTIFICATE_ID"),
+		FleetKeyID:                     get("FLEET_KEY_ID"),
+		FleetTrustDomain:               get("FLEET_TRUST_DOMAIN"),
+		FleetPollInterval:              getenvDuration(get, "FLEET_POLL_INTERVAL", 30*time.Second),
+		FleetTimeout:                   getenvDuration(get, "FLEET_TIMEOUT", 10*time.Second),
+		FleetOfflineGrace:              getenvDuration(get, "FLEET_OFFLINE_GRACE", 24*time.Hour),
+		FleetRequiredState:             getenvBool(get, "FLEET_REQUIRED_STATE", false),
+		FleetCapabilities:              splitCSV(get("FLEET_CAPABILITIES")),
+		FleetTLSCAFile:                 get("FLEET_TLS_CA_FILE"),
+		FleetTLSCertFile:               get("FLEET_TLS_CERT_FILE"),
+		FleetTLSKeyFile:                get("FLEET_TLS_KEY_FILE"),
+		FleetTLSServerName:             get("FLEET_TLS_SERVER_NAME"),
 		GatewayVersion:                 getenvDefault(get, "GATEWAY_VERSION", "1.5.0"),
 		GatewayInstanceID:              getenvDefault(get, "GATEWAY_INSTANCE_ID", "gateway"),
 		DeploymentEnvironment:          getenvDefault(get, "DEPLOYMENT_ENVIRONMENT", string(profile)),
@@ -565,6 +603,9 @@ func ValidateConfig(cfg Config) error {
 		return err
 	}
 	if err := validateAttachmentConfig(cfg, profile); err != nil {
+		return err
+	}
+	if err := validateFleetConfig(cfg, profile); err != nil {
 		return err
 	}
 	if profile != ProfileProduction {
@@ -778,6 +819,33 @@ func validateAttachmentConfig(cfg Config, profile DeploymentProfile) error {
 	return nil
 }
 
+func validateFleetConfig(cfg Config, profile DeploymentProfile) error {
+	configured := strings.TrimSpace(cfg.FleetControlPlaneURL) != ""
+	if !configured {
+		if cfg.FleetRequiredState {
+			return errors.New("FLEET_REQUIRED_STATE requires FLEET_CONTROL_PLANE_URL")
+		}
+		return nil
+	}
+	u, ok := parseDependencyURL(cfg.FleetControlPlaneURL)
+	if !ok || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (profile == ProfileProduction && !strings.EqualFold(u.Scheme, "https")) || (profile != ProfileProduction && u.Scheme != "http" && u.Scheme != "https") {
+		return errors.New("FLEET_CONTROL_PLANE_URL must be a bounded HTTP endpoint; production requires HTTPS")
+	}
+	if cfg.FleetStateFile == "" || cfg.FleetTrustStoreFile == "" || cfg.FleetCertificateID == "" || cfg.FleetKeyID == "" || cfg.FleetTrustDomain == "" || cfg.FleetTenant == "" || cfg.FleetRegion == "" {
+		return errors.New("fleet agent requires state, trust-store, certificate, key, and trust-domain references")
+	}
+	if cfg.FleetPollInterval <= 0 || cfg.FleetTimeout <= 0 || cfg.FleetOfflineGrace < 0 {
+		return errors.New("fleet polling, timeout, and offline grace values are invalid")
+	}
+	if (cfg.FleetTLSCertFile == "") != (cfg.FleetTLSKeyFile == "") {
+		return errors.New("FLEET_TLS_CERT_FILE and FLEET_TLS_KEY_FILE must be paired")
+	}
+	if profile == ProfileProduction && (cfg.FleetTLSCAFile == "" || cfg.FleetTLSCertFile == "" || cfg.FleetTLSKeyFile == "") {
+		return errors.New("production fleet control plane requires CA and client certificate/key")
+	}
+	return nil
+}
+
 func (c Config) policyDistributionEnabled() bool {
 	return strings.TrimSpace(c.PolicyBundleDir) != "" || strings.TrimSpace(c.PolicyBundlePath) != "" || strings.TrimSpace(c.PolicyControlPlaneURL) != ""
 }
@@ -828,6 +896,12 @@ func validateSemanticConfig(cfg Config) error {
 	}
 	if err := thresholds.ValidateForEnforcement(qs.Schema, qs.Version, questionIDs, "laya"); err != nil {
 		return errors.New("THRESHOLDS_FILE is not promotion-ready")
+	}
+	if cfg.profile() == ProfileProduction && (strings.TrimSpace(cfg.SemanticRegistryStateFile) == "" || strings.TrimSpace(cfg.SemanticRegistryTrustStoreFile) == "") {
+		return errors.New("production semantic enforcement requires SEMANTIC_REGISTRY_STATE_FILE and SEMANTIC_REGISTRY_TRUST_STORE_FILE")
+	}
+	if (cfg.SemanticRegistryStateFile == "") != (cfg.SemanticRegistryTrustStoreFile == "") {
+		return errors.New("semantic registry state and trust store must be configured together")
 	}
 	return nil
 }

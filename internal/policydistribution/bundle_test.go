@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -60,6 +61,19 @@ func TestBundleDeterminismAndTamper(t *testing.T) {
 	if err := one.Verify(public, time.Now()); err == nil {
 		t.Fatal("tampered artifact was accepted")
 	}
+}
+
+func TestPolicyBundleRejectsUnpromotedSemanticReference(t *testing.T) {
+	public, private, _ := ed25519.GenerateKey(rand.Reader)
+	b := testBundle(t, 1, "k1", private)
+	b.Manifest.SemanticModelID = "m"
+	b.Manifest.SemanticModelVersion = "1"
+	b.Manifest.SemanticModelSHA256 = strings.Repeat("a", 64)
+	b.Manifest.SemanticModelState = "canary"
+	if err := b.Validate(time.Now()); err == nil {
+		t.Fatal("unpromoted semantic model referenced by policy")
+	}
+	_ = public
 }
 
 func TestTrustRotationAndRevocation(t *testing.T) {

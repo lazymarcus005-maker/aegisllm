@@ -8,3 +8,7 @@
 ./internal/auth|FuzzJWTParser|JWT parser/token placeholder boundary
 ./internal/tokenization|FuzzPlaceholderParser|opaque placeholder parser
 ./internal/quarantine|FuzzSignalValidation|bounded trusted incident signal validation
+./internal/semantic|FuzzCanonicalMetadata|signed semantic metadata parser
+./internal/semantic|FuzzDriftSample|bounded drift sample parser
+./internal/fleet|FuzzSignedDesiredStateParsing|bounded signed desired-state parser
+./internal/fleet|FuzzActionParsing|allowlisted signed action parser

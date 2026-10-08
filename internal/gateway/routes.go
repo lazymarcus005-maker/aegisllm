@@ -42,12 +42,28 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/policies/status", s.protect(http.HandlerFunc(s.handlePolicyStatus), auth.RoleOperator))
 	mux.Handle("POST /api/policies/activate", s.protect(http.HandlerFunc(s.handlePolicyActivate), auth.RoleOperator))
 	mux.Handle("POST /api/policies/rollback", s.protect(http.HandlerFunc(s.handlePolicyRollback), auth.RoleOperator))
+	if s.semanticRegistry != nil {
+		mux.Handle("GET /api/semantic/models", s.protect(http.HandlerFunc(s.handleSemanticModels), auth.RoleOperator))
+		mux.Handle("GET /api/semantic/status", s.protect(http.HandlerFunc(s.handleSemanticStatus), auth.RoleOperator))
+		mux.Handle("GET /api/semantic/history", s.protect(http.HandlerFunc(s.handleSemanticHistory), auth.RoleOperator))
+		mux.Handle("POST /api/semantic/validate", s.protect(http.HandlerFunc(s.handleSemanticValidate), auth.RoleOperator))
+		mux.Handle("POST /api/semantic/register", s.protect(http.HandlerFunc(s.handleSemanticRegister), auth.RoleOperator))
+		mux.Handle("POST /api/semantic/transition", s.protect(http.HandlerFunc(s.handleSemanticTransition), auth.RoleOperator))
+		for _, action := range []string{"shadow", "canary", "promote", "pause", "rollback", "retire", "revoke"} {
+			mux.Handle("POST /api/semantic/"+action, s.protect(http.HandlerFunc(s.handleSemanticTransition), auth.RoleOperator))
+		}
+		mux.Handle("GET /api/semantic/compare", s.protect(http.HandlerFunc(s.handleSemanticCompare), auth.RoleOperator))
+	}
+	if s.semanticDrift != nil {
+		mux.Handle("GET /api/semantic/drift", s.protect(http.HandlerFunc(s.handleSemanticDrift), auth.RoleOperator))
+	}
 	mux.Handle("GET /api/routes", s.protect(http.HandlerFunc(s.handleRoutes), "aegis.operator"))
 	mux.Handle("GET /api/providers/conformance", s.protect(http.HandlerFunc(s.handleProviderConformance), "aegis.operator"))
 	mux.Handle("GET /api/pii/providers", s.protect(http.HandlerFunc(s.handlePIIProviders), "aegis.operator"))
 	mux.Handle("GET /api/rag/status", s.protect(http.HandlerFunc(s.handleRAGStatus), auth.RoleOperator))
 	mux.Handle("GET /api/audit/status", s.protect(http.HandlerFunc(s.handleAuditStatus), auth.RoleOperator))
 	mux.Handle("POST /api/audit/verify", s.protect(http.HandlerFunc(s.handleAuditVerify), auth.RoleOperator))
+	mux.Handle("GET /api/fleet/status", s.protect(http.HandlerFunc(s.handleFleetStatus), auth.RoleOperator))
 	mux.Handle("POST /v1/session/logout", s.protect(http.HandlerFunc(s.handleSessionLogout), auth.RoleInvoke, auth.RoleOperator))
 	mux.Handle("GET /api/token-vault/status", s.protect(http.HandlerFunc(s.handleTokenVaultStatus), auth.RoleOperator))
 	mux.Handle("GET /api/quarantine", s.protect(http.HandlerFunc(s.handleQuarantineList), auth.RoleOperator))
@@ -105,6 +121,15 @@ func (s *Server) handleTokenVaultStatus(w http.ResponseWriter, _ *http.Request) 
 
 func (s *Server) handleAuditStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.AuditStatus())
+}
+
+func (s *Server) handleFleetStatus(w http.ResponseWriter, _ *http.Request) {
+	status, ok := s.FleetStatus()
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "fleet agent unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *Server) handleAuditVerify(w http.ResponseWriter, r *http.Request) {
@@ -218,6 +243,10 @@ func (s *Server) protect(next http.Handler, roles ...string) http.Handler {
 
 func (s *Server) protectLimited(next http.Handler, roles ...string) http.Handler {
 	return s.authn.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.FleetRequiredState && s.fleetAgent != nil && !s.fleetAgent.RequestAllowed(time.Now().UTC()) {
+			writeOpenAIError(w, http.StatusServiceUnavailable, "gateway_error", "FLEET_STATE_STALE", "Required fleet state is unavailable.", "")
+			return
+		}
 		key := s.admissionKey(r)
 		release, result := s.limiter.Allow(key)
 		if result.Reason != nil {

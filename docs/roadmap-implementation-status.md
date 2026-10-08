@@ -56,7 +56,7 @@ separate feature-roadmap file).
   integration/race-oriented coverage. Evidence class: local deterministic and
   fake/shared-store contract tests only; production Redis/IdP/SIEM/provider
   conformance and signal calibration remain external validation.
-- [ ] P2.4 Richer entity detection and multi-tenant vault namespaces (bounded cross-message detection moved into P1.4).
+- [x] P2.4 Semantic model lifecycle and drift monitoring: signed metadata-only registry, rotating trust and anti-replay gates, deterministic lifecycle/CAS/idempotency/history, exact atomic model-threshold runtime binding, verified-identity rollout surfaces, bounded drift metrics/guardrails, operator APIs/CLI, readiness/audit/metrics privacy, and fuzz/race-oriented contract tests. Evidence class: contract, deterministic fake, unit, and gateway integration only; real model quality, production drift, signer governance, and external Laya connectivity remain promotion dependencies.
 
 P0.1 is marked complete only after the repository acceptance commands and the
 container smoke test pass on this branch.
@@ -86,3 +86,14 @@ shadow comparison, operator promotion/rollback endpoints, retention, and a
 non-production fake control plane. Remaining deployment-specific work is
 operator provisioning of real CA/client certificates and production signer
 governance.
+## P2.5 enterprise fleet control plane
+
+Implemented: immutable mTLS/bootstrap enrollment, signed canonical desired
+state, trust rotation/anti-replay, bounded gateway agent with last-known-good
+and offline grace, identity-derived staged rollout contracts, privacy-safe
+heartbeat/compliance projections, allowlisted signed actions, operator API/
+`fleetctl`, deterministic fake control plane and Compose smoke, gateway
+readiness/status integration, and fuzz/race seams. Evidence is contract,
+deterministic fake, unit/adversarial, and gateway integration only. Real
+PKI/HSM/IdP, external attestation, signer governance, multi-region consistency
+and scale, and production rollout validation remain promotion dependencies.

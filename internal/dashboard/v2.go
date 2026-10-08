@@ -313,6 +313,15 @@ type RuntimeStatus struct {
 	Components        []ComponentStatus `json:"components"`
 	Audit             RuntimeAudit      `json:"audit"`
 	Quarantine        QuarantineStatus  `json:"quarantine"`
+	Semantic          SemanticStatus    `json:"semantic"`
+}
+type SemanticStatus struct {
+	State               string `json:"state"`
+	ModelID             string `json:"model_id,omitempty"`
+	ModelVersion        string `json:"model_version,omitempty"`
+	ThresholdArtifactID string `json:"threshold_artifact_id,omitempty"`
+	DriftAction         string `json:"drift_action,omitempty"`
+	DriftSuppressed     bool   `json:"drift_suppressed,omitempty"`
 }
 type QuarantineStatus struct {
 	State        string `json:"state"`

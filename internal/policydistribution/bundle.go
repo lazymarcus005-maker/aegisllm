@@ -45,6 +45,10 @@ type Manifest struct {
 	QuestionSHA256           string            `json:"question_sha256,omitempty"`
 	ThresholdVersion         int               `json:"threshold_version,omitempty"`
 	ThresholdSHA256          string            `json:"threshold_sha256,omitempty"`
+	SemanticModelID          string            `json:"semantic_model_id,omitempty"`
+	SemanticModelVersion     string            `json:"semantic_model_version,omitempty"`
+	SemanticModelSHA256      string            `json:"semantic_model_sha256,omitempty"`
+	SemanticModelState       string            `json:"semantic_model_state,omitempty"`
 	Created                  string            `json:"created"`
 	Expires                  string            `json:"expires,omitempty"`
 	NotBefore                string            `json:"not_before,omitempty"`
@@ -68,11 +72,22 @@ type Bundle struct {
 type Signer interface{ Sign([]byte) ([]byte, error) }
 
 type Snapshot struct {
-	Bundle     *Bundle
-	Policy     *policy.Policy
-	Questions  *decision.QuestionSchema
-	Thresholds *policy.SemanticThresholds
-	BundleHash string
+	Bundle        *Bundle
+	Policy        *policy.Policy
+	Questions     *decision.QuestionSchema
+	Thresholds    *policy.SemanticThresholds
+	BundleHash    string
+	SemanticModel ModelMetadata
+}
+
+// ModelMetadata is a content-free binding copied from a signed semantic
+// registry record. We intentionally do not import the lifecycle package here:
+// policy distribution is the lower-level signed bundle format.
+type ModelMetadata struct {
+	ID      string `json:"model_id,omitempty"`
+	Version string `json:"version,omitempty"`
+	Digest  string `json:"digest,omitempty"`
+	State   string `json:"state,omitempty"`
 }
 
 func CanonicalManifest(m Manifest) ([]byte, error) {
@@ -110,6 +125,11 @@ func (b *Bundle) Validate(now time.Time) error {
 	}
 	if strings.TrimSpace(m.PolicyID) == "" || m.PolicyVersion <= 0 || !isHash(m.PolicySHA256) {
 		return errors.New("bundle policy metadata is invalid")
+	}
+	if m.SemanticModelID != "" {
+		if m.SemanticModelVersion == "" || !isHash(m.SemanticModelSHA256) || m.SemanticModelState != "promoted" {
+			return errors.New("policy bundle references an unpromoted or invalid semantic model")
+		}
 	}
 	if strings.TrimSpace(m.Issuer) == "" || strings.TrimSpace(m.KeyID) == "" {
 		return errors.New("bundle issuer and key_id are required")
@@ -193,6 +213,7 @@ func (b *Bundle) Snapshot() (*Snapshot, error) {
 		return nil, errors.New("policy metadata does not match manifest")
 	}
 	s := &Snapshot{Bundle: b, Policy: pol, BundleHash: b.Hash()}
+	s.SemanticModel = ModelMetadata{ID: b.Manifest.SemanticModelID, Version: b.Manifest.SemanticModelVersion, Digest: b.Manifest.SemanticModelSHA256, State: b.Manifest.SemanticModelState}
 	if data := b.Files["questions.yaml"]; len(data) > 0 {
 		s.Questions, err = decision.LoadQuestions(data)
 		if err != nil {
